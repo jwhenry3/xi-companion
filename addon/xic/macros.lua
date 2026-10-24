@@ -189,7 +189,7 @@ local function text_to_bytes(text, max_len)
                 tonumber(at:sub(1, 2), 16), tonumber(at:sub(3, 4), 16),
                 tonumber(at:sub(5, 6), 16), tonumber(at:sub(7, 8), 16), 0xfd)
             n = n + 6
-            i = i + 11
+            i = i + 13 -- "[AT:" + 8 hex + "]" is 13 chars
         else
             local hex = text:match('^\\x(%x%x)', i)
             if hex then
@@ -422,12 +422,12 @@ end
 function M.commit_image(path, image)
     local prev = read_file(path)
     if prev then
-        write_file(path .. '.gsui-bak', prev)
+        write_file(path .. '.xic-bak', prev)
     end
     return write_file(path, image)
 end
 
--- Write a palette. Returns true, or nil + error. A .gsui-bak copy of the
+-- Write a palette. Returns true, or nil + error. A .xic-bak copy of the
 -- previous file is left beside it.
 function M.write_palette(dir, index, macros)
     local image, path = M.palette_image(dir, index, macros)
@@ -444,7 +444,7 @@ function M.write_title(dir, book, title)
     local titles = M.parse_titles(prev)
     titles[slot] = title
     if prev then
-        write_file(path .. '.gsui-bak', prev)
+        write_file(path .. '.xic-bak', prev)
     end
     local prefix = prev and #prev >= 8 and prev:sub(1, 8) or header_prefix(dir, fname)
     local image, err = M.build_titles(titles, prefix)

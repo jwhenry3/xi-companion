@@ -1,10 +1,10 @@
-_addon.name = 'gearswapui'
-_addon.author = 'gearswap-ui'
+_addon.name = 'xic'
+_addon.author = 'XI Companion'
 _addon.version = '1.0.0'
-_addon.commands = { 'gsui', 'gearswapui' }
+_addon.commands = { 'xic' }
 
 --[[
-    GearSwap UI companion addon.
+    XI Companion — GearSwap, inventory, chat, macros & journal overlay.
 
     Runs a small local HTTP server (LuaSocket) that:
       * serves the bundled frontend from ./ui
@@ -12,15 +12,15 @@ _addon.commands = { 'gsui', 'gearswapui' }
       * exposes GearSwap lua files under addons/GearSwap/data for read/write
 
     Commands:
-      //gsui          - status + help
-      //gsui open     - open the UI in the default browser
-      //gsui overlay  - launch the Electron overlay window
-      //gsui start    - start the server
-      //gsui stop     - stop the server
-      //gsui port <n> - change the port (restarts the server)
-      //gsui refresh  - push a fresh state snapshot to connected clients
-      //gsui swap     - toggle the on-screen set picker (see //gsui swap help)
-      //gsui equip <set> - equip a sets.* path via GearSwap (`gs equip`)
+      //xic          - status + help
+      //xic open     - open the UI in the default browser
+      //xic overlay  - launch the overlay window
+      //xic start    - start the server
+      //xic stop     - stop the server
+      //xic port <n> - change the port (restarts the server)
+      //xic refresh  - push a fresh state snapshot to connected clients
+      //xic swap     - toggle the on-screen set picker (see //xic swap help)
+      //xic equip <set> - equip a sets.* path via GearSwap (`gs equip`)
 ]]
 
 local socket = require('socket')
@@ -32,12 +32,22 @@ if not ok_macros then macrofs = nil end
 local defaults = {
     port = 17890,
     autostart = true,
-    -- auto-launch the floating overlay button on load; //gsui fab off
-    -- disables it (then use //gsui overlay to open manually)
+    -- auto-launch the floating overlay button once a character logs in;
+    -- //xic fab off disables it (then use //xic overlay to open manually)
     fab = true,
+    -- auto-launch the transparent quest tracker alongside the fab;
+    -- //xic tracker off disables it
+    tracker = true,
+    -- auto-launch the detached macro bar alongside; //xic macrobar off
+    macrobar = true,
     poll_interval = 1.5,
+    -- messages kept per chat thread (each channel + each tell peer);
+    -- served on reconnect so a reopened UI still has history
+    chat_history = 200,
+    -- distinct tell-peer threads remembered (LRU beyond this)
+    chat_tell_threads = 64,
     swapui = {
-        -- headless set scanner: custom[] holds sets added via `//gsui swap add`
+        -- headless set scanner: custom[] holds sets added via `//xic swap add`
         custom = {},
     },
 }
@@ -47,11 +57,11 @@ config.save(settings)
 local CHAT_COLOR = 207
 
 local function log(msg)
-    windower.add_to_chat(CHAT_COLOR, '[gsui] ' .. msg)
+    windower.add_to_chat(CHAT_COLOR, '[xic] ' .. msg)
 end
 
 local function log_err(msg)
-    windower.add_to_chat(39, '[gsui] ' .. msg)
+    windower.add_to_chat(39, '[xic] ' .. msg)
 end
 
 ----------------------------------------------------------------------
@@ -231,26 +241,32 @@ local function decode_flags(flagset)
     return out
 end
 
--- Optional: reuse GearSwap's extdata augment decoder when it is installed.
+-- Optional: reuse the shared extdata augment decoder (addons/libs/extdata.lua —
+-- the same one GearSwap's `require 'extdata'` resolves).
 local extdata_decoder = nil
 local extdata_tried = false
 
 local function try_extdata(item_id, extdata_hex)
     if not extdata_tried then
         extdata_tried = true
-        local path = join(windower.windower_path, 'addons\\GearSwap\\extdata.lua')
-        if windower.file_exists(path) then
-            local ok, ret = pcall(dofile, path)
-            if ok then
-                if type(ret) == 'table' and type(ret.decode) == 'function' then
-                    extdata_decoder = ret
-                elseif type(_G.extdata) == 'table' and type(_G.extdata.decode) == 'function' then
-                    extdata_decoder = _G.extdata
+        if type(_G.extdata) == 'table' and type(_G.extdata.decode) == 'function' then
+            extdata_decoder = _G.extdata
+        else
+            local ok, ret = pcall(require, 'extdata')
+            if ok and type(ret) == 'table' and type(ret.decode) == 'function' then
+                extdata_decoder = ret
+            else
+                local path = join(windower.windower_path, 'addons\\libs\\extdata.lua')
+                if windower.file_exists(path) then
+                    local ok2, ret2 = pcall(dofile, path)
+                    if ok2 and type(ret2) == 'table' and type(ret2.decode) == 'function' then
+                        extdata_decoder = ret2
+                    end
                 end
             end
         end
         if extdata_decoder == nil then
-            log('GearSwap extdata decoder not available; sending raw extdata only.')
+            log('extdata decoder not available; sending raw extdata only.')
         end
     end
     if not extdata_decoder or not extdata_hex or extdata_hex == '' then
@@ -299,7 +315,6 @@ local function item_meta(id)
         ex = set_has(flags, 'Exclusive'),
         stack = item.stack,
         type = item.type,
-        description = item.description,
     }
 end
 
@@ -344,18 +359,34 @@ local function collect_state()
     local ok_infos, infos_t = pcall(windower.ffxi.get_bag_info)
     if ok_infos and type(infos_t) == 'table' then bag_infos = infos_t end
 
-    -- items.equipment maps equip slot name -> {slot=<bag index>,
-    -- bag_id=<bag>}. Flatten to 'bag:index -> /unequip slot' so equipped
-    -- items can report which slot they occupy.
+    -- items.equipment maps equip slot -> where it's equipped. The real
+    -- get_items() shape is FLAT: <slot>=<bag index> plus <slot>_bag=<bag>
+    -- (GearSwap rebuilds the nested {slot,bag_id} form internally). Accept
+    -- both and flatten to 'bag:index -> slot name' so equipped items can
+    -- report which slot they occupy.
     local EQUIP_CMD = {
         lear = 'l.ear', rear = 'r.ear',
         lring = 'l.ring', rring = 'r.ring',
     }
+    local equipment = type(all_items) == 'table' and all_items.equipment or nil
+    if type(equipment) ~= 'table' then
+        -- the no-arg call doesn't always carry it — the dedicated form does
+        local ok_eq, eq_t = pcall(windower.ffxi.get_items, 'equipment')
+        if ok_eq and type(eq_t) == 'table' then equipment = eq_t end
+    end
     local equip_slots = {}
-    if type(all_items) == 'table' and type(all_items.equipment) == 'table' then
-        for slot_name, eq in pairs(all_items.equipment) do
-            if type(eq) == 'table' and tonumber(eq.slot) then
-                local key = ('%.0f:%.0f'):format(tonumber(eq.bag_id) or 0, tonumber(eq.slot))
+    if type(equipment) == 'table' then
+        for slot_name, eq in pairs(equipment) do
+            local slot_idx, bag_id
+            if type(eq) == 'table' then
+                slot_idx, bag_id = tonumber(eq.slot), tonumber(eq.bag_id)
+            elseif not slot_name:find('_bag$') then
+                slot_idx = tonumber(eq)
+                bag_id = tonumber(equipment[slot_name .. '_bag'])
+            end
+            -- slot_idx 0 is the empty-slot sentinel
+            if slot_idx and slot_idx > 0 then
+                local key = ('%.0f:%.0f'):format(bag_id or 0, slot_idx)
                 equip_slots[key] = EQUIP_CMD[slot_name] or slot_name
             end
         end
@@ -541,6 +572,7 @@ local last_poll = 0
 local pending_state = nil -- cached state table between polls
 local heartbeat_at = 0
 local last_job_id = nil   -- job the swap list was last scanned for
+local zoning = false      -- between zone-out (0x00B) and zone-in (0x00A) packets
 
 local CORS = 'Access-Control-Allow-Origin: *\r\n'
     .. 'Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS\r\n'
@@ -605,8 +637,8 @@ local function current_state_json()
     return last_state_json
 end
 
-local function broadcast_state()
-    local body = 'event: state\ndata: ' .. current_state_json() .. '\n\n'
+local function sse_broadcast(event, payload)
+    local body = 'event: ' .. event .. '\ndata: ' .. payload .. '\n\n'
     for _, conn in ipairs(conns) do
         if conn.sse and not conn.closed then
             local ok = send_all(conn.sock, body)
@@ -617,6 +649,290 @@ local function broadcast_state()
         end
     end
 end
+
+local function broadcast_state()
+    sse_broadcast('state', current_state_json())
+end
+
+----------------------------------------------------------------------
+-- Chat: incoming chat packets (0x017) are parsed into a bounded ring
+-- buffer streamed to clients over SSE; POST /api/chat sends through
+-- `input /<cmd>` — the same path as the game's own chat line.
+-- Layout per addons/libs/packets/fields.lua: Mode @0x04, GM @0x05,
+-- Sender Name char[0xF] @0x08, Message char* @0x17.
+----------------------------------------------------------------------
+local chat_seq = 0
+-- per-thread buckets keyed like the client's threads (channel key, or
+-- 'tell:<peer>' for DMs) so a busy channel can't evict a quiet one's
+-- history while the UI is closed
+local chat_threads = {}
+local tell_thread_order = {} -- FIFO of tell-peer keys for LRU eviction
+-- per-load marker so clients can detect a reload and resync their seq
+local chat_boot = math.random(0x7fffffff)
+
+-- mode byte -> channel key (res/chat.lua); system/other modes are skipped
+local CHAT_CHANNELS = {
+    [0] = 'say', [1] = 'shout', [3] = 'tell', [4] = 'party',
+    [5] = 'linkshell', [8] = 'emote', [26] = 'yell', [27] = 'linkshell2',
+    [33] = 'unity', [34] = 'assist', [35] = 'assist',
+}
+-- channel -> chat-line command for sending (assist is receive-only)
+local CHAT_SEND = {
+    say = '/say', shout = '/shout', yell = '/yell', party = '/party',
+    linkshell = '/linkshell', linkshell2 = '/linkshell2', unity = '/unity',
+    emote = '/em',
+}
+
+local function chat_thread_key(m)
+    if m.channel == 'tell' then
+        return 'tell:' .. tostring(m.peer or m.sender or '')
+    end
+    return m.channel
+end
+
+local function push_chat(m)
+    chat_seq = chat_seq + 1
+    m.seq = chat_seq
+    m.boot = chat_boot
+    m.ts = os.time()
+    local key = chat_thread_key(m)
+    local t = chat_threads[key]
+    if not t then
+        t = {}
+        chat_threads[key] = t
+        if m.channel == 'tell' then
+            tell_thread_order[#tell_thread_order + 1] = key
+            -- bound total memory: evict the oldest peer thread entirely
+            local max_threads = tonumber(settings.chat_tell_threads) or 64
+            if #tell_thread_order > max_threads then
+                chat_threads[table.remove(tell_thread_order, 1)] = nil
+            end
+        end
+    end
+    t[#t + 1] = m
+    local max_msgs = tonumber(settings.chat_history) or 200
+    if #t > max_msgs then
+        table.remove(t, 1)
+    end
+    sse_broadcast('chat', json.encode(m))
+end
+
+local function player_name()
+    local ok, p = pcall(windower.ffxi.get_player)
+    return (ok and type(p) == 'table' and p.name) or 'me'
+end
+
+-- auto-translate phrase lookup: res.auto_translates[id] -> {en, ja}.
+-- Lazy because resources resolves on first access; false == unavailable.
+local auto_translates
+local function at_phrase(id)
+    if auto_translates == nil then
+        local ok, t = pcall(function() return res.auto_translates end)
+        auto_translates = (ok and type(t) == 'table') and t or false
+    end
+    local p = auto_translates and auto_translates[id]
+    return p and (p.en or p.ja)
+end
+
+-- packet text is fixed-width / auto-translate encoded: byte-walk it
+-- instead of gsub so malformed content can never trip strings.lua's
+-- pattern machinery; printable ASCII survives, auto-translate phrases
+-- (0xFD <type> <lang> <id hi> <id lo> 0xFD — 6 bytes, see strings.lua's
+-- length table; the id is big-endian on the wire) decode to their real
+-- text, everything else is dropped
+local function sanitize_chat(text)
+    local out, i, n = {}, 1, #text
+    while i <= n do
+        local b = text:byte(i)
+        if b == 0xFD then
+            if i + 5 <= n and text:byte(i + 5) == 0xFD then
+                local b1, b2, b3, b4 = text:byte(i + 1, i + 4)
+                local id = b3 * 256 + b4
+                out[#out + 1] = '{'
+                    .. (at_phrase(id) or ('AT:%02x%02x%02x%02x'):format(b1, b2, b3, b4))
+                    .. '}'
+                i = i + 6
+            else
+                -- truncated/malformed run: drop bytes to the next 0xFD/end
+                local j = i + 1
+                while j <= n do
+                    local c = text:byte(j)
+                    if c == 0 or c == 0xFD then break end
+                    j = j + 1
+                end
+                out[#out + 1] = '{AT}'
+                i = (j <= n and text:byte(j) == 0xFD) and j + 1 or j
+            end
+        elseif b == 0 then
+            break
+        elseif b >= 0x20 and b < 0x7F then
+            out[#out + 1] = string.char(b)
+            i = i + 1
+        else
+            i = i + 1
+        end
+    end
+    return table.concat(out)
+end
+
+-- outbound side of auto-translate: the composer wraps chosen phrases in
+-- braces — {Hello!} — the same convention Windower's chat line uses.
+-- Names that resolve decode into the real wire bytes the client would
+-- produce; anything between braces that doesn't resolve stays literal.
+local AT_OPEN = '{'
+local AT_CLOSE = '}'
+
+-- name -> id reverse map, lazy + cached (en names are unique enough that
+-- first match wins: identical text renders identically either way)
+local at_id_by_name
+local function at_id(name)
+    if at_id_by_name == nil then
+        local t = {}
+        local ok, at = pcall(function() return res.auto_translates end)
+        for id, p in pairs(ok and type(at) == 'table' and at or {}) do
+            if type(p) == 'table' and type(p.en) == 'string' then
+                local k = p.en:lower()
+                t[k] = t[k] or id
+            end
+        end
+        at_id_by_name = t
+    end
+    return at_id_by_name[name:lower()]
+end
+
+-- marked phrases -> wire bytes; also returns a display form with the
+-- markers swapped for {Name} (matches what the incoming parser emits)
+local function decode_outgoing_chat(text)
+    local wire, disp = {}, {}
+    local pos = 1
+    while true do
+        local s = text:find(AT_OPEN, pos, true)
+        if not s then
+            local rest = text:sub(pos)
+            wire[#wire + 1] = rest
+            disp[#disp + 1] = rest
+            break
+        end
+        local lead = text:sub(pos, s - 1)
+        wire[#wire + 1] = lead
+        disp[#disp + 1] = lead
+        local e = text:find(AT_CLOSE, s + #AT_OPEN, true)
+        if not e then
+            -- dangling open brace: leave the text untouched
+            local rest = text:sub(s)
+            wire[#wire + 1] = rest
+            disp[#disp + 1] = rest
+            break
+        end
+        local name = text:sub(s + #AT_OPEN, e - 1)
+        local id = name ~= '' and at_id(name) or nil
+        if id then
+            wire[#wire + 1] = string.char(0xFD, 0x02, 0x02,
+                math.floor(id / 256) % 256, id % 256, 0xFD)
+            disp[#disp + 1] = '{' .. name .. '}'
+        else
+            -- not a phrase — the braces are literal text
+            local lit = '{' .. name .. '}'
+            wire[#wire + 1] = lit
+            disp[#disp + 1] = lit
+        end
+        pos = e + #AT_CLOSE
+    end
+    return table.concat(wire), table.concat(disp)
+end
+
+local function read_cstr(data, off, max)
+    local z = data:find('\0', off, true)
+    local hi = z and z - 1 or #data
+    if max and hi > max then hi = max end
+    return data:sub(off, hi)
+end
+
+-- outgoing channel messages are appended optimistically (like tells) —
+-- channels may or may not echo back as 0x017 depending on the command
+-- path. pending_self[channel][text] = send time, so a real echo that
+-- DOES arrive inside the window is dropped as a duplicate.
+local pending_self = {}
+
+local function handle_chat_packet(data)
+    if type(data) ~= 'string' or #data < 0x17 then return end
+    local channel = CHAT_CHANNELS[data:byte(5)]
+    if not channel then return end
+    local sender = read_cstr(data, 9, 23) -- char[0xF], may lack a terminator
+    local text = sanitize_chat(read_cstr(data, 24))
+    if text == '' then return end
+    local m = { channel = channel, sender = sender, text = text }
+    if sender == player_name() then
+        -- our own send coming back (typed in-game or UI echo): style it
+        -- as self, and if it matches a message we already appended
+        -- optimistically, eat the duplicate
+        m.self = true
+        local pend = pending_self[channel]
+        local t = pend and pend[text]
+        if t and os.time() - t < 10 then
+            pend[text] = nil
+            return
+        end
+    end
+    if channel == 'tell' then m.peer = sender end
+    push_chat(m)
+end
+
+windower.register_event('incoming chunk', function(id, data)
+    if id ~= 0x017 then return end
+    -- never let a malformed packet kill the routing path — log and move on
+    local ok, err = pcall(handle_chat_packet, data)
+    if not ok then log_err('chat: ' .. tostring(err)) end
+end)
+
+----------------------------------------------------------------------
+-- Journal: quest/mission log (0x056) + RoE objectives (0x111/0x112),
+-- parsed by journal.lua into per-character state under data/journal/.
+----------------------------------------------------------------------
+local journal = nil
+do
+    local ok, mod = pcall(dofile, join(windower.addon_path, 'journal.lua'))
+    if ok and type(mod) == 'table' then
+        journal = mod
+        journal.setup({
+            join = join,
+            json = json,
+            json_array = json_array,
+            sse_broadcast = sse_broadcast,
+            data_dir = join(windower.addon_path, 'data'),
+            addon_path = windower.addon_path,
+            player_name = player_name,
+            log = log,
+            log_err = log_err,
+            zones = res.zones,
+            mob_name = function(index)
+                local ok, mob = pcall(windower.ffxi.get_mob_by_index, index)
+                return ok and mob and mob.name or nil
+            end,
+        })
+    else
+        log_err('journal.lua failed to load: ' .. tostring(mod))
+    end
+end
+
+windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked or not journal then return end
+    if id == 0x056 or id == 0x111 or id == 0x112
+        or id == 0x05C or id == 0x032 or id == 0x033 or id == 0x034
+        or id == 0x029 or id == 0x02D or id == 0x113 then
+        -- same rule as chat: a bad packet must never kill the pump
+        local ok, err = pcall(journal.handle_packet, id, data)
+        if not ok then log_err('journal: ' .. tostring(err)) end
+    end
+end)
+
+-- outgoing dialogue choices (0x05B) carry the manual/tome page selection
+-- that marks a training regime active
+windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked or not journal or id ~= 0x05B then return end
+    local ok, err = pcall(journal.handle_outgoing, id, data)
+    if not ok then log_err('journal-out: ' .. tostring(err)) end
+end)
 
 local function serve_static(conn, url_path)
     local path = url_path:gsub('^/+', '')
@@ -653,6 +969,15 @@ local function serve_static(conn, url_path)
     )
 end
 
+-- Hidden from the overlay's perspective: in the zoning blackout or an
+-- event/cutscene (player status 4) — the same states in-render addons
+-- stop drawing for. The overlay polls this via /api/status.
+local function overlay_hidden()
+    if zoning then return true end
+    local ok, player = pcall(windower.ffxi.get_player)
+    return ok and type(player) == 'table' and player.status == 4
+end
+
 local routes = {}
 
 routes['GET /api/status'] = function(conn)
@@ -660,6 +985,7 @@ routes['GET /api/status'] = function(conn)
         addon = _addon.name,
         version = _addon.version,
         port = bound_port or settings.port,
+        hidden = overlay_hidden(),
         sse_clients = (function()
             local n = 0
             for _, c in ipairs(conns) do if c.sse and not c.closed then n = n + 1 end end
@@ -743,6 +1069,21 @@ end
 -- windower command (equip/use go through POST /api/command instead).
 -- body: {"action":"drop","bag":0,"index":<slot>,"count":<n>}
 --       {"action":"move","bag":<id>,"index":<slot>,"count":<n>,"target":<bag id>}
+--       {"action":"unequip","slot":"<windower slot name>"}
+
+-- items.equipment keys (and the cmd-style aliases the UI reports via
+-- equip_slot: 'l.ear' etc.) -> numeric equip slot for the 0x050 chunk
+local UNEQUIP_SLOT = {
+    main = 0, sub = 1, range = 2, ammo = 3,
+    head = 4, body = 5, hands = 6, legs = 7, feet = 8,
+    neck = 9, waist = 10,
+    lear = 11, ['l.ear'] = 11, left_ear = 11,
+    rear = 12, ['r.ear'] = 12, right_ear = 12,
+    lring = 13, ['l.ring'] = 13, left_ring = 13,
+    rring = 14, ['r.ring'] = 14, right_ring = 14,
+    back = 15,
+}
+
 routes['POST /api/item'] = function(conn, req)
     local body = req.body or ''
     local action = body:match('"action"%s*:%s*"([^"]+)"')
@@ -775,6 +1116,25 @@ routes['POST /api/item'] = function(conn, req)
             ['Target Index'] = 0x52,
         }))
         return send_json(conn, 200, { ok = true })
+    elseif action == 'unequip' then
+        -- There is no /unequip client command: unequipping is an equip
+        -- packet (0x050) with Item Index 0 — the same chunk GearSwap
+        -- emits when a slot should be emptied.
+        local slot = body:match('"slot"%s*:%s*"([^"]+)"')
+        local slot_id = slot and UNEQUIP_SLOT[slot]
+        if not slot_id then
+            return send_json(conn, 400, { error = 'unequip needs a valid slot name' })
+        end
+        local ok_p, packets = pcall(require, 'packets')
+        if not ok_p or type(packets) ~= 'table' then
+            return send_json(conn, 500, { error = 'packets lib unavailable' })
+        end
+        packets.inject(packets.new('outgoing', 0x050, {
+            ['Item Index'] = 0,
+            ['Equip Slot'] = slot_id,
+            ['Bag'] = 0,
+        }))
+        return send_json(conn, 200, { ok = true })
     end
     send_json(conn, 400, { error = 'unknown action' })
 end
@@ -786,7 +1146,7 @@ end
 -- `logged_in` flag the UI turns into a warning.
 ----------------------------------------------------------------------
 
-local function macro_logged_in()
+local function logged_in()
     local ok, info = pcall(windower.ffxi.get_info)
     return ok and type(info) == 'table' and info.logged_in == true
 end
@@ -820,7 +1180,7 @@ routes['GET /api/macros'] = function(conn)
         }
     end
     send_json(conn, 200, {
-        logged_in = macro_logged_in(),
+        logged_in = logged_in(),
         characters = json_array(chars),
     })
 end
@@ -857,7 +1217,7 @@ routes['PUT /api/macros/palette'] = function(conn, req)
     end
 
     local apply = (req.query.apply == '1' or req.query.apply == 'true')
-        and macro_logged_in()
+        and logged_in()
     if apply then
         -- Validate + build the image now so errors stay synchronous; the
         -- bytes land in a scheduled step between book switches.
@@ -895,7 +1255,7 @@ routes['PUT /api/macros/palette'] = function(conn, req)
     send_json(conn, 200, {
         ok = true,
         file = macrofs.palette_file(index),
-        logged_in = macro_logged_in(),
+        logged_in = logged_in(),
     })
 end
 
@@ -923,7 +1283,70 @@ routes['PUT /api/macros/title'] = function(conn, req)
     if not ok then
         return send_json(conn, 400, { error = tostring(err) })
     end
-    send_json(conn, 200, { ok = true, logged_in = macro_logged_in() })
+    send_json(conn, 200, { ok = true, logged_in = logged_in() })
+end
+
+-- Replay one macro cell the way the client's macro executor does: every
+-- line goes through the client's own input line (`input`), and /wait N
+-- lines pause the rest of the sequence through the scheduler instead of
+-- being sent as commands.
+local function run_macro_lines(lines, i)
+    while i <= #lines do
+        local l = lines[i]
+        i = i + 1
+        if l ~= '' then
+            local wait = l:match('^/[Ww][Aa][Ii][Tt]%s+([%d%.]+)')
+                or (l:match('^/[Ww][Aa][Ii][Tt]%s*$') and '1')
+            if wait then
+                macro_schedule(function() run_macro_lines(lines, i) end,
+                    tonumber(wait) or 1)
+                return
+            end
+            windower.send_command('input ' .. l)
+        end
+    end
+end
+
+-- body: {"char":"<content id>","index":<0-399>,"cell":<0-19>}
+routes['POST /api/macros/run'] = function(conn, req)
+    if not macrofs then
+        return send_json(conn, 500, { error = 'macros module unavailable' })
+    end
+    local body = macrofs.json_decode(req.body or '')
+    if type(body) ~= 'table' then
+        return send_json(conn, 400, { error = 'invalid json' })
+    end
+    local dir = macro_char_dir(body.char)
+    local index = tonumber(body.index)
+    local cell = tonumber(body.cell)
+    if not dir then
+        return send_json(conn, 400, { error = 'unknown character' })
+    end
+    if not index or index < 0 or index >= 400 or index % 1 ~= 0
+        or not cell or cell < 0 or cell > 19 or cell % 1 ~= 0 then
+        return send_json(conn, 400, { error = 'bad palette index/cell' })
+    end
+    local pal
+    for _, p in ipairs(macrofs.read_palettes(dir)) do
+        if p.index == index then pal = p break end
+    end
+    local m = pal and pal.macros and pal.macros[cell + 1]
+    if not m then
+        return send_json(conn, 404, { error = 'palette not found' })
+    end
+    -- lines travel as the text form ([AT:xxxxxxxx], \xNN); `input` needs
+    -- the client's raw bytes back so FD sequences land as real phrases
+    local lines = {}
+    for _, l in ipairs(m.lines or {}) do
+        if l and l ~= '' then
+            lines[#lines + 1] = macrofs.text_to_bytes(l, 60) or l
+        end
+    end
+    if #lines == 0 then
+        return send_json(conn, 400, { error = 'macro is empty' })
+    end
+    run_macro_lines(lines, 1)
+    send_json(conn, 200, { ok = true, logged_in = logged_in() })
 end
 
 -- Item icons: serve extracted .bmp files; decode the DAT on first request.
@@ -963,6 +1386,23 @@ routes['GET /api/icon'] = function(conn, req)
     send_and_close(conn, 200, bmp, 'image/bmp')
 end
 
+-- full item meta + the client's blue-text description (stats/passives
+-- live there — res.items has no damage/defense/stat fields). Lazy per-id
+-- endpoint: descriptions are static and ~300B each, so they stay out of
+-- the catalog that every state broadcast re-sends.
+routes['GET /api/itemmeta'] = function(conn, req)
+    local id = tonumber(req.query.id)
+    local meta = id and item_meta(id)
+    if not meta then
+        return send_json(conn, 404, { error = 'unknown item' })
+    end
+    local d = res.item_descriptions and res.item_descriptions[id]
+    if d and d.en then
+        meta.description = d.en
+    end
+    send_json(conn, 200, meta)
+end
+
 routes['GET /api/events'] = function(conn)
     conn.sse = true
     local head = status_line(200) .. '\r\n'
@@ -977,6 +1417,176 @@ routes['GET /api/events'] = function(conn)
     end
     -- Send an immediate snapshot so the UI renders without waiting for a diff.
     send_all(conn.sock, 'event: state\ndata: ' .. current_state_json() .. '\n\n')
+    if journal then
+        send_all(conn.sock, 'event: journal\ndata: ' .. journal.snapshot_json() .. '\n\n')
+    end
+end
+
+-- Chat history: ?after=<seq> returns newer messages across all threads
+-- (each keeps its own tail); ?after=0 is the initial/reconnect fetch.
+routes['GET /api/journal'] = function(conn)
+    if not journal then
+        return send_json(conn, 200, { char = nil })
+    end
+    send_and_close(conn, 200, journal.snapshot_json(), 'application/json; charset=utf-8')
+end
+
+routes['GET /api/journal/names'] = function(conn)
+    if not journal then
+        return send_json(conn, 200, {})
+    end
+    send_and_close(conn, 200, journal.names_json(), 'application/json; charset=utf-8')
+end
+
+-- Mark/unmark an RoE objective: injects the same outgoing packets the
+-- client sends from the RoE menu (0x10C set, 0x10D cancel). The server
+-- answers with a fresh 0x111, which the journal tracker picks up, so no
+-- local state needs to change here.
+-- body: {"id":<objective id>,"action":"set|clear"}
+routes['POST /api/journal/roe'] = function(conn, req)
+    local body = req.body or ''
+    local action = body:match('"action"%s*:%s*"([^"]+)"')
+    local id = tonumber((body:match('"id"%s*:%s*(%d+)')))
+    if not id or id > 0xFFF or (action ~= 'set' and action ~= 'clear') then
+        return send_json(conn, 400, { error = 'needs {"id":<n>,"action":"set|clear"}' })
+    end
+    if not logged_in() then
+        return send_json(conn, 400, { error = 'not logged in' })
+    end
+    local ok_p, packets = pcall(require, 'packets')
+    if not ok_p or type(packets) ~= 'table' then
+        return send_json(conn, 500, { error = 'packets lib unavailable' })
+    end
+    packets.inject(packets.new('outgoing', action == 'set' and 0x10C or 0x10D, {
+        ['RoE Quest'] = id,
+    }))
+    send_json(conn, 200, { ok = true })
+end
+
+-- Toggle an entry's visibility in the detached tracker window. Entries
+-- are tracked by default; untracked keys persist in the journal file and
+-- reach the tracker through the normal journal SSE broadcast.
+-- body: {"kind":"quest|mission|roe","key":"<group>","tracked":<bool>,
+--        "id":<n>} — omit id to toggle the whole group
+routes['POST /api/journal/track'] = function(conn, req)
+    if not journal then
+        return send_json(conn, 503, { error = 'journal unavailable' })
+    end
+    local body = req.body or ''
+    local kind = body:match('"kind"%s*:%s*"([^"]+)"')
+    local key = body:match('"key"%s*:%s*"([^"]+)"')
+    local id = tonumber((body:match('"id"%s*:%s*(%d+)')))
+    local tflag = body:match('"tracked"%s*:%s*(%a+)')
+    if not kind or not key or not tflag then
+        return send_json(conn, 400, { error = 'needs {"kind","key","tracked"} (id optional)' })
+    end
+    local ok, err = journal.set_tracked(kind, key, id, tflag == 'true')
+    if not ok then
+        return send_json(conn, 400, { error = err or 'rejected' })
+    end
+    send_json(conn, 200, { ok = true })
+end
+
+-- Addon settings (data/settings.xml via the config lib) — flat scalar
+-- keys only; swapui stays command-managed. `port` takes effect on the
+-- next server start.
+local SETTABLE = {
+    port = 'number', autostart = 'boolean',
+    fab = 'boolean', tracker = 'boolean', macrobar = 'boolean',
+    poll_interval = 'number',
+    chat_history = 'number', chat_tell_threads = 'number',
+}
+routes['GET /api/settings'] = function(conn)
+    local out = {}
+    for key in pairs(SETTABLE) do out[key] = settings[key] end
+    send_json(conn, 200, out)
+end
+routes['POST /api/settings'] = function(conn, req)
+    local body = req.body or ''
+    local changed = {}
+    for key, kind in pairs(SETTABLE) do
+        if kind == 'boolean' then
+            local v = body:match('"' .. key .. '"%s*:%s*(%a+)')
+            if v == 'true' or v == 'false' then
+                settings[key] = (v == 'true')
+                changed[#changed + 1] = key
+            end
+        else
+            local v = tonumber((body:match('"' .. key .. '"%s*:%s*(-?[%d%.]+)')))
+            if v then
+                settings[key] = v
+                changed[#changed + 1] = key
+            end
+        end
+    end
+    config.save(settings)
+    send_json(conn, 200, { ok = true, changed = json_array(changed) })
+end
+
+routes['GET /api/chat'] = function(conn, req)
+    local after = tonumber(req.query.after) or 0
+    local out = {}
+    for _, t in pairs(chat_threads) do
+        for _, m in ipairs(t) do
+            if (m.seq or 0) > after then out[#out + 1] = m end
+        end
+    end
+    table.sort(out, function(a, b) return (a.seq or 0) < (b.seq or 0) end)
+    send_json(conn, 200, { seq = chat_seq, boot = chat_boot, messages = json_array(out) })
+end
+
+-- auto-translate phrase list for the composer's Tab autocomplete
+local phrases_json
+routes['GET /api/chat/phrases'] = function(conn)
+    if not phrases_json then
+        local names, seen = {}, {}
+        local ok, at = pcall(function() return res.auto_translates end)
+        for _, p in pairs(ok and type(at) == 'table' and at or {}) do
+            if type(p) == 'table' and type(p.en) == 'string' and not seen[p.en] then
+                seen[p.en] = true
+                names[#names + 1] = p.en
+            end
+        end
+        table.sort(names)
+        phrases_json = json.encode({ phrases = json_array(names) })
+    end
+    send_and_close(conn, 200, phrases_json, 'application/json; charset=utf-8')
+end
+
+-- Send chat as if typed into the game's chat line.
+-- body: {"channel":"party","text":"hi"} or
+--       {"channel":"tell","to":"Name","text":"hi"}
+-- marker-wrapped auto-translate phrases decode to wire FD bytes
+routes['POST /api/chat'] = function(conn, req)
+    local channel = json_string(req.body or '', 'channel')
+    local text = json_string(req.body or '', 'text')
+    if not text or text == '' then
+        return send_json(conn, 400, { error = 'missing text' })
+    end
+    local wire, display = decode_outgoing_chat(text)
+    if channel == 'tell' then
+        local to = json_string(req.body or '', 'to')
+        if not to or to == '' then
+            return send_json(conn, 400, { error = 'tell requires to' })
+        end
+        windower.send_command('input /tell ' .. to .. ' ' .. wire)
+        -- sent tells don't echo back as packets — record the local half
+        -- of the DM so the thread shows both sides
+        push_chat({ channel = 'tell', peer = to, sender = player_name(), self = true, text = display })
+        return send_json(conn, 200, { ok = true })
+    end
+    local cmd = CHAT_SEND[channel]
+    if not cmd then
+        return send_json(conn, 400, { error = 'cannot send to ' .. tostring(channel) })
+    end
+    windower.send_command('input ' .. cmd .. ' ' .. wire)
+    -- the outgoing half may never come back as a packet — append it like
+    -- the tell path. pending_self guards against a real echo doubling it
+    local pend = pending_self[channel] or {}
+    pending_self[channel] = pend
+    pend[display] = os.time()
+    push_chat({ channel = channel, sender = player_name(), self = true, text = display })
+    send_json(conn, 200, { ok = true })
 end
 
 local function parse_request(conn)
@@ -1108,7 +1718,7 @@ local function start_server()
                 log('port ' .. base_port .. ' busy, using ' .. bound_port .. ' instead')
             end
             log('listening on http://127.0.0.1:' .. bound_port ..
-                ' - run //gsui open to launch the UI')
+                ' - run //xic open to launch the UI')
             return true
         end
     end
@@ -1155,14 +1765,17 @@ local function poll_state()
     end
 end
 
--- Heartbeat keeps EventSource connections alive through proxies.
+-- Heartbeat keeps EventSource connections alive through proxies and
+-- doubles as the client's liveness signal: it's a named `ping` event
+-- because EventSource swallows comment lines, so a bare ': ...' beat
+-- would keep the socket warm but tell the page nothing.
 local function heartbeat()
-    local now = os.clock()
+    local now = os.time()
     if now - heartbeat_at < 25 then return end
     heartbeat_at = now
     for _, conn in ipairs(conns) do
         if conn.sse and not conn.closed then
-            local ok = send_all(conn.sock, ': heartbeat\n\n')
+            local ok = send_all(conn.sock, 'event: ping\ndata: {}\n\n')
             if not ok then
                 conn.closed = true
                 pcall(function() conn.sock:close() end)
@@ -1181,6 +1794,12 @@ local function pump()
     if not ok2 then
         log_err('poll error: ' .. tostring(err2))
     end
+    if journal then
+        local ok3, err3 = pcall(journal.flush)
+        if not ok3 then
+            log_err('journal flush: ' .. tostring(err3))
+        end
+    end
     heartbeat()
 end
 
@@ -1195,10 +1814,11 @@ windower.register_event('incoming chunk', pump)
 -- spawn the overlay shell. fab=true launches the collapsed floating
 -- button (bundled exe only — no Electron fallback, it's too heavy to
 -- auto-spawn). Returns true if something was launched.
-local function launch_overlay(fab)
-    local exe = windower.addon_path .. 'overlay\\gsui-overlay.exe'
+local function launch_overlay(fab, extra)
+    local exe = windower.addon_path .. 'overlay\\xic-overlay.exe'
     if windower.file_exists(exe) then
-        os.execute('start "" "' .. exe .. '"' .. (fab and ' --fab' or ''))
+        os.execute('start "" "' .. exe .. '"' .. (fab and ' --fab' or '') ..
+            (extra and ' ' .. extra or ''))
         return true
     end
     if fab then return false end
@@ -1219,7 +1839,7 @@ windower.register_event('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | start | stop | status | port <n> | refresh | swap | equip <set>')
+        log('commands: open | overlay | fab | tracker | macrobar | start | stop | status | port <n> | refresh | swap | equip <set>')
     elseif cmd == 'open' then
         if server or start_server() then
             windower.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -1240,6 +1860,38 @@ windower.register_event('addon command', function(cmd, ...)
         elseif launch_overlay(true) then
             log('fab launched')
         end
+    elseif cmd == 'tracker' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.tracker = (sub == 'on')
+            config.save(settings)
+            log('auto-tracker ' .. (settings.tracker and 'enabled' or 'disabled'))
+            if settings.tracker and server and logged_in() then
+                launch_overlay(true, '--spawn /tracker')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /tracker') then
+            log('tracker launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'macrobar' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.macrobar = (sub == 'on')
+            config.save(settings)
+            log('auto-macrobar ' .. (settings.macrobar and 'enabled' or 'disabled'))
+            if settings.macrobar and server and logged_in() then
+                launch_overlay(true, '--spawn /macrobar')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /macrobar') then
+            log('macro bar launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
     elseif cmd == 'start' then
         start_server()
     elseif cmd == 'stop' then
@@ -1254,7 +1906,7 @@ windower.register_event('addon command', function(cmd, ...)
     elseif cmd == 'port' then
         local p = tonumber(args[1])
         if not p or p < 1 or p > 65535 then
-            log_err('usage: //gsui port <number>')
+            log_err('usage: //xic port <number>')
         else
             settings.port = p
             config.save(settings)
@@ -1274,14 +1926,14 @@ windower.register_event('addon command', function(cmd, ...)
     elseif cmd == 'equip' then
         local path = table.concat(args, ' ')
         if path == '' then
-            log_err('usage: //gsui equip <set path>  e.g. //gsui equip idle.Town')
+            log_err('usage: //xic equip <set path>  e.g. //xic equip idle.Town')
         elseif swapui then
             swapui.equip(path)
         else
             windower.send_command('gs equip ' .. path)
         end
     elseif cmd == 'swap' then
-        -- swapui is a headless scanner powering `//gsui equip` and the
+        -- swapui is a headless scanner powering `//xic equip` and the
         -- list/add/remove bookkeeping commands.
         local sub = (args[1] or ''):lower()
         if not swapui then
@@ -1305,33 +1957,94 @@ windower.register_event('addon command', function(cmd, ...)
                 log_err('swap remove: ' .. tostring(err))
             end
         else
-            log('usage: //gsui swap [scan|list|add <set>|remove <set>]')
+            log('usage: //xic swap [scan|list|add <set>|remove <set>]')
         end
     else
-        log('unknown command: ' .. cmd .. ' (try //gsui help)')
+        log('unknown command: ' .. cmd .. ' (try //xic help)')
     end
 end)
 
-windower.register_event('load', 'login', function()
-    if settings.autostart and not server then
-        start_server()
+-- Track the zoning blackout for overlay_hidden: 0x00B = zone-out begins,
+-- 0x00A = zone-in complete (the same packets pointwatch hides its box on).
+windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked then return end
+    if id == 0x00B then
+        zoning = true
+    elseif id == 0x00A then
+        zoning = false
     end
-    -- the floating button is always present while the addon is loaded —
-    -- on reload the running instance ignores --fab and just stays visible
-    if settings.fab and server then
-        launch_overlay(true)
-    end
+end)
+
+local function reset_state()
     pending_state = nil
     last_state_json = nil
     last_job_id = nil
+    -- new session = new chat context: a fresh boot marker makes
+    -- connected clients drop their stale seqs and resync
+    chat_threads = {}
+    tell_thread_order = {}
+    chat_seq = 0
+    chat_boot = math.random(0x7fffffff)
+    if journal then pcall(journal.reset) end
     if swapui then pcall(swapui.rescan) end
+end
+
+local function kill_overlay()
+    os.execute('taskkill /F /IM xic-overlay.exe >nul 2>nul')
+end
+
+local function session_start()
+    if settings.autostart and not server then
+        start_server()
+    end
+    reset_state()
+end
+
+-- the fab only exists while a character is in the world — spawn it on
+-- login (or on load while already logged in), kill it on logout
+local function spawn_fab()
+    -- on reload the running instance ignores --fab and just stays visible
+    if not settings.fab then
+        -- //xic fab off persists per character — say so instead of
+        -- silently skipping, a stale override reads as "fab didn't spawn"
+        log('auto-fab disabled for this character (//xic fab on to re-enable)')
+    elseif server then
+        launch_overlay(true)
+    end
+    -- the tracker lives on the same always-up layer as the fab — spawn
+    -- it alongside (the exe's --spawn goes through the single-instance
+    -- handoff, so a running overlay just opens the window)
+    if settings.tracker then
+        launch_overlay(true, '--spawn /tracker')
+    end
+    if settings.macrobar then
+        launch_overlay(true, '--spawn /macrobar')
+    end
+end
+
+windower.register_event('load', function()
+    session_start()
+    -- //lua load mid-session lands after login — spawn directly; at the
+    -- title screen 'login' picks it up instead
+    if logged_in() then
+        spawn_fab()
+    end
+end)
+
+windower.register_event('login', function()
+    session_start()
+    spawn_fab()
+end)
+
+windower.register_event('logout', function()
+    kill_overlay()
+    reset_state()
 end)
 
 windower.register_event('unload', function()
     stop_server()
     if swapui then pcall(swapui.destroy) end
-    -- take the overlay down with the addon — the fab is part of it
-    os.execute('taskkill /F /IM gsui-overlay.exe >nul 2>nul')
+    kill_overlay()
 end)
 
 if settings.autostart then

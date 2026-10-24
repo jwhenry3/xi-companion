@@ -51,16 +51,16 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gearswapui-${{ steps.v.outputs.version }}
-          path: dist/gearswapui-${{ steps.v.outputs.version }}.zip
+          name: xicompanion-${{ steps.v.outputs.version }}
+          path: dist/xicompanion-${{ steps.v.outputs.version }}.zip
           retention-days: 30
 
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.v.outputs.tag }}
-          name: GearSwap UI ${{ steps.v.outputs.tag }}
-          files: dist/gearswapui-${{ steps.v.outputs.version }}.zip
+          name: XI Companion ${{ steps.v.outputs.tag }}
+          files: dist/xicompanion-${{ steps.v.outputs.version }}.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

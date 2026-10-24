@@ -1,4 +1,4 @@
-// Electron shell for the GearSwap UI overlay.
+// Electron shell for the XI Companion overlay.
 //
 // A borderless, always-on-top window that loads the addon's HTTP server
 // (localhost:<port>). Clicks on the window belong to the UI; clicks outside
@@ -12,7 +12,7 @@ const { app, BrowserWindow } = require('electron');
 // own userData dir — the default 'Electron' profile can be left locked by
 // stray electron.exe processes, which shows up as cache_util 'Access denied'
 // and can pin the window to a stale disk cache
-app.setName('gearswapui-overlay');
+app.setName('xicompanion-overlay');
 
 // borderless always-on-top windows resize-crash some GPU driver stacks;
 // the overlay doesn't need GPU compositing anyway
@@ -69,7 +69,7 @@ function create() {
     // a borderless always-on-top window has no taskbar entry or chrome, so
     // re-assert z-order periodically in case the game pushes past it, and
     // give the user a hide key since there's nothing else to close it with
-    // (//gsui overlay / FAB re-shows it via the second-instance handler)
+    // (//xic overlay / FAB re-shows it via the second-instance handler)
     const keepTop = setInterval(() => {
         if (win.isDestroyed()) {
             clearInterval(keepTop);
@@ -103,7 +103,7 @@ function create() {
     });
 }
 
-// FAB clicks and //gsui overlay can fire repeatedly — focus the existing
+// FAB clicks and //xic overlay can fire repeatedly — focus the existing
 // window instead of stacking instances.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {

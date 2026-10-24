@@ -1,13 +1,13 @@
 {
-  "name": "gearswap-ui",
+  "name": "xi-companion",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:addon": "tsc --noEmit && vite build --outDir addon/gearswapui/ui --emptyOutDir",
-    "build:overlay": "cd overlay/wails && go build -tags production -ldflags \"-s -w -H windowsgui\" -o ../../addon/gearswapui/overlay/gsui-overlay.exe .",
+    "build:addon": "tsc --noEmit && vite build --outDir addon/xic/ui --emptyOutDir",
+    "build:overlay": "cd overlay/wails && go build -tags production -ldflags \"-s -w -H windowsgui\" -o ../../addon/xic/overlay/xic-overlay.exe .",
     "deploy": "node scripts/deploy.mjs",
     "package": "node scripts/package.mjs",
     "release": "npm run build:addon && npm run build:overlay && node scripts/package.mjs",
@@ -20,6 +20,7 @@
   "dependencies": {
     "@preact-mvc/core": "^0.1.0",
     "@preact/signals": "^1.3.0",
+    "@tanstack/query-core": "5.104.5",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-preact": "1.59.0",

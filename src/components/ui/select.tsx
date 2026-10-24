@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { CheckIcon, ChevronDownIcon } from 'lucide-preact';
 import { cn } from '@/lib/utils';
 
@@ -48,9 +48,17 @@ export function Select({
   const [open, setOpen] = useState(false);
   const [hl, setHl] = useState(0);
   const [query, setQuery] = useState('');
+  const [pos, setPos] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    minWidth: number;
+  } | null>(null);
+  const [listMaxH, setListMaxH] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const q = query.trim().toLowerCase();
   const visible = q
@@ -82,14 +90,60 @@ export function Select({
     close();
   };
 
+  // position:fixed escapes overflow containers (an absolute dropdown inside
+  // a scrollable pane would grow the scroll height and clip). Anchor to the
+  // trigger, take the roomier side, and cap the list to what actually fits —
+  // a window-edge clip can't be scrolled into view.
+  const openList = () => {
+    const r = rootRef.current?.getBoundingClientRect();
+    if (r) {
+      const filterH = filterable ? 33 : 0;
+      const estH = filterH + Math.min(240, rows.length * 30 + 8);
+      // space available on each side (margin + list's p-1 padding budgeted)
+      const below = window.innerHeight - r.bottom - 8 - filterH;
+      const above = r.top - 8 - filterH;
+      const up = below < estH && above > below;
+      setListMaxH(Math.max(48, Math.min(240, (up ? above : below) - 8)));
+      setPos({
+        left: Math.max(4, r.left),
+        minWidth: r.width,
+        ...(up
+          ? { bottom: window.innerHeight - r.top + 4 }
+          : { top: r.bottom + 4 }),
+      });
+    }
+    setOpen(true);
+  };
+
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) close();
     };
     document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
+    // fixed dropdown doesn't scroll with its trigger — close on outside
+    // scrolls, but ignore the dropdown's own (listbox wheel, and the
+    // scrollIntoView fired when a hovered row highlights)
+    const onScroll = (e: Event) => {
+      if (contentRef.current?.contains(e.target as Node)) return;
+      close();
+    };
+    document.addEventListener('scroll', onScroll, { capture: true });
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('scroll', onScroll, { capture: true });
+    };
   }, [open]);
+
+  // clamp horizontally once the real (w-max) width is known
+  useLayoutEffect(() => {
+    if (!open || !pos) return;
+    const dd = contentRef.current;
+    if (!dd) return;
+    const over = dd.getBoundingClientRect().right - (window.innerWidth - 4);
+    if (over > 0)
+      setPos((p) => p && { ...p, left: Math.max(4, p.left - over) });
+  }, [open, pos]);
 
   useEffect(() => {
     if (open) {
@@ -117,7 +171,7 @@ export function Select({
     if (!open) {
       if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        setOpen(true);
+        openList();
       }
       return;
     }
@@ -155,16 +209,23 @@ export function Select({
           'flex h-8 w-full items-center justify-between gap-1.5 whitespace-nowrap rounded-lg border border-input bg-transparent py-2 pl-2.5 pr-2 text-sm outline-none transition-colors select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50',
           !label && 'text-muted-foreground',
         )}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? close() : openList())}
       >
         <span className="line-clamp-1 flex-1 text-left">{label || placeholder}</span>
         <ChevronDownIcon className="size-4 text-muted-foreground" />
       </button>
 
-      {open && (
+      {open && pos && (
         <div
+          ref={contentRef}
           data-slot="select-content"
-          className="absolute isolate z-50 mt-1 w-max min-w-full overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10"
+          className="fixed isolate z-50 w-max max-w-[calc(100vw-8px)] overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10"
+          style={{
+            left: `${pos.left}px`,
+            minWidth: `${pos.minWidth}px`,
+            ...(pos.top != null ? { top: `${pos.top}px` } : {}),
+            ...(pos.bottom != null ? { bottom: `${pos.bottom}px` } : {}),
+          }}
         >
           {filterable && (
             <input
@@ -178,7 +239,12 @@ export function Select({
               }}
             />
           )}
-          <div ref={listRef} role="listbox" className="max-h-60 overflow-y-auto p-1">
+          <div
+            ref={listRef}
+            role="listbox"
+            className="max-h-60 overflow-y-auto p-1"
+            style={listMaxH != null ? { maxHeight: `${listMaxH}px` } : undefined}
+          >
             {rows.length === 0 && (
               <p className="px-1.5 py-2 text-xs text-muted-foreground">no options</p>
             )}

@@ -1,10 +1,42 @@
 // Floating action button — what the overlay renders while the shell is in
 // fab mode (56px window). Click expands to the full UI, drag repositions,
 // right-click quits the overlay process.
-import { SettingsIcon } from 'lucide-preact';
 import { host } from './core/host';
 
 const DRAG_THRESHOLD = 4; // px of movement before a press becomes a drag
+
+// "XIC" in the FFXI wordmark style — Cinzel Bold (Trajan clone,
+// bundled in assets/fonts) with the logo's gold metallic gradient over
+// a dark edge. paint-order=stroke keeps the outline behind the fill.
+function XicLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <defs>
+        <linearGradient id="xic-gold" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#f9e7a8" />
+          <stop offset="0.45" stop-color="#e0b64f" />
+          <stop offset="1" stop-color="#8a5f14" />
+        </linearGradient>
+      </defs>
+      <text
+        x="12"
+        y="17.8"
+        text-anchor="middle"
+        font-family="'Cinzel', 'Times New Roman', serif"
+        font-weight="700"
+        font-size="14.5"
+        textLength="20.5"
+        lengthAdjust="spacingAndGlyphs"
+        fill="url(#xic-gold)"
+        stroke="#171106"
+        stroke-width="0.7"
+        paint-order="stroke"
+      >
+        XIC
+      </text>
+    </svg>
+  );
+}
 
 export function Fab() {
   let dragging = false;
@@ -47,15 +79,15 @@ export function Fab() {
   return (
     <div
       class="grid h-screen w-screen cursor-default place-items-center bg-transparent"
-      title="GearSwap UI — click to open · drag to move · right-click to quit"
+      title="XI Companion — click to open · drag to move · right-click to quit"
       onContextMenu={onContextMenu}
     >
       <button
-        class="grid h-12 w-12 cursor-pointer place-items-center rounded-full bg-slate-800 text-sky-400 shadow-lg shadow-black/60 ring-1 ring-slate-600 transition hover:bg-slate-700 hover:text-sky-300"
+        class="grid h-12 w-12 cursor-pointer place-items-center rounded-full bg-slate-800 shadow-lg shadow-black/60 ring-1 ring-slate-600 transition hover:bg-slate-700"
         onMouseDown={onMouseDown}
         onClick={onClick}
       >
-        <SettingsIcon size={24} />
+        <XicLogo size={34} />
       </button>
     </div>
   );

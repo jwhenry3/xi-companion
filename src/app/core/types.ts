@@ -107,3 +107,138 @@ export interface MacroState {
   logged_in: boolean;
   characters: MacroCharacter[];
 }
+
+// ---------- chat ----------
+
+export interface ChatMessage {
+  /** monotonic server-side sequence */
+  seq: number;
+  /** per-addon-load marker — changes on reload so clients resync */
+  boot?: number;
+  /** channel key: say|shout|yell|party|linkshell|linkshell2|unity|emote|assist|tell */
+  channel: string;
+  /** sender name (for inbound tells this is the peer) */
+  sender?: string;
+  /** tell only: the other party — sender inbound, target outbound */
+  peer?: string;
+  text: string;
+  /** unix seconds */
+  ts?: number;
+  /** sent via this UI (server-side local echo — tells only) */
+  self?: boolean;
+}
+
+export interface ChatHistory {
+  seq: number;
+  boot?: number;
+  messages: ChatMessage[];
+}
+
+// ---------- journal (quests / missions / records of eminence) ----------
+
+/** per-record metadata from journal_names.lua (extracted from client DATs) */
+export interface JournalNameEntry {
+  /** display name */
+  n: string;
+  /** repeatable flag ('+' prefixed in the client table) */
+  r?: number;
+  /** client/summary text */
+  d?: string;
+  /** RoE target count (objective goal) */
+  t?: number;
+  /** RoE subcategory id (key into roe_categories / a roe_tree child) */
+  c?: number;
+  /** sub-stage names for mission records (in order) */
+  s?: string[];
+}
+
+export interface JournalNameGroup {
+  name: string;
+  /** log id -> record; ids are the packet bit positions / mission pointers */
+  ids: Record<string, JournalNameEntry>;
+}
+
+export interface JournalNames {
+  quest_areas: Record<string, JournalNameGroup>;
+  mission_lines: Record<string, JournalNameGroup>;
+  /** RoE objective id -> record */
+  roe: Record<string, JournalNameEntry>;
+  /** category id (top-level or subcategory) -> display name */
+  roe_categories: Record<string, string>;
+  /** the client's menu tree: top category id -> ordered subcategory ids */
+  roe_tree?: Record<string, number[]>;
+  /** training regime pages by zone display name (bg-wiki extract) */
+  regimes?: {
+    fov?: Record<string, RegimePage[]>;
+    gov?: Record<string, RegimePage[]>;
+  };
+}
+
+export interface RegimePage {
+  page: number;
+  desc: string;
+  needs: number[];
+  low: number;
+  high: number;
+}
+
+export interface JournalQuestArea {
+  current: number[];
+  done: number[];
+}
+
+export interface JournalMissionLine {
+  /** current mission pointer (mapped id for cop/soa/rov), null = none */
+  current: number | null;
+  /** ids set via completed bitfields where the client exposes them */
+  done: number[];
+  /** true when the storyline has no completion packet — the UI treats
+   *  every record id below `current` as completed */
+  inferred_done?: boolean;
+}
+
+export interface JournalRoeObjective {
+  id: number;
+  progress: number;
+  limited?: boolean;
+}
+
+export interface JournalValor {
+  kind: 'fov' | 'gov';
+  zone: number;
+  zone_name?: string;
+  page: number;
+  /** objective text, e.g. '5 Scarab Beetles + 1 Forest Funguar' */
+  desc?: string;
+  /** required count per objective */
+  needs: number[];
+  /** live kill progress per objective */
+  killed: number[];
+  low?: number;
+  high?: number;
+  done?: boolean;
+  /** server-side regime id, when a menu echo revealed it */
+  regime?: number;
+  accepted?: number;
+  /** last progress message that didn't match a known objective */
+  last?: { killed: number; needed: number };
+}
+
+export interface JournalState {
+  char: string | null;
+  nation?: number | null;
+  updated: number;
+  quests: Record<string, JournalQuestArea>;
+  missions: Record<string, JournalMissionLine>;
+  roe: {
+    active: JournalRoeObjective[];
+    done: number[];
+  };
+  /** active Fields/Grounds of Valor training regime, if any */
+  valor?: JournalValor | null;
+  /** tabs currency from the 0x113 currency packet */
+  valor_points?: number;
+  /** 'kind:key:id' entries hidden from the detached tracker window —
+   *  everything is tracked by default until the player disables it */
+  untracked?: string[];
+}

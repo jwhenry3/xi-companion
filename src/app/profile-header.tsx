@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 /**
  * Profile scope header shared by the Sets and Bindings tabs — the file
  * picker selects which GearSwap profile's managed section is being edited,
- * and save flushes every dirty profile's <gearswapui sets> block.
+ * and save flushes every dirty profile's <xic sets> block.
  */
 @Component()
 export class ProfileHeader extends View {

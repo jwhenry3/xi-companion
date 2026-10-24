@@ -1,4 +1,4 @@
-module gsui-overlay
+module xic-overlay
 
 go 1.26.0
 

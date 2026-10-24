@@ -1,5 +1,5 @@
 // Zip the shippable addon tree for distribution — extracting into a
-// Windower addons/ dir gives a ready-to-load gearswapui addon.
+// Windower addons/ dir gives a ready-to-load xic addon.
 //   node scripts/package.mjs
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -8,17 +8,17 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
-const src = path.join(root, 'addon', 'gearswapui');
+const src = path.join(root, 'addon', 'xic');
 // GSUI_VERSION lets CI name the zip after the git tag instead of the
 // package.json version (which may lag behind tags).
 const version =
   process.env.GSUI_VERSION ||
   JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
-const zip = path.join(root, 'dist', `gearswapui-${version}.zip`);
+const zip = path.join(root, 'dist', `xicompanion-${version}.zip`);
 
 for (const [what, p] of [
   ['ui bundle', path.join(src, 'ui', 'index.html')],
-  ['overlay shell', path.join(src, 'overlay', 'gsui-overlay.exe')],
+  ['overlay shell', path.join(src, 'overlay', 'xic-overlay.exe')],
 ]) {
   if (!existsSync(p)) {
     console.error(`${what} missing at ${p}`);

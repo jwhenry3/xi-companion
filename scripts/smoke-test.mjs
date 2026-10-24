@@ -1,4 +1,4 @@
-// End-to-end smoke test for addon/gearswapui/gearswapui.lua.
+// End-to-end smoke test for addon/xic/xic.lua.
 //
 // Runs the real addon under fengari (Lua 5.3 in JS) with stubbed windower /
 // res / config globals and a `socket` module backed by node:net, then drives
@@ -6,7 +6,7 @@
 
 import { strict as assert } from 'node:assert';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync, readFileSync, openSync, closeSync, fstatSync, readSync, writeSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync, readFileSync, openSync, closeSync, fstatSync, readSync, writeSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,13 +15,13 @@ import { lua, lauxlib, lualib, to_luastring, to_jsstring } from 'fengari';
 const { LUA_REGISTRYINDEX, LUA_OK, LUA_MULTRET, LUA_TSTRING, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TFUNCTION, LUA_TTABLE } = lua;
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const addonDir = join(repoRoot, 'addon', 'gearswapui');
-const addonFile = join(addonDir, 'gearswapui.lua');
+const addonDir = join(repoRoot, 'addon', 'xic');
+const addonFile = join(addonDir, 'xic.lua');
 const uiDir = join(addonDir, 'ui');
 assert.ok(existsSync(join(uiDir, 'index.html')), 'run `npm run build:addon` first — ui/index.html missing');
 
 // Fake Windower root with a GearSwap data dir.
-const fakeRoot = mkdtempSync(join(tmpdir(), 'gsui-'));
+const fakeRoot = mkdtempSync(join(tmpdir(), 'xic-'));
 const gsData = join(fakeRoot, 'addons', 'GearSwap', 'data');
 mkdirSync(gsData, { recursive: true });
 writeFileSync(join(gsData, 'DUMMY.lua'), '-- dummy\n');
@@ -128,11 +128,27 @@ function push(v) {
   return 1;
 }
 
+// lua bytes -> js string: utf-8 when valid, byte-faithful latin1 when not
+// (wire FD bytes etc. would otherwise throw in to_jsstring)
+function jsstr(u8) {
+  try {
+    return to_jsstring(u8);
+  } catch {
+    return Array.from(u8, (b) => String.fromCharCode(b)).join('');
+  }
+}
+
 function jsval(i) {
   const t = lua.lua_type(L, i);
   if (t === LUA_TNUMBER) return lua.lua_tonumberx(L, i, null);
   if (t === LUA_TBOOLEAN) return lua.lua_toboolean(L, i);
-  if (t === LUA_TSTRING) return to_jsstring(lauxlib.luaL_tolstring(L, i, null));
+  if (t === LUA_TSTRING) {
+    const s = jsstr(lauxlib.luaL_tolstring(L, i, null));
+    // luaL_tolstring pushes a copy like its C counterpart — drop it so
+    // callers iterating with lua_next keep a balanced stack
+    lua.lua_pop(L, 1);
+    return s;
+  }
   return null;
 }
 
@@ -191,6 +207,7 @@ function wrapClient(c) {
       const i = jsval(3) ?? 1;
       const bytes = Buffer.from(data.subarray(i - 1));
       try {
+        if (c.destroyed) throw new Error('destroyed');
         c.write(bytes);
         lua.lua_pushnumber(L, i - 1 + bytes.length); // last index written
         return 1;
@@ -212,7 +229,12 @@ const socketModule = {
     const port = lua.lua_tonumberx(L, 2, null);
     const srv = createServer();
     const pending = [];
-    srv.on('connection', (c) => pending.push(c));
+    // writes to dead sockets emit async 'error' events — swallow them;
+    // lua-side failure is reported through send()'s nil+err return
+    srv.on('connection', (c) => {
+      c.on('error', () => {});
+      pending.push(c);
+    });
     try {
       srv.listen(port, host);
     } catch (e) {
@@ -268,9 +290,19 @@ const ITEM = {
 
 const resModule = {
   items: ITEM,
+  item_descriptions: {
+    12345: { id: 12345, en: 'DEF:45 HP+30 STR+6\nTest helm flavor text.' },
+  },
   jobs: { 1: { ens: 'WAR', en: 'Warrior' }, 13: { ens: 'NIN', en: 'Ninja' } },
   slots: { 0: { en: 'Main' }, 1: { en: 'Sub' }, 4: { en: 'Head' } },
   bags: {},
+  zones: {
+    100: { id: 100, en: 'West Ronfaure' },
+    166: { id: 166, en: 'Ranguemont Pass' },
+  },
+  auto_translates: {
+    267: { id: 267, en: 'Hello!', ja: 'こんにちは。' },
+  },
 };
 
 const bags = {
@@ -292,6 +324,8 @@ const bags = {
 const BAG_KEYS = { 0: 'inventory', 1: 'safe', 8: 'wardrobe' };
 
 let loggedIn = false;
+// npc/mob index -> entity (manual/tome names drive regime capture)
+const mobs = {};
 
 const windower = {
   addon_path: addonDir + '\\',
@@ -314,6 +348,7 @@ const windower = {
       const b = bags[id];
       return b ? { enabled: b.enabled, max: b.max, count: b.count } : null;
     }),
+    get_mob_by_index: fn((i) => mobs[i] ?? null),
     get_items: fn((id) => {
       if (id == null) {
         const all = {};
@@ -376,7 +411,7 @@ function fireEvent(name, ...args) {
     for (const a of args) push(a);
     const rc2 = lua.lua_pcall(L, args.length, 1, 0);
     if (rc2 !== LUA_OK) {
-      const msg = to_jsstring(lauxlib.luaL_tolstring(L, -1, null));
+      const msg = jsstr(lauxlib.luaL_tolstring(L, -1, null));
       lua.lua_pop(L, 2); // error object + converted copy
       throw new Error(`event ${name} failed: ${msg}`);
     }
@@ -439,6 +474,47 @@ push(socketModule);
 lua.lua_setfield(L, -2, to_luastring('socket'));
 push(resModule);
 lua.lua_setfield(L, -2, to_luastring('resources'));
+// packets.new('outgoing', id, {fields}) / packets.inject(p) — capture
+// the injected packets so RoE mark/unmark can be asserted
+const injectedPackets = [];
+push({
+  new: (L) => {
+    const dir = jsval(1);
+    const id = jsval(2);
+    const fields = {};
+    if (lua.lua_type(L, 3) === LUA_TTABLE) {
+      lua.lua_pushnil(L);
+      while (lua.lua_next(L, 3) !== 0) {
+        const k = jsval(-2);
+        fields[k == null ? '?' : String(k)] = jsval(-1);
+        lua.lua_pop(L, 1);
+      }
+    }
+    return push({ dir, id, fields });
+  },
+  inject: (L) => {
+    const p = {};
+    for (const k of ['dir', 'id']) {
+      lua.lua_getfield(L, 1, to_luastring(k));
+      p[k] = jsval(-1);
+      lua.lua_pop(L, 1);
+    }
+    lua.lua_getfield(L, 1, to_luastring('fields'));
+    p.fields = {};
+    if (lua.lua_type(L, -1) === LUA_TTABLE) {
+      lua.lua_pushnil(L);
+      while (lua.lua_next(L, -2) !== 0) {
+        const k = jsval(-2);
+        p.fields[k == null ? '?' : String(k)] = jsval(-1);
+        lua.lua_pop(L, 1);
+      }
+    }
+    lua.lua_pop(L, 1);
+    injectedPackets.push(p);
+    return 0;
+  },
+});
+lua.lua_setfield(L, -2, to_luastring('packets'));
 push({
   load: (L) => {
     lua.lua_pushvalue(L, 1); // return the defaults table unchanged
@@ -519,7 +595,7 @@ await step(5);
   const p = fetch(`${base}/api/status`).then((r) => r.json());
   await step(5);
   const j = await p;
-  assert.equal(j.addon, 'gearswapui');
+  assert.equal(j.addon, 'xic');
   assert.equal(j.port, port);
   console.log('PASS /api/status');
 }
@@ -546,6 +622,50 @@ await step(5);
   const sword = inv.items.find((i) => i.id === 22222);
   assert.equal(sword.equipped, true);
   console.log('PASS /api/state');
+}
+
+// /api/itemmeta — lazy per-id meta + client description (kept out of the
+// SSE catalog so broadcasts stay small)
+{
+  const p = fetch(`${base}/api/itemmeta?id=12345`).then((r) => r.json());
+  await step(5);
+  const j = await p;
+  assert.equal(j.name, 'Test Helm');
+  assert.ok(j.description?.includes('DEF:45'), 'description missing: ' + JSON.stringify(j));
+  const p2 = fetch(`${base}/api/itemmeta?id=99999`);
+  await step(5);
+  assert.equal((await p2).status, 404, 'unknown item should 404');
+  console.log('PASS /api/itemmeta');
+}
+
+// POST /api/item unequip — no /unequip client command, so the addon
+// injects an equip packet (0x050) with Item Index 0 (GearSwap's own
+// unequip encoding). Slot names map via UNEQUIP_SLOT.
+{
+  const before = injectedPackets.length;
+  const p = fetch(`${base}/api/item`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'unequip', slot: 'l.ring' }),
+  }).then((r) => r.json());
+  await step(5);
+  const j = await p;
+  assert.equal(j.ok, true, 'unequip failed: ' + JSON.stringify(j));
+  const pk = injectedPackets[injectedPackets.length - 1];
+  assert.ok(injectedPackets.length > before, 'no packet injected');
+  assert.equal(pk.dir, 'outgoing');
+  assert.equal(pk.id, 0x050, 'expected equip packet 0x050');
+  assert.equal(pk.fields['Item Index'], 0, 'unequip = empty Item Index');
+  assert.equal(pk.fields['Equip Slot'], 13, 'l.ring = slot 13');
+
+  const bad = fetch(`${base}/api/item`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'unequip', slot: 'bogus' }),
+  });
+  await step(5);
+  assert.equal((await bad).status, 400, 'bad slot should 400');
+  console.log('PASS POST /api/item unequip');
 }
 
 // static index + SPA fallback
@@ -680,7 +800,7 @@ await step(5);
   // record 19 name sits at 28 + 19*380 + 366
   const last = 28 + 19 * 380 + 366;
   assert.equal(img.subarray(last, last + 8).toString('latin1').replace(/\0+$/, ''), 'Last');
-  assert.ok(existsSync(join(macroDir, 'mcr10.dat.gsui-bak')), 'no backup written');
+  assert.ok(existsSync(join(macroDir, 'mcr10.dat.xic-bak')), 'no backup written');
   console.log('PASS PUT /api/macros/palette');
 
   // PUT to a brand-new palette index creates mcr20.dat
@@ -762,6 +882,45 @@ await step(5);
   console.log('PASS apply (book-switch dance)');
 }
 
+// POST /api/macros/run replays a cell's lines through `input`; stored
+// AT phrases are re-encoded to their raw FD wire bytes
+{
+  const pr1 = fetch(`${base}/api/macros/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ char: 'deadbee', index: 0, cell: 0 }),
+  }).then((r) => r.json());
+  await step(3);
+  const jr1 = await pr1;
+  assert.equal(jr1.ok, true);
+  assert.equal(
+    commands[commands.length - 1],
+    'input /say hello',
+    'macro line not sent: ' + JSON.stringify(commands[commands.length - 1]),
+  );
+  const pr2 = fetch(`${base}/api/macros/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ char: 'deadbee', index: 0, cell: 1 }),
+  }).then((r) => r.json());
+  await step(3);
+  await pr2;
+  assert.equal(
+    commands[commands.length - 1],
+    'input ý\x02\x02\x12\x34ý rest',
+    'AT bytes not re-encoded: ' + JSON.stringify(commands[commands.length - 1]),
+  );
+  const pr3 = fetch(`${base}/api/macros/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ char: 'deadbee', index: 0, cell: 20 }),
+  }).then((r) => r.json());
+  await step(3);
+  const jr3 = await pr3;
+  assert.ok(jr3.error, 'out-of-range cell accepted');
+  console.log('PASS POST /api/macros/run');
+}
+
 // SSE: receive the initial snapshot event
 {
   const ctrl = new AbortController();
@@ -788,7 +947,7 @@ await step(5);
   console.log('PASS SSE /api/events');
 }
 
-// //gsui open command fires open_url
+// //xic open command fires open_url
 function addonCmd(...args) {
   const refs = events.get('addon command') ?? [];
   assert.ok(refs.length > 0);
@@ -828,8 +987,480 @@ function addonCmd(...args) {
   addonCmd('swap', 'list');
   assert.ok(chats.join('\n').includes('defense.MDT *'), 'custom set not listed');
   addonCmd('swap');
-  assert.ok(chats.join('\n').includes('usage: //gsui swap'), 'bare swap did not print usage');
+  assert.ok(chats.join('\n').includes('usage: //xic swap'), 'bare swap did not print usage');
   console.log('PASS swap scanner + commands');
+}
+
+// chat: incoming 0x017 packets parse into the log; POST sends via input /
+{
+  const chatPacket = (mode, name, text) => {
+    const b = [0x17, 0x40, 0x00, 0x00]; // header
+    b.push(mode, 0, 0, 0); // mode, gm, padding
+    for (let i = 0; i < 15; i++) b.push(i < name.length ? name.charCodeAt(i) : 0);
+    for (const c of text) b.push(c.charCodeAt(0));
+    b.push(0);
+    return new Uint8Array(b); // raw bytes — a JS string would be UTF-8-encoded
+  };
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Allymate', 'hello party'));
+  fireEvent('incoming chunk', 0x017, chatPacket(3, 'Someguy', 'psst'));
+  fireEvent('incoming chunk', 0x017, chatPacket(200, '', 'system junk ignored'));
+  // auto-translate phrases decode via res.auto_translates (6-byte run:
+  // FD <type> <lang> <id hi> <id lo> FD — the wire id is big-endian,
+  // so "Hello!" (id 267 = 0x010B) arrives as 01 0B)
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'well \xFD\x02\x02\x01\x0B\xFD met'));
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'unk \xFD\x02\x02\xFF\x7F\xFD id'));
+  // malformed content: truncated/lone auto-translate runs and high bytes
+  // must not throw or kill the routing path
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Trouble', 'hi \xFD\x02\x01\x02\xFD there'));
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Trouble', 'ends with lone \xFD'));
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Trouble', 'raw \x9F\xA0 bytes'));
+  await step(3);
+
+  const cp = fetch(`${base}/api/chat`).then((r) => r.json());
+  await step(3);
+  const j = await cp;
+  const ally = j.messages.find((m) => m.sender === 'Allymate');
+  assert.ok(ally && ally.channel === 'party' && ally.text === 'hello party',
+    'party packet not parsed: ' + JSON.stringify(j.messages));
+  const tell = j.messages.find((m) => m.sender === 'Someguy');
+  assert.ok(tell && tell.channel === 'tell' && tell.peer === 'Someguy',
+    'tell packet missing peer');
+  assert.ok(!j.messages.some((m) => m.text === 'system junk ignored'),
+    'unknown mode leaked into chat log');
+  const hello = j.messages.find((m) => m.text === 'well {Hello!} met');
+  assert.ok(hello, 'auto-translate phrase not decoded: ' + JSON.stringify(j.messages));
+  const unk = j.messages.find((m) => m.text === 'unk {AT:0202ff7f} id');
+  assert.ok(unk, 'unknown auto-translate id lost: ' + JSON.stringify(j.messages));
+  const at = j.messages.find((m) => m.text === 'hi {AT} there');
+  assert.ok(at, 'auto-translate run not collapsed: ' + JSON.stringify(j.messages));
+  const lone = j.messages.find((m) => m.text === 'ends with lone {AT}');
+  assert.ok(lone, 'unterminated auto-translate mangled message: ' + JSON.stringify(j.messages));
+  assert.ok(j.messages.some((m) => m.text === 'raw  bytes' || m.text === 'raw bytes'),
+    'high-byte message dropped: ' + JSON.stringify(j.messages));
+  assert.ok(typeof j.boot === 'number' && j.boot > 0, 'boot marker missing');
+  assert.ok(j.messages.every((m) => m.boot === j.boot), 'message boot mismatch');
+  console.log('PASS chat intercept + GET /api/chat');
+
+  // send side: channel -> input /<cmd>; tell needs `to` + local echo
+  const cmdsBefore = commands.length;
+  const p1 = fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'linkshell', text: 'ls test' }),
+  }).then((r) => r.json());
+  await step(3);
+  await p1;
+  const p2 = fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'tell', to: 'Someguy', text: 'back at you' }),
+  }).then((r) => r.json());
+  await step(3);
+  await p2;
+  assert.deepEqual(commands.slice(cmdsBefore), [
+    'input /linkshell ls test',
+    'input /tell Someguy back at you',
+  ]);
+  const cp2 = fetch(`${base}/api/chat`).then((r) => r.json());
+  await step(3);
+  const j2 = await cp2;
+  const echo = j2.messages.find((m) => m.self === true && m.channel === 'tell');
+  assert.ok(echo && echo.peer === 'Someguy' &&
+    echo.text === 'back at you', 'tell local echo missing');
+  // channel sends append locally too — the server doesn't echo them back
+  const lsEcho = j2.messages.find(
+    (m) => m.self === true && m.channel === 'linkshell' && m.text === 'ls test',
+  );
+  assert.ok(lsEcho, 'channel local echo missing: ' + JSON.stringify(j2.messages));
+  // …but if a real echo DOES land with our name+text inside the window,
+  // the optimistic append must not double
+  fireEvent('incoming chunk', 0x017, chatPacket(5, 'Tester', 'ls test'));
+  await step(3);
+  const cp3 = fetch(`${base}/api/chat`).then((r) => r.json());
+  await step(3);
+  const lsDupes = (await cp3).messages.filter(
+    (m) => m.channel === 'linkshell' && m.text === 'ls test',
+  );
+  assert.equal(lsDupes.length, 1, 'echo doubled the optimistic append');
+
+  // auto-translate braces ({Hello!}) decode to FD wire bytes —
+  // the harness converts lua strings byte-faithfully (latin1) so 0xFD
+  // arrives as ý
+  const p3 = fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'party', text: 'hi {Hello!}' }),
+  }).then((r) => r.json());
+  await step(3);
+  await p3;
+  const atCmd = commands[commands.length - 1];
+  assert.equal(
+    atCmd,
+    'input /party hi ý\x02\x02\x01\x0Bý',
+    'braced phrase not wire-encoded: ' + JSON.stringify(atCmd),
+  );
+  // braces that don't resolve to a phrase pass through as literal text
+  const p4 = fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'say', text: 'a {nope} b' }),
+  }).then((r) => r.json());
+  await step(3);
+  await p4;
+  assert.equal(
+    commands[commands.length - 1],
+    'input /say a {nope} b',
+    'literal braces mangled: ' + JSON.stringify(commands[commands.length - 1]),
+  );
+
+  // the phrases endpoint feeds the composer's autocomplete
+  const pp = fetch(`${base}/api/chat/phrases`).then((r) => r.json());
+  await step(3);
+  const pj = await pp;
+  assert.ok(pj.phrases.includes('Hello!'), 'phrases missing Hello!');
+  console.log('PASS POST /api/chat');
+}
+
+// journal: 0x056 quest/mission log + 0x111/0x112 RoE packets feed
+// /api/journal; /api/journal/names serves the extracted DAT tables
+{
+  // drop any persisted state left by a previous run so the assertions
+  // below see exactly what these packets produce
+  const journalDir = join(addonDir, 'data', 'journal');
+  rmSync(journalDir, { recursive: true, force: true });
+
+  // subtype u16 lives at packet offset 0x24; log bitfields start at 0x04
+  const logPacket = (subtype, fields = {}, bits = [], bitOff = 4, bitLen = 32) => {
+    const b = new Uint8Array(0x44);
+    b[0] = 0x56;
+    for (const [off, v] of Object.entries(fields)) {
+      const o = Number(off);
+      b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff;
+      b[o + 2] = (v >> 16) & 0xff; b[o + 3] = (v >> 24) & 0xff;
+    }
+    for (const bit of bits) b[bitOff + (bit >> 3)] |= 1 << (bit & 7);
+    b[0x24] = subtype & 0xff;
+    b[0x25] = (subtype >> 8) & 0xff;
+    return b.subarray(0, Math.max(0x26, bitOff + bitLen));
+  };
+
+  // current + completed San d'Oria quests: 3 = "The Pickpocket",
+  // 5 = "The Seamstress" current; 0 = "A Sentry's Peril" done
+  fireEvent('incoming chunk', 0x056, logPacket(0x0050, {}, [3, 5]));
+  fireEvent('incoming chunk', 0x056, logPacket(0x0090, {}, [0]));
+  // current missions: nation=Bastok(1) rank 5, COP pointer 118, ROV none
+  fireEvent('incoming chunk', 0x056, logPacket(0xffff, {
+    0x04: 1,       // nation
+    0x08: 5,       // current nation mission
+    0x10: 118,     // current COP mission (mapped id)
+    0x18: 0x21,    // acp nibble = 1, mkd nibble = 2
+    0x1c: -1 >>> 0, // soa: none
+    0x20: 210,     // rov current
+  }));
+  // RoE active objectives: slot 0 = id 100 progress 7,
+  // limited-time slot = id 200 progress 3
+  {
+    const b = new Uint8Array(0x104);
+    b[0] = 0x11; b[1] = 0x01;
+    const put = (o, id, progress) => {
+      const v = progress * 4096 + id;
+      b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff;
+      b[o + 2] = (v >> 16) & 0xff; b[o + 3] = (v >> 24) & 0xff;
+    };
+    put(4, 100, 7);
+    put(0x100, 200, 3);
+    fireEvent('incoming chunk', 0x111, b);
+  }
+  // RoE completion pages: order 0 bit 5, order 2 bit 12
+  {
+    const page = (order, bits) => {
+      const b = new Uint8Array(0x88);
+      b[0] = 0x12; b[1] = 0x01;
+      for (const bit of bits) b[4 + (bit >> 3)] |= 1 << (bit & 7);
+      b[0x84] = order & 0xff; b[0x85] = (order >> 8) & 0xff;
+      return b;
+    };
+    fireEvent('incoming chunk', 0x112, page(0, [5]));
+    fireEvent('incoming chunk', 0x112, page(2, [12]));
+  }
+  await step(3);
+
+  const jp = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  const j = await jp;
+  assert.equal(j.char, 'Tester');
+  assert.deepEqual(j.quests.sandoria.current, [3, 5], 'current quests wrong');
+  assert.deepEqual(j.quests.sandoria.done, [0], 'done quests wrong');
+  assert.equal(j.missions.bastok.current, 5, 'nation mission wrong');
+  assert.equal(j.missions.cop.current, 118, 'cop pointer wrong');
+  assert.equal(j.missions.cop.inferred_done, true, 'cop should infer done');
+  assert.equal(j.missions.acp.current, 1, 'acp nibble wrong');
+  assert.equal(j.missions.mkd.current, 2, 'mkd nibble wrong');
+  assert.equal(j.missions.rov.current, 210, 'rov pointer wrong');
+  assert.ok(j.missions.soa == null || j.missions.soa.current == null,
+    'soa should have no mission');
+  assert.equal(j.roe.active.length, 2, 'roe active count wrong');
+  assert.deepEqual(
+    j.roe.active.find((a) => a.id === 100),
+    { id: 100, progress: 7 },
+    'roe objective wrong',
+  );
+  assert.equal(j.roe.active[1].id, 200, 'limited objective missing');
+  assert.equal(j.roe.active[1].limited, true, 'limited flag missing');
+  assert.ok(j.roe.done.includes(5) && j.roe.done.includes(2060),
+    'roe done bits wrong: ' + JSON.stringify(j.roe.done));
+  console.log('PASS journal packets + GET /api/journal');
+
+  // persisted state should survive: the file must exist and a reload-free
+  // second fetch must see the same data
+  assert.ok(existsSync(join(journalDir, 'Tester.lua')), 'journal not persisted');
+
+  const np = fetch(`${base}/api/journal/names`).then((r) => r.json());
+  await step(3);
+  const n = await np;
+  assert.equal(n.quest_areas.sandoria.ids['3'].n, 'The Pickpocket');
+  assert.equal(n.quest_areas.sandoria.ids['5'].n, 'The Seamstress');
+  assert.ok(n.mission_lines.cop.name.length > 0, 'cop storyline missing');
+  assert.ok(Object.keys(n.roe).length > 1000, 'roe table too small');
+  assert.ok(Object.keys(n.roe_categories).length > 0, 'roe categories missing');
+  console.log('PASS GET /api/journal/names');
+
+  // RoE mark/unmark injects the client's menu packets (0x10C set /
+  // 0x10D cancel) — gated on being logged in
+  loggedIn = true;
+  for (const [id, action, want] of [[100, 'set', 0x10c], [55, 'clear', 0x10d]]) {
+    const rp = fetch(`${base}/api/journal/roe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action }),
+    }).then((r) => r.json());
+    await step(3);
+    const rj = await rp;
+    assert.equal(rj.ok, true, `roe ${action} failed: ` + JSON.stringify(rj));
+    const p = injectedPackets[injectedPackets.length - 1];
+    assert.equal(p.dir, 'outgoing');
+    assert.equal(p.id, want, `wrong packet id for ${action}`);
+    assert.equal(p.fields['RoE Quest'], id, 'wrong RoE Quest field');
+  }
+  loggedIn = false;
+  const rp3 = fetch(`${base}/api/journal/roe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 5, action: 'set' }),
+  }).then((r) => r.status);
+  await step(3);
+  assert.equal(await rp3, 400, 'roe set should be rejected while logged out');
+  console.log('PASS POST /api/journal/roe');
+
+  // tracker visibility toggle: hidden entries land in state.untracked as
+  // 'kind:key:id' strings and come back out of /api/journal
+  const tp = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'quest', key: 'sandoria', id: 3, tracked: false }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await tp).ok, true, 'track toggle failed');
+  const jp2 = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  const j2 = await jp2;
+  assert.ok(
+    j2.untracked.includes('quest:sandoria:3'),
+    'untracked key missing: ' + JSON.stringify(j2.untracked),
+  );
+  // re-enable clears it
+  const tp2 = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'quest', key: 'sandoria', id: 3, tracked: true }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await tp2).ok, true, 're-track failed');
+  const jp3 = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  assert.ok(
+    !(await jp3).untracked.includes('quest:sandoria:3'),
+    'untracked key not cleared',
+  );
+  // id 0 is a real mission/quest id — it must write the entry key,
+  // not collapse to the group key
+  const zp = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'mission', key: 'zilart', id: 0, tracked: false }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await zp).ok, true, 'id-0 track toggle failed');
+  const jz = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  assert.ok(
+    (await jz).untracked.includes('mission:zilart:0'),
+    'id-0 entry key missing — was treated as group key',
+  );
+  const zp2 = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'mission', key: 'zilart', id: 0, tracked: true }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await zp2).ok, true, 'id-0 re-track failed');
+
+  // group-level toggle: omitting id stores 'kind:key' — every current
+  // and future item in the group stays off the tracker
+  const gp = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'quest', key: 'sandoria', tracked: false }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await gp).ok, true, 'group track toggle failed');
+  const jp4 = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  const j4 = await jp4;
+  assert.ok(
+    j4.untracked.includes('quest:sandoria'),
+    'group untracked key missing: ' + JSON.stringify(j4.untracked),
+  );
+  const gp2 = fetch(`${base}/api/journal/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'quest', key: 'sandoria', tracked: true }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await gp2).ok, true, 'group re-track failed');
+  const jp5 = fetch(`${base}/api/journal`).then((r) => r.json());
+  await step(3);
+  assert.ok(
+    !(await jp5).untracked.includes('quest:sandoria'),
+    'group untracked key not cleared',
+  );
+  console.log('PASS POST /api/journal/track');
+
+  // training regimes: outgoing 0x05B page selects at a manual/tome mark a
+  // regime active; 0x029 progress/completion messages and 0x113 tabs
+  // feed it. Packet layouts: addons/libs/packets/fields.lua
+  const put16 = (b, o, v) => { b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff; };
+  const put32 = (b, o, v) => {
+    b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff;
+    b[o + 2] = (v >> 16) & 0xff; b[o + 3] = (v >>> 24) & 0xff;
+  };
+  const dlg = (option, tidx, zone) => {
+    const b = new Uint8Array(0x14);
+    b[0] = 0x5b;
+    put32(b, 0x08, option);
+    put16(b, 0x0c, tidx);
+    put16(b, 0x10, zone);
+    return b;
+  };
+  const actMsg = (msg, p1, p2) => {
+    const b = new Uint8Array(0x1c);
+    b[0] = 0x29;
+    put32(b, 0x0c, p1);
+    put32(b, 0x10, p2);
+    put16(b, 0x18, msg);
+    return b;
+  };
+  const getJournal = async () => {
+    const p = fetch(`${base}/api/journal`).then((r) => r.json());
+    await step(3);
+    return p;
+  };
+  // a choice aimed at a non-manual NPC must not create a regime
+  mobs[6] = { name: 'Some NPC' };
+  fireEvent('outgoing chunk', 0x05b, dlg(50, 6, 100));
+  // Field Manual, option 50 = 16*3+2 -> West Ronfaure page 3
+  mobs[7] = { name: 'Field Manual' };
+  fireEvent('outgoing chunk', 0x05b, dlg(50, 7, 100));
+  {
+    const v = (await getJournal()).valor;
+    assert.equal(v?.kind, 'fov', 'fov regime not captured');
+    assert.equal(v?.page, 3, 'fov page wrong');
+    assert.equal(v?.zone_name, 'West Ronfaure', 'fov zone name wrong');
+    assert.deepEqual(v?.needs, [5, 1], 'fov objectives wrong');
+    assert.match(v?.desc ?? '', /Scarab Beetle/, 'fov desc missing');
+    assert.equal(v?.low, 4, 'fov level range wrong');
+  }
+  // kill progress: 558 carries killed/needed — matched to the objective
+  // whose target count is `needed`
+  fireEvent('incoming chunk', 0x029, actMsg(558, 3, 5));
+  fireEvent('incoming chunk', 0x029, actMsg(558, 1, 1));
+  {
+    const v = (await getJournal()).valor;
+    assert.deepEqual(v?.killed, [3, 1], 'fov progress wrong');
+  }
+  // 559 = regime completed; 643 = begins anew (daily renewal)
+  fireEvent('incoming chunk', 0x029, actMsg(559, 0, 0));
+  {
+    const v = (await getJournal()).valor;
+    assert.equal(v?.done, true, 'completion not recorded');
+    assert.deepEqual(v?.killed, [5, 1], 'completion should fill counts');
+  }
+  // repeat-flagged select of the same page renews it
+  fireEvent('outgoing chunk', 0x05b, dlg(0x80000000 + 50, 7, 100));
+  {
+    const v = (await getJournal()).valor;
+    assert.equal(v?.page, 3, 'repeat should keep the page');
+    assert.ok(!v?.done, 'repeat should clear completion');
+    assert.deepEqual(v?.killed ?? [], [], 'repeat should reset progress');
+  }
+  // Grounds Tome page select switches kinds/zones
+  mobs[8] = { name: 'Grounds Tome' };
+  fireEvent('outgoing chunk', 0x05b, dlg(18, 8, 166)); // 16*1+2 -> page 1
+  {
+    const v = (await getJournal()).valor;
+    assert.equal(v?.kind, 'gov', 'gov regime not captured');
+    assert.equal(v?.zone_name, 'Ranguemont Pass', 'gov zone name wrong');
+    assert.equal(v?.page, 1, 'gov page wrong');
+    assert.deepEqual(v?.needs, [4, 1], 'gov objectives wrong');
+  }
+  // option 3 = cancel the current regime
+  fireEvent('outgoing chunk', 0x05b, dlg(3, 8, 166));
+  assert.equal((await getJournal()).valor ?? null, null, 'cancel failed');
+  // 0x113 carries the tabs balance
+  {
+    const b = new Uint8Array(0x20);
+    b[0] = 0x13; b[1] = 0x01;
+    put16(b, 0x1c, 42);
+    fireEvent('incoming chunk', 0x113, b);
+    assert.equal((await getJournal()).valor_points, 42, 'tabs missing');
+  }
+  // 'valor:valor' group key hides the whole section from the tracker
+  {
+    const vp = fetch(`${base}/api/journal/track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'valor', key: 'valor', tracked: false }),
+    }).then((r) => r.json());
+    await step(3);
+    assert.equal((await vp).ok, true, 'valor track toggle failed');
+    assert.ok(
+      (await getJournal()).untracked.includes('valor:valor'),
+      'valor group key missing',
+    );
+  }
+  console.log('PASS training regime packets + GET /api/journal');
+
+  // addon settings — flat scalars round-trip through /api/settings
+  const sg = fetch(`${base}/api/settings`).then((r) => r.json());
+  await step(3);
+  const sj = await sg;
+  assert.equal(typeof sj.chat_history, 'number', 'settings missing keys');
+  const sp = fetch(`${base}/api/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_history: 500, tracker: false }),
+  }).then((r) => r.json());
+  await step(3);
+  assert.equal((await sp).ok, true, 'settings save failed');
+  const sg2 = fetch(`${base}/api/settings`).then((r) => r.json());
+  await step(3);
+  const sj2 = await sg2;
+  assert.equal(sj2.chat_history, 500, 'chat_history not updated');
+  assert.equal(sj2.tracker, false, 'tracker flag not updated');
+  console.log('PASS GET/POST /api/settings');
+
+  // leave no state behind for the next run
+  rmSync(journalDir, { recursive: true, force: true });
 }
 
 console.log('\nAll smoke tests passed.');

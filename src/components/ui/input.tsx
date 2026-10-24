@@ -1,9 +1,17 @@
-import type { ComponentProps } from 'preact';
+import type { ComponentProps, Ref } from 'preact';
 import { cn } from '@/lib/utils';
 
-export function Input({ className, type, ...props }: ComponentProps<'input'>) {
+// `ref` can't reach the DOM node through a function component (preact
+// strips it from props), so the composer gets an explicit inputRef.
+export function Input({
+  className,
+  type,
+  inputRef,
+  ...props
+}: ComponentProps<'input'> & { inputRef?: Ref<HTMLInputElement> }) {
   return (
     <input
+      ref={inputRef}
       type={type}
       data-slot="input"
       className={cn(

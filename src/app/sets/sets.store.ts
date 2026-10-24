@@ -124,7 +124,7 @@ export function resolveItem(
 
 // ---------------------------------------------------------------------------
 // lua generation — bound sets become sets.<path> = { slot='item', ... } lines
-// inside a managed <gearswapui sets> block, spliced into get_sets()
+// inside a managed <xic sets> block, spliced into get_sets()
 // ---------------------------------------------------------------------------
 
 function luaStr(s: string): string {
@@ -138,7 +138,7 @@ function luaSeg(seg: string): string {
 const SLOT_KEYS = new Set(EQUIP_SLOTS.map((s) => s.key));
 
 export function genSetsBlock(fs: FileSets): string {
-  const lines: string[] = ['    -- <gearswapui sets>'];
+  const lines: string[] = ['    -- <xic sets>'];
   for (const key of Object.keys(fs.bindings).sort()) {
     const set = fs.sets.find((s) => s.id === fs.bindings[key]);
     if (!set) continue;
@@ -186,7 +186,7 @@ export function genSetsBlock(fs: FileSets): string {
   lines.push('            if s then equip(s) end');
   lines.push('        end');
   lines.push('    end');
-  lines.push('    -- </gearswapui>');
+  lines.push('    -- </xic>');
   return lines.join('\n');
 }
 
@@ -230,10 +230,14 @@ function injectIntoGetSets(lines: string[], blockLines: string[]): boolean {
   return false;
 }
 
-// Strips every managed block (<gearswapui sets> plus the legacy link/inline
-// blocks) plus its trailing newline.
+// Strips every managed block plus its trailing newline. <gearswapui …> is
+// the pre-rename marker — still matched so old profile blocks are replaced
+// in place instead of left behind as stale duplicates.
 function stripBlocks(content: string): string {
-  return content.replace(/[ \t]*--\s*<gearswapui[^>]*>[\s\S]*?--\s*<\/gearswapui>\s*\n?/g, '');
+  return content.replace(
+    /[ \t]*--\s*<(?:xic|gearswapui)[^>]*>[\s\S]*?--\s*<\/(?:xic|gearswapui)>\s*\n?/g,
+    '',
+  );
 }
 
 export function injectSetsBlock(content: string, fs: FileSets): string {
@@ -328,8 +332,9 @@ export function parseSetsLua(
 // store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'gsui.sets.v2';
-const LEGACY_KEY = 'gsui.sets.v1';
+const STORAGE_KEY = 'xic.sets.v2';
+// pre-rename keys — read once for migration, never written
+const LEGACY_KEYS = ['gsui.sets.v2', 'gsui.sets.v1'];
 
 function uid(): string {
   return (
@@ -365,7 +370,8 @@ export class SetsStore {
     if (this.loaded) return;
     this.loaded = true;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw =
+        localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_KEYS[0]);
       if (raw) {
         const data = JSON.parse(raw) as {
           files?: Record<string, FileSets>;
@@ -386,7 +392,7 @@ export class SetsStore {
   // v1 stored a global set list where group+name formed the sets.* path.
   private migrateLegacy() {
     try {
-      const raw = localStorage.getItem(LEGACY_KEY);
+      const raw = localStorage.getItem(LEGACY_KEYS[1]);
       if (!raw) return;
       const data = JSON.parse(raw) as {
         sets?: Array<GearSetDef & { group?: string }>;

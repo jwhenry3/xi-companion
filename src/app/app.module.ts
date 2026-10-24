@@ -5,7 +5,7 @@ import { APP_TITLE } from './core/tokens';
 
 @Module({
   imports: [RouterModule.forRoot(routes)],
-  providers: [{ provide: APP_TITLE, useValue: 'GearSwap UI' }],
+  providers: [{ provide: APP_TITLE, useValue: 'XI Companion' }],
   bootstrap: [AppShell],
 })
 export class AppModule {}

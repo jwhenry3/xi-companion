@@ -1,6 +1,7 @@
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import type { OnInit } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
+import { host } from '../core/host';
 import type { MacroCharacter, MacroEntry } from '../core/types';
 import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -39,7 +40,7 @@ function byteLen(s: string): number {
   while (i < s.length) {
     if (/^\[AT:[0-9a-fA-F]{8}\]/.test(s.slice(i))) {
       n += 6;
-      i += 11;
+      i += 13;
     } else if (/^\\x[0-9a-fA-F]{2}/.test(s.slice(i))) {
       n += 1;
       i += 4;
@@ -238,32 +239,52 @@ export class MacrosView extends View implements OnInit {
 
     const sel = this.cell.value;
     return (
-      <div class="flex h-full flex-col gap-4 overflow-y-auto pr-1">
-        {/* header row: char + book + title rename */}
-        <div class="flex flex-wrap items-center gap-3">
+      <div class="flex h-full gap-4 overflow-hidden">
+        {/* sidebar: char + vertical book list (same shape as the journal's
+            group column) */}
+        <aside class="flex w-52 shrink-0 flex-col gap-2">
           {this.chars.value.length > 1 && (
             <Select
-              className="w-40"
               value={c?.id ?? ''}
               options={this.chars.value.map((x) => ({ value: x.id, label: `char ${x.id}` }))}
               onChange={(v) => this.pickChar(v)}
             />
           )}
-          <Select
-            className="w-56"
-            filterable
-            value={String(this.book.value)}
-            options={Array.from({ length: NUM_BOOKS }, (_, i) => {
+          <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+            {Array.from({ length: NUM_BOOKS }, (_, i) => {
               const b = i + 1;
-              const t = this.titles.value[i] || `Book ${b}`;
+              const t = this.titles.value[i];
               const has = this.booksWithContent.value.has(b);
-              return {
-                value: String(b),
-                label: `${has ? '●' : '○'} Book ${b} — ${t}`,
-              };
+              const active = b === this.book.value;
+              return (
+                <button
+                  key={b}
+                  class={cn(
+                    'flex w-full flex-col rounded px-2 py-1 text-left',
+                    active
+                      ? 'bg-slate-800 text-slate-100'
+                      : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
+                    !has && 'opacity-70',
+                  )}
+                  onClick={() => this.pickBook(b)}
+                >
+                  <span class="flex items-center gap-1.5">
+                    <span class="min-w-0 flex-1 truncate text-sm">
+                      {t || `Book ${b}`}
+                    </span>
+                    {has && <span class="text-[9px] text-sky-400">●</span>}
+                  </span>
+                </button>
+              );
             })}
-            onChange={(v) => this.pickBook(Number(v))}
-          />
+          </div>
+        </aside>
+
+        {/* main pane */}
+        <div class="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+        {/* header row: book title rename + in-game switch */}
+        <div class="flex flex-wrap items-center gap-3">
+          <strong class="text-sm">Book {this.book.value}</strong>
           <Input
             className="w-40"
             value={this.titleDraft.value}
@@ -279,6 +300,16 @@ export class MacrosView extends View implements OnInit {
             rename book
           </Button>
           <span class="flex-1" />
+          {host.inShell() && (
+            <Button
+              variant="outline"
+              size="sm"
+              title="open the clickable macro bar in its own window"
+              onClick={() => host.spawnWindow('/macrobar')}
+            >
+              macro bar
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -314,15 +345,6 @@ export class MacrosView extends View implements OnInit {
             book {this.book.value} · page {this.palette.value} · mcr{this.paletteIndex.value || ''}.dat
           </span>
         </div>
-
-        {this.loggedIn.value && (
-          <p class="rounded-md border border-sky-700/60 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
-            character is logged in — saving applies live: the client is
-            switched to another book, the file lands while the book is
-            unloaded, then it switches back (~5s). Your macro bar will
-            flicker books briefly.
-          </p>
-        )}
 
         {/* macro grid: ctrl row + alt row */}
         <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
@@ -404,6 +426,15 @@ export class MacrosView extends View implements OnInit {
           </p>
         </div>
 
+        {this.loggedIn.value && (
+          <p class="rounded-md border border-sky-700/60 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+            character is logged in — saving applies live: the client is
+            switched to another book, the file lands while the book is
+            unloaded, then it switches back (~5s). Your macro bar will
+            flicker books briefly.
+          </p>
+        )}
+
         {/* actions */}
         <div class="flex items-center gap-2">
           <Button disabled={!this.dirty.value || this.busy.value} onClick={() => void this.save()}>
@@ -437,6 +468,7 @@ export class MacrosView extends View implements OnInit {
               {this.message.value.text}
             </span>
           )}
+        </div>
         </div>
       </div>
     );

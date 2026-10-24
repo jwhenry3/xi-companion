@@ -1,8 +1,7 @@
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
-import { Select } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
+import { host, tipAnchor, tooltipPinned, TooltipRef } from '../core/host';
 import type { Bag, BagItem, ItemMeta } from '../core/types';
 
 const EQUIP_CATEGORIES = new Set(['Weapon', 'Armor']);
@@ -14,29 +13,6 @@ interface SelectedItem {
 
 function isGear(meta?: ItemMeta) {
   return !!meta && (EQUIP_CATEGORIES.has(meta.category ?? '') || (meta.slots?.length ?? 0) > 0);
-}
-
-function augmentText(a: string | Record<string, unknown>): string {
-  if (typeof a === 'string') return a;
-  return Object.entries(a)
-    .map(([k, v]) => `${k}:${v}`)
-    .join(' ');
-}
-
-// res slot names -> /equip command arguments
-const EQUIP_CMD_SLOT: Record<string, string> = {
-  'Left Ear': 'l.ear',
-  'Right Ear': 'r.ear',
-  'Left Ring': 'l.ring',
-  'Right Ring': 'r.ring',
-};
-
-function equipCmdSlot(resName: string): string {
-  return EQUIP_CMD_SLOT[resName] ?? resName.toLowerCase();
-}
-
-function cmdStr(s: string): string {
-  return `"${s.replace(/"/g, '\\"')}"`;
 }
 
 @Component()
@@ -53,8 +29,6 @@ export class InventoryView extends View {
   private sortKey = signal<'name' | 'level' | 'ilvl' | 'category' | 'subtype'>('name');
   private sortDir = signal<1 | -1>(1);
   private selected = signal<SelectedItem | null>(null);
-  private notice = signal<string | null>(null);
-  private confirmDrop = signal(false);
 
   private catalog = computed(() => this.api.state.value?.catalog ?? {});
   private bags = computed(() => this.api.state.value?.bags ?? []);
@@ -185,30 +159,26 @@ export class InventoryView extends View {
     return b !== undefined && b.enabled !== false;
   });
 
-  private selectedDetail = computed(() => {
-    const sel = this.selected.value;
-    if (!sel) return null;
-    const bag = this.bags.value.find((b) => b.key === sel.bag);
-    const item = bag?.items.find((i) => i.slot === sel.slot);
-    if (!bag || !item) return null;
-    const meta = this.catalog.value[item.id];
-    const elsewhere = this.bags.value.flatMap((b) =>
-      b.items
-        .filter((i) => i.id === item.id && !(b.key === bag.key && i.slot === item.slot))
-        .map((i) => `${b.name} [${i.slot}]`),
-    );
-    return { bag, item, meta, elsewhere };
-  });
-
   private itemRow(bag: Bag, item: BagItem) {
     const meta = this.catalog.value[item.id];
     const name = meta?.name ?? `item ${item.id}`;
     const isSel =
       this.selected.value?.bag === bag.key && this.selected.value?.slot === item.slot;
+    const tip = (el: HTMLElement): TooltipRef => ({
+      bag: bag.id,
+      slot: item.slot,
+      id: item.id,
+      ...tipAnchor(el),
+    });
     return (
       <tr
         key={`${bag.key}:${item.slot}`}
-        onClick={() => (this.selected.value = { bag: bag.key, slot: item.slot })}
+        onClick={(e) => {
+          this.selected.value = { bag: bag.key, slot: item.slot };
+          const el = e.currentTarget as HTMLElement;
+          if (tooltipPinned.value) host.setTooltip(tip(el));
+          else host.pinTooltip(tip(el));
+        }}
         class={`cursor-pointer border-t border-slate-800 transition-colors ${
           isSel ? 'bg-sky-950/40' : 'hover:bg-slate-800/60'
         }`}
@@ -246,203 +216,6 @@ export class InventoryView extends View {
     );
   }
 
-  private flash(msg: string) {
-    this.notice.value = msg;
-    setTimeout(() => {
-      if (this.notice.value === msg) this.notice.value = null;
-    }, 4000);
-  }
-
-  private async itemCmd(cmd: string, echo?: string) {
-    try {
-      await this.api.sendCommand(cmd);
-      this.flash(echo ?? cmd);
-    } catch (e) {
-      this.flash(`failed: ${e}`);
-    }
-  }
-
-  private equipItem(item: BagItem, meta?: ItemMeta) {
-    const slot = meta?.slots?.[0];
-    const name = meta?.name ?? `item ${item.id}`;
-    if (!slot) return;
-    void this.itemCmd(`input /equip ${equipCmdSlot(slot)} ${cmdStr(name)}`, `/equip ${equipCmdSlot(slot)} ${name}`);
-  }
-
-  private unequipItem(item: BagItem) {
-    if (!item.equip_slot) return;
-    void this.itemCmd(`input /unequip ${item.equip_slot}`, `/unequip ${item.equip_slot}`);
-  }
-
-  private useItem(item: BagItem, meta?: ItemMeta) {
-    const name = meta?.name ?? `item ${item.id}`;
-    void this.itemCmd(`input /item ${cmdStr(name)} <me>`, `/item ${name} <me>`);
-  }
-
-  private async moveItem(bag: Bag, item: BagItem, target: number) {
-    try {
-      await this.api.itemAction({
-        action: 'move',
-        bag: bag.id,
-        index: item.slot,
-        count: item.count,
-        target,
-      });
-      this.flash(`moved ${this.catalog.value[item.id]?.name ?? 'item'}`);
-    } catch (e) {
-      this.flash(`move failed: ${e}`);
-    }
-  }
-
-  private async dropItem(item: BagItem) {
-    try {
-      await this.api.itemAction({ action: 'drop', bag: 0, index: item.slot, count: item.count });
-      this.flash(`dropped ${this.catalog.value[item.id]?.name ?? 'item'}`);
-      this.selected.value = null;
-    } catch (e) {
-      this.flash(`drop failed: ${e}`);
-    }
-  }
-
-  private detailPanel() {
-    const d = this.selectedDetail.value;
-    if (!d) return null;
-    const { bag, item, meta, elsewhere } = d;
-    return (
-      <aside class="max-h-full w-80 shrink-0 overflow-y-auto rounded border border-slate-700 bg-slate-900 p-4">
-        <div class="mb-2 flex items-start justify-between gap-2">
-          <h2 class="flex items-center gap-2 text-sm font-semibold leading-tight">
-            <img
-              src={this.api.iconUrl(item.id)}
-              class="h-9 w-9 shrink-0 rounded object-contain"
-              alt=""
-            />
-            {meta?.name ?? `item ${item.id}`}
-          </h2>
-          <button
-            class="text-slate-500 hover:text-slate-200"
-            onClick={() => (this.selected.value = null)}
-          >
-            ✕
-          </button>
-        </div>
-        <dl class="space-y-1 text-xs text-slate-300">
-          <div><dt class="inline text-slate-500">Location: </dt><dd class="inline">{bag.name}</dd></div>
-          <div><dt class="inline text-slate-500">ID: </dt><dd class="inline">{item.id}</dd></div>
-          {meta?.category && <div><dt class="inline text-slate-500">Category: </dt><dd class="inline">{meta.category}{meta.type ? ` / ${meta.type}` : ''}</dd></div>}
-          {meta?.level != null && <div><dt class="inline text-slate-500">Level: </dt><dd class="inline">{meta.level}{meta.ilvl ? ` (iLv ${meta.ilvl})` : ''}</dd></div>}
-          {(meta?.slots?.length ?? 0) > 0 && <div><dt class="inline text-slate-500">Slots: </dt><dd class="inline">{meta!.slots!.join(', ')}</dd></div>}
-          <div><dt class="inline text-slate-500">Jobs: </dt><dd class="inline">{meta?.all_jobs ? 'All jobs' : (meta?.jobs?.join(', ') || '—')}</dd></div>
-          <div>
-            <dt class="inline text-slate-500">Flags: </dt>
-            <dd class="inline">
-              {[meta?.rare && 'Rare', meta?.ex && 'Ex'].filter(Boolean).join(', ') || '—'}
-            </dd>
-          </div>
-          {item.status !== 0 && <div><dt class="inline text-slate-500">Status: </dt><dd class="inline">{item.status}{item.equipped ? ` (equipped${item.equip_slot ? `: ${item.equip_slot}` : ''})` : ''}</dd></div>}
-          {elsewhere.length > 0 && <div><dt class="inline text-slate-500">Duplicates: </dt><dd class="inline">{elsewhere.join(', ')}</dd></div>}
-        </dl>
-        {/* actions — same ops as the native inventory item menu */}
-        {(() => {
-          const moveTargets = this.bags.value.filter(
-            (b) => b.enabled !== false && b.id !== bag.id,
-          );
-          const canEquip = !item.equipped && (meta?.slots?.length ?? 0) > 0;
-          const canUnequip = item.equipped && !!item.equip_slot;
-          const canUse = meta?.category === 'Usable';
-          const canDrop = bag.id === 0 && !item.equipped && !meta?.ex;
-          if (!canEquip && !canUnequip && !canUse && moveTargets.length === 0 && !canDrop) return null;
-          return (
-            <div class="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-800 pt-3">
-              {canEquip && (
-                <Button size="xs" variant="secondary" onClick={() => this.equipItem(item, meta)}>
-                  equip
-                </Button>
-              )}
-              {canUnequip && (
-                <Button size="xs" variant="secondary" onClick={() => this.unequipItem(item)}>
-                  unequip
-                </Button>
-              )}
-              {canUse && (
-                <Button size="xs" variant="secondary" onClick={() => this.useItem(item, meta)}>
-                  use
-                </Button>
-              )}
-              {moveTargets.length > 0 && !item.equipped && (
-                <Select
-                  className="w-32"
-                  value=""
-                  placeholder="move to…"
-                  options={moveTargets.map((b) => ({ value: String(b.id), label: b.name }))}
-                  onChange={(v) => void this.moveItem(bag, item, Number(v))}
-                />
-              )}
-              {canDrop && (
-                <Button
-                  size="xs"
-                  variant="destructive"
-                  onClick={() => (this.confirmDrop.value = true)}
-                >
-                  drop
-                </Button>
-              )}
-            </div>
-          );
-        })()}
-        {item.augments && item.augments.length > 0 && (
-          <div class="mt-3">
-            <h3 class="mb-1 text-xs font-semibold text-fuchsia-300">Augments</h3>
-            <ul class="list-inside list-disc space-y-0.5 text-xs text-slate-300">
-              {item.augments.map((a, i) => <li key={i}>{augmentText(a)}</li>)}
-            </ul>
-          </div>
-        )}
-        {item.extdata && (
-          <details class="mt-3">
-            <summary class="cursor-pointer text-xs text-slate-500">extdata</summary>
-            <code class="mt-1 block break-all text-[10px] text-slate-500">{item.extdata}</code>
-          </details>
-        )}
-
-        {/* drop confirmation */}
-        {this.confirmDrop.value && (
-          <div
-            class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-            onClick={() => (this.confirmDrop.value = false)}
-          >
-            <div
-              class="w-72 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-rose-400">
-                Drop item
-              </h3>
-              <p class="text-xs text-slate-300">
-                Drop <span class="font-semibold text-slate-100">{meta?.name ?? `item ${item.id}`}</span>
-                {item.count > 1 && ` (all ${item.count})`}? This can't be undone.
-              </p>
-              <div class="mt-4 flex justify-end gap-2">
-                <Button variant="ghost" size="sm" onClick={() => (this.confirmDrop.value = false)}>
-                  cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => {
-                    this.confirmDrop.value = false;
-                    void this.dropItem(item);
-                  }}
-                >
-                  drop
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </aside>
-    );
-  }
 
   render() {
     const state = this.api.state.value;
@@ -512,9 +285,6 @@ export class InventoryView extends View {
                 },
               ]}
             />
-            {this.notice.value && (
-              <span class="text-xs text-slate-400">{this.notice.value}</span>
-            )}
             {!connected && (
               <span class="text-xs text-rose-400">addon disconnected — waiting…</span>
             )}
@@ -569,7 +339,6 @@ export class InventoryView extends View {
             ))}
           </div>
         </div>
-        {this.detailPanel()}
       </div>
     );
   }

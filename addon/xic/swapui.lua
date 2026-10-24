@@ -1,13 +1,13 @@
 --[[
-    swapui.lua -- headless GearSwap set scanner for the gearswapui addon.
+    swapui.lua -- headless GearSwap set scanner for the xic addon.
 
     Finds every `sets.*` path in the GearSwap user file for the current
     player/job, recursively following include()/require() calls, plus any
-    paths added manually with `//gsui swap add`. The compiled in-game UI
-    (igui Sets tab) renders the result; `//gsui swap list`,
-    `//gsui swap scan`, and `//gsui equip` work headless.
+    paths added manually with `//xic swap add`. The compiled in-game UI
+    (igui Sets tab) renders the result; `//xic swap list`,
+    `//xic swap scan`, and `//xic equip` work headless.
 
-    Loaded via dofile() from gearswapui.lua.
+    Loaded via dofile() from xic.lua.
 ]]
 
 local M = {}
@@ -310,7 +310,7 @@ function M.rescan()
     table.sort(S.sets, function(a, b) return a.equip:lower() < b.equip:lower() end)
 
     if #S.sets == 0 and not S.scan_note then
-        S.scan_note = 'no sets found (//gsui swap add <path>)'
+        S.scan_note = 'no sets found (//xic swap add <path>)'
     end
 
     return #S.sets
@@ -334,7 +334,7 @@ end
 function M.equip(str)
     local canon = canon_path(str)
     if not canon then
-        S.log_err('usage: //gsui equip <set path>  e.g. //gsui equip idle.Town')
+        S.log_err('usage: //xic equip <set path>  e.g. //xic equip idle.Town')
         return
     end
     windower.send_command('gs equip ' .. canon)

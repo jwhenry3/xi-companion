@@ -1,0 +1,5 @@
+{
+  // Tailwind v4's @theme/@utility/@source/@variant aren't in the built-in
+  // CSS validator's at-rule list — they're compiled by @tailwindcss/vite.
+  "css.lint.unknownAtRules": "ignore"
+}

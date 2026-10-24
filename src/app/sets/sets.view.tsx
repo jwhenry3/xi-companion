@@ -16,11 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PencilIcon, Trash2Icon } from 'lucide-preact';
 
-interface Sel {
-  bag: string;
-  slot: number;
-  name?: string; // unresolved ref (imported name-only sets)
-}
+import { host, tipAnchor, tooltipPinned, TooltipRef } from '../core/host';
 
 @Component()
 export class SetsView extends View implements OnInit {
@@ -35,7 +31,14 @@ export class SetsView extends View implements OnInit {
   private renameId = signal<string | null>(null);
   private renameDraft = signal('');
   private deleteId = signal<string | null>(null);
-  private selItem = signal<Sel | null>(null);
+
+  /** click pins the tooltip (or retargets an already-pinned window) */
+  private tipClick(e: Event, tip: (el: HTMLElement) => TooltipRef | null) {
+    const t = tip(e.currentTarget as HTMLElement);
+    if (!t) return;
+    if (tooltipPinned.value) host.setTooltip(t);
+    else host.pinTooltip(t);
+  }
 
   private catalog = computed(() => this.api.state.value?.catalog ?? {});
   private bags = computed(() => this.api.state.value?.bags ?? []);
@@ -121,16 +124,23 @@ export class SetsView extends View implements OnInit {
     const missing = !!ref && !resolved?.item;
     const sel = this.selectedSlot.value === key;
     const iconId = resolved?.item?.id ?? ref?.id;
+    const tip = (el: HTMLElement): TooltipRef | null => {
+      if (resolved?.item && resolved?.bag)
+        return {
+          bag: resolved.bag.id,
+          slot: resolved.item.slot,
+          id: resolved.item.id,
+          ...tipAnchor(el),
+        };
+      if (iconId) return { bag: -1, slot: -1, id: iconId, name: ref?.name, ...tipAnchor(el) };
+      return null;
+    };
     return (
       <div
         key={key}
-        onClick={() => {
+        onClick={(e) => {
           this.selectedSlot.value = key;
-          if (ref && resolved?.item && resolved?.bag) {
-            this.selItem.value = { bag: resolved.bag.key, slot: resolved.item.slot };
-          } else if (ref) {
-            this.selItem.value = { bag: '', slot: 0, name: ref.name };
-          }
+          this.tipClick(e, tip);
         }}
         class={`group relative aspect-square cursor-pointer rounded border p-1 transition-colors ${
           sel
@@ -182,12 +192,18 @@ export class SetsView extends View implements OnInit {
             ([, r]) => r && itemMatches(st, item, r),
           )?.[0]
         : undefined;
+    const tip = (el: HTMLElement): TooltipRef => ({
+      bag: bag.id,
+      slot: item.slot,
+      id: item.id,
+      ...tipAnchor(el),
+    });
     return (
       <button
         key={`${bag.key}:${item.slot}`}
-        onClick={() => {
-          this.selItem.value = { bag: bag.key, slot: item.slot };
+        onClick={(e) => {
           this.assign(item, bag);
+          this.tipClick(e, tip);
         }}
         class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-slate-300 hover:bg-slate-800"
       >
@@ -212,54 +228,6 @@ export class SetsView extends View implements OnInit {
     );
   }
 
-  private detailPanel() {
-    const sel = this.selItem.value;
-    const st = this.st.value;
-    if (!sel || !st) return null;
-    const bag = st.bags.find((b) => b.key === sel.bag);
-    const item = bag?.items.find((i) => i.slot === sel.slot);
-    const meta = item ? st.catalog[item.id] : undefined;
-    const title = item ? (meta?.name ?? `item ${item.id}`) : (sel.name ?? '(unknown)');
-    return (
-      <aside class="mt-3 max-h-56 shrink-0 overflow-y-auto rounded border border-slate-700 bg-slate-900 p-3">
-        <div class="flex items-start gap-2">
-          {item && this.icon(item.id, 'h-9 w-9')}
-          <div class="min-w-0 flex-1">
-            <h3 class="text-xs font-semibold leading-tight">{title}</h3>
-            {item && bag ? (
-              <p class="text-[10px] text-slate-500">
-                {bag.name} [{item.slot}] · id {item.id}
-                {meta?.ilvl != null && ` · i${meta.ilvl}`}
-                {item.equipped && ' · equipped'}
-              </p>
-            ) : (
-              <p class="text-[10px] text-rose-400">not found in inventory</p>
-            )}
-          </div>
-          <button
-            class="text-slate-500 hover:text-slate-200"
-            onClick={() => (this.selItem.value = null)}
-          >
-            ×
-          </button>
-        </div>
-        {item?.augments && item.augments.length > 0 && (
-          <ul class="mt-2 space-y-0.5 text-[11px] text-slate-300">
-            {item.augments.map((a, i) => (
-              <li key={i}>
-                ·{' '}
-                {typeof a === 'string'
-                  ? a
-                  : Object.entries(a)
-                      .map(([k, v]) => `${k}:${v}`)
-                      .join(' ')}
-              </li>
-            ))}
-          </ul>
-        )}
-      </aside>
-    );
-  }
 
   // ---- root ---------------------------------------------------------------------
 
@@ -410,7 +378,6 @@ export class SetsView extends View implements OnInit {
                 <p class="text-xs text-slate-500">No items fit the {sel.res} slot.</p>
               )}
             </div>
-            {this.detailPanel()}
           </div>
         </div>
 
