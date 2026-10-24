@@ -46,7 +46,8 @@ import (
 const windowTitle = "XI Companion"
 
 const (
-	fabSize       = 56
+	// the fab is a 2×2 cluster of four 48px buttons + gaps
+	fabW, fabH    = 112, 112
 	fullW, fullH  = 1100, 760
 	minW, minH    = 860, 520
 	fabEdgeMargin = 24
@@ -132,6 +133,7 @@ func findFFXIWindow() uintptr {
 		if h, _, _ := pFindWindowW.Call(uintptr(unsafe.Pointer(cls)), 0); h != 0 {
 			return h
 		}
+		log.Print("refocus: FFXiClass lookup failed, scanning for pol.exe")
 	}
 	var found uintptr
 	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
@@ -164,6 +166,9 @@ func findFFXIWindow() uintptr {
 		return 1
 	})
 	pEnumWindows.Call(cb, 0)
+	if found == 0 {
+		log.Print("refocus: no pol.exe window found either")
+	}
 	return found
 }
 
@@ -198,15 +203,51 @@ func refocusGame() {
 		return
 	}
 	fg, _, _ := pGetForegroundWindow.Call()
-	if fg == hwnd || !ourHwnd(fg) {
+	if fg == hwnd {
 		return
 	}
+	if !ourHwnd(fg) {
+		log.Printf("refocus: fg=%#x isn't an overlay window, skipping", fg)
+		return
+	}
+	// attach to the FOREGROUND window's thread (not the game's) — that
+	// inherits its SetForegroundWindow rights for this call
 	cur, _, _ := pGetCurrentThreadId.Call()
 	var pid uint32
-	tgt, _, _ := pGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	pAttachThreadInput.Call(cur, tgt, 1)
-	pSetForegroundWindow.Call(hwnd)
-	pAttachThreadInput.Call(cur, tgt, 0)
+	fgTid, _, _ := pGetWindowThreadProcessId.Call(fg, uintptr(unsafe.Pointer(&pid)))
+	pAttachThreadInput.Call(cur, fgTid, 1)
+	r, _, _ := pSetForegroundWindow.Call(hwnd)
+	pAttachThreadInput.Call(cur, fgTid, 0)
+	log.Printf("refocus: fg=%#x ffxi=%#x setfg=%v", fg, hwnd, r != 0)
+}
+
+// refocusAfterActivate covers window creation/activation — Windows hands
+// a new/shown window foreground, which drops the game's keyboard focus.
+// Spawn bursts (login: fab + tracker + macrobar + cooldowns) activate
+// several windows a second or more apart — a WebView2's activation lands
+// well after its NewWithOptions returns — so a single per-call poll can
+// fire before the *last* window grabs focus. Calls instead share one
+// watcher: every call extends its deadline, and the watcher hands focus
+// back on EVERY overlay activation until the burst settles.
+var (
+	fgWatchUntil atomic.Int64 // UnixNano deadline
+	fgWatcherOn  atomic.Bool
+)
+
+func refocusAfterActivate() {
+	fgWatchUntil.Store(time.Now().Add(3 * time.Second).UnixNano())
+	if fgWatcherOn.CompareAndSwap(false, true) {
+		go func() {
+			defer fgWatcherOn.Store(false)
+			for time.Now().UnixNano() < fgWatchUntil.Load() {
+				fg, _, _ := pGetForegroundWindow.Call()
+				if fg != 0 && ourHwnd(fg) {
+					refocusGame()
+				}
+				time.Sleep(60 * time.Millisecond)
+			}
+		}()
+	}
 }
 
 // openURL hands a page-requested link to the system browser — the
@@ -435,7 +476,7 @@ func setWindowGeom(key string, r rect) {
 // primary monitor.
 func defaultFabPos() (int, int) {
 	cx, cy := screenSize()
-	return cx - fabSize - fabEdgeMargin, cy - fabSize - fabEdgeMargin
+	return cx - fabW - fabEdgeMargin, cy - fabH - fabEdgeMargin
 }
 
 // ---------------------------------------------------------- port probing
@@ -502,7 +543,7 @@ func expand() {
 	}
 	log.Printf("expand: fab=%v", geomSnapshot().Fab)
 	x, y := win.Position()
-	setFabGeom(rect{X: x, Y: y, W: fabSize, H: fabSize})
+	setFabGeom(rect{X: x, Y: y, W: fabW, H: fabH})
 	fabMode = false
 
 	win.SetResizable(true)
@@ -530,8 +571,8 @@ func collapse() {
 	setFullGeom(rect{X: fx, Y: fy, W: fw, H: fh})
 	fabMode = true
 
-	win.SetMinSize(fabSize, fabSize)
-	win.SetSize(fabSize, fabSize)
+	win.SetMinSize(fabW, fabH)
+	win.SetSize(fabW, fabH)
 	win.SetResizable(false)
 	if r := geomSnapshot().Fab; r != nil {
 		win.SetPosition(r.X, r.Y)
@@ -549,7 +590,7 @@ func quit() {
 	// persist whichever geometry is live so the next launch restores it
 	if fabMode {
 		x, y := win.Position()
-		setFabGeom(rect{X: x, Y: y, W: fabSize, H: fabSize})
+		setFabGeom(rect{X: x, Y: y, W: fabW, H: fabH})
 	} else {
 		fx, fy := win.Position()
 		fw, fh := win.Size()
@@ -577,7 +618,7 @@ func trackGeometry() {
 		if x < -30000 || y < -30000 {
 			continue // minimized windows park at -32000,-32000
 		}
-		cur := rect{X: x, Y: y, W: fabSize, H: fabSize}
+		cur := rect{X: x, Y: y, W: fabW, H: fabH}
 		if !fabMode {
 			cur.W, cur.H = win.Size()
 			// 0-size mid-teardown must not clobber persisted bounds — a
@@ -642,7 +683,8 @@ func spawnKey(route string) string {
 // layer — always up alongside it, and hidden during the zoning
 // blackout / cutscenes the same way the fab is.
 func fabLayerSpawned(key string) bool {
-	return key == "/tracker" || key == "/macrobar"
+	return key == "/tracker" || key == "/macrobar" || key == "/cooldowns" ||
+		key == "/minimap"
 }
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
@@ -674,13 +716,26 @@ func spawnWindow(route string) {
 			w.Show()
 			w.Focus()
 		}()
+		refocusAfterActivate()
 		return
 	}
 	spawnMu.Unlock()
 
 	const minSW, minSH = 280, 180
+	// friendly window titles (task switcher / screen readers — the
+	// frameless windows don't paint a titlebar)
+	spawnTitles := map[string]string{
+		"/tracker":   "Tracker",
+		"/macrobar":  "Macro Bar",
+		"/cooldowns": "Cooldowns",
+		"/minimap":   "Minimap",
+	}
+	title, ok := spawnTitles[key]
+	if !ok {
+		title = strings.TrimPrefix(key, "/")
+	}
 	opts := application.WebviewWindowOptions{
-		Title:            windowTitle + " — " + strings.TrimPrefix(key, "/"),
+		Title:            windowTitle + " — " + title,
 		Frameless:        true,
 		AlwaysOnTop:      true,
 		BackgroundType:   application.BackgroundTypeTransparent,
@@ -699,9 +754,15 @@ func spawnWindow(route string) {
 	case "/tracker":
 		// a narrow always-up column
 		opts.Width, opts.Height = 320, 420
+	case "/cooldowns":
+		// same narrow column as the tracker, shorter — it's a plain list
+		opts.Width, opts.Height = 320, 240
 	case "/macrobar":
 		// a wide, shallow bar — pickers row plus the Ctrl/Alt rows
 		opts.Width, opts.Height = 600, 210
+	case "/minimap":
+		// a square radar panel — the map fills whatever space it gets
+		opts.Width, opts.Height = 280, 280
 	}
 	if r := geomSnapshot().Windows[key]; r != nil && r.W >= minSW && r.H >= minSH {
 		opts.Width, opts.Height = r.W, r.H
@@ -756,6 +817,9 @@ func spawnWindow(route string) {
 	}()
 	go trackSpawned(w, key)
 	log.Printf("spawned window %q", key)
+	// creation activated the window — hand focus back to the game once
+	// the hwnd lands in the spawned map
+	refocusAfterActivate()
 }
 
 // trackSpawned mirrors a spawned window's bounds into geom.Windows[key],
@@ -852,14 +916,14 @@ func geomSet(arg string) {
 			if old != nil && old.W > 0 {
 				r.W = old.W
 			} else {
-				r.W = fabSize
+				r.W = fabW
 			}
 		}
 		if r.H <= 0 {
 			if old != nil && old.H > 0 {
 				r.H = old.H
 			} else {
-				r.H = fabSize
+				r.H = fabH
 			}
 		}
 	}
@@ -1188,7 +1252,8 @@ func main() {
 					return
 				}
 				go func() {
-					if !slices.Contains(data.Args, "--fab") {
+					fabRelaunch := slices.Contains(data.Args, "--fab")
+					if !fabRelaunch {
 						expand()
 					}
 					// a --fab relaunch during the zoning blackout must
@@ -1197,6 +1262,12 @@ func main() {
 						return
 					}
 					win.Show()
+					if fabRelaunch {
+						// addon (re)load auto-spawning the fab — keep the
+						// game's keyboard focus instead of stealing it
+						refocusAfterActivate()
+						return
+					}
 					win.Focus()
 					if hwnd := windowHwnd.Load(); hwnd != 0 {
 						if isIconic(hwnd) {
@@ -1279,8 +1350,8 @@ func main() {
 		if r := geomSnapshot().Fab; r != nil {
 			x, y = r.X, r.Y
 		}
-		opts.Width, opts.Height = fabSize, fabSize
-		opts.MinWidth, opts.MinHeight = fabSize, fabSize
+		opts.Width, opts.Height = fabW, fabH
+		opts.MinWidth, opts.MinHeight = fabW, fabH
 		opts.X, opts.Y = x, y
 		opts.DisableResize = true
 	} else {
@@ -1313,6 +1384,12 @@ func main() {
 		}
 		addonTarget = probeTarget()
 		win.SetURL(addonTarget)
+		// the addon auto-spawning the fab on (re)load steals foreground —
+		// hand it back once our hwnd is registered; a user-invoked
+		// //xic overlay (no --fab) keeps focus on purpose
+		if startFab {
+			refocusAfterActivate()
+		}
 		// cold start with --spawn (e.g. `//xic tracker` while the overlay
 		// wasn't running) — open the detached window once the app is up
 		if route, ok := spawnArg(os.Args[1:]); ok {

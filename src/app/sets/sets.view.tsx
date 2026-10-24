@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PencilIcon, Trash2Icon } from 'lucide-preact';
 
-import { host, tipAnchor, tooltipPinned, TooltipRef } from '../core/host';
+import { host, detachedMode, tipAnchorOutside, tooltipPinned, TooltipRef } from '../core/host';
 
 @Component()
 export class SetsView extends View implements OnInit {
@@ -108,7 +108,7 @@ export class SetsView extends View implements OnInit {
       <img
         src={this.api.iconUrl(id)}
         class={`${cls} rounded object-contain`}
-        loading="lazy"
+        loading={detachedMode ? 'eager' : 'lazy'}
         alt=""
       />
     );
@@ -130,9 +130,9 @@ export class SetsView extends View implements OnInit {
           bag: resolved.bag.id,
           slot: resolved.item.slot,
           id: resolved.item.id,
-          ...tipAnchor(el),
+          ...tipAnchorOutside(el),
         };
-      if (iconId) return { bag: -1, slot: -1, id: iconId, name: ref?.name, ...tipAnchor(el) };
+      if (iconId) return { bag: -1, slot: -1, id: iconId, name: ref?.name, ...tipAnchorOutside(el) };
       return null;
     };
     return (
@@ -196,7 +196,7 @@ export class SetsView extends View implements OnInit {
       bag: bag.id,
       slot: item.slot,
       id: item.id,
-      ...tipAnchor(el),
+      ...tipAnchorOutside(el),
     });
     return (
       <button

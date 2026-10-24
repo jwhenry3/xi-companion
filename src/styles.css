@@ -224,11 +224,45 @@ body.fab-mode {
   background-color: transparent;
 }
 
-/* quest tracker window — transparent window backdrop so the opaque
+/* all spawned windows — transparent window backdrop so the ffxi-panel
  * card's rounded corners clip cleanly (same trick as the tooltip) */
-body.tracker-mode {
+body.detached-mode {
+  background-color: transparent;
+}
+
+/* fab-layer panel windows (tracker, macro bar, cooldowns) additionally
+ * disable selection — they read as overlay panels, not documents */
+body.panel-mode {
   background-color: transparent;
   user-select: none;
+}
+
+/* classic FFXI window skin for the floating chrome — deep navy panel
+ * with a pale periwinkle border and a lighter blue title bar, close to
+ * the in-game menu skin. Plain CSS (not tailwind tokens) so it survives
+ * the html.light slate-ramp flip. */
+.ffxi-panel {
+  background-color: #11174aee;
+  border: 1px solid #ccd4f0;
+  border-radius: 6px;
+  box-shadow:
+    0 10px 28px rgb(0 0 0 / 0.6),
+    inset 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+.ffxi-panel-title {
+  background: linear-gradient(to bottom, #39438f, #262e68);
+  border-bottom: 1px solid #ccd4f0aa;
+  border-radius: 5px 5px 0 0;
+}
+.ffxi-fab {
+  background-color: #1a2360;
+  box-shadow:
+    0 6px 16px rgb(0 0 0 / 0.6),
+    0 0 0 1.5px #ccd4f0;
+  color: #dfe5ff;
+}
+.ffxi-fab:hover {
+  background-color: #28348a;
 }
 
 /* item-tooltip window: same transparent backdrop, content is a floating

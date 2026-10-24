@@ -242,3 +242,76 @@ export interface JournalState {
    *  everything is tracked by default until the player disables it */
   untracked?: string[];
 }
+
+export interface RecastEntry {
+  /** stable key — 'a<recast_id>' or 's<spell_id>' */
+  k: string;
+  /** 'a' = job ability, 's' = spell */
+  t: 'a' | 's';
+  /** display name */
+  n: string;
+  /** seconds remaining at the snapshot instant */
+  r: number;
+  /** full cooldown seconds (observed max; spell recast is the res floor) */
+  m: number;
+}
+
+export interface RecastState {
+  list: RecastEntry[];
+}
+
+// ---------- map / minimap ----------
+
+export interface MapEntity {
+  /** display name (empty for some NPCs) */
+  n?: string;
+  /** position in map pixels (0..ms) */
+  x: number;
+  y: number;
+  /** raw spawn_type (16 = monster, 1 = PC, 2 = NPC) */
+  st: number;
+  /** flags: 1 = in party, 2 = in alliance, 4 = is_npc */
+  f: number;
+  /** hp percent (0..100) */
+  hp: number;
+  /** distance in yalms */
+  d: number;
+}
+
+export interface MapWsEntry {
+  /** entity index (0-based within zone) */
+  i: number;
+  /** level (0/1 on NPCs) */
+  l: number;
+  /** widescan type byte */
+  t: number;
+  /** map-pixel offset relative to the player's map position */
+  x: number;
+  y: number;
+  n?: string;
+  /** 1 when this is the target the client is tracking */
+  tr?: number;
+  /** absolute map px — filled by 0x0F5 live track updates */
+  wx?: number;
+  wy?: number;
+}
+
+export interface MapState {
+  /** 0 = not logged in / un-mapped area */
+  on?: number;
+  /** zone id + name */
+  z?: number;
+  zn?: string;
+  /** sub-map id (zones with multiple maps, else 0) */
+  m?: number;
+  /** map pixel space the client projects into (512, 1024 for hi-res mods) */
+  ms?: number;
+  /** player: map px + facing (radians, 0 = east, increasing clockwise) */
+  me?: { x: number; y: number; f: number };
+  /** entities in render range */
+  e?: MapEntity[];
+  /** widescan entries (relative offsets; wx/wy when tracked) */
+  ws?: MapWsEntry[];
+  /** 1 while a widescan result list is held */
+  wsa?: number;
+}

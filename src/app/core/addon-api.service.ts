@@ -11,6 +11,8 @@ import type {
   JournalState,
   JournalNames,
   ItemMeta,
+  RecastState,
+  MapState,
 } from './types';
 
 // In production the addon serves this UI itself, so same-origin is correct.
@@ -94,6 +96,25 @@ export class AddonApi {
         // malformed payload; ignore
       }
     });
+    es.addEventListener('recasts', (ev) => {
+      bump();
+      try {
+        this.recasts.value = {
+          ...(JSON.parse((ev as MessageEvent).data) as RecastState),
+          at: Date.now(),
+        };
+      } catch {
+        // malformed payload; ignore
+      }
+    });
+    es.addEventListener('map', (ev) => {
+      bump();
+      try {
+        this.map.value = JSON.parse((ev as MessageEvent).data);
+      } catch {
+        // malformed payload; ignore
+      }
+    });
     void this.refreshChat();
     es.onopen = () => {
       bump();
@@ -102,6 +123,8 @@ export class AddonApi {
       // when no chat arrived while we were away
       void this.refreshChat();
       void this.refreshJournal();
+      void this.refreshRecasts();
+      void this.refreshMap();
     };
     es.onerror = () => (this.connected.value = false);
   }
@@ -364,6 +387,48 @@ export class AddonApi {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, key, id, tracked }),
     });
+  }
+
+  // ---------- recasts (cooldowns window) ----------
+
+  /** ability/spell cooldowns — `at` stamps when the snapshot arrived so
+   *  views can count `r` down locally between SSE updates */
+  readonly recasts = signal<(RecastState & { at: number }) | null>(null);
+
+  async refreshRecasts() {
+    const r = await queryClient.fetchQuery({
+      queryKey: ['recasts'],
+      queryFn: () => req<RecastState>('/api/recasts'),
+      staleTime: 0,
+    });
+    this.recasts.value = { ...r, at: Date.now() };
+  }
+
+  // ---------- map / minimap ----------
+
+  /** player position + nearby entities + widescan — SSE `map` event is
+   *  the live feed (~4Hz while moving); this is the snapshot path */
+  readonly map = signal<MapState | null>(null);
+
+  async refreshMap() {
+    const r = await queryClient.fetchQuery({
+      queryKey: ['map'],
+      queryFn: () => req<MapState>('/api/map'),
+      staleTime: 0,
+    });
+    this.map.value = r;
+  }
+
+  /** ask the server for a widescan refresh (same packet the map menu's
+   *  Widescan option sends); results stream back via the `map` event */
+  async mapScan() {
+    await req<{ ok: boolean }>('/api/map/scan', { method: 'POST' });
+  }
+
+  /** zone map image — data/maps/<z>_<m>.png on the addon side; 404s
+   *  until the user drops a file there (remapster FFXIDB pack naming) */
+  mapImgUrl(zone: number, mapId: number): string {
+    return `${API_BASE}/api/map/img?z=${zone}&m=${mapId}`;
   }
 
   /** persisted addon settings (data/settings.xml) — flat scalar keys */

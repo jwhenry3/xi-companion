@@ -9,16 +9,22 @@ import { SetsView } from './sets/sets.view';
 import { BindingsView } from './bindings/bindings.view';
 import { JournalView } from './journal/journal.view';
 import { TrackerView } from './tracker/tracker.view';
+import { CooldownsView } from './cooldowns/cooldowns.view';
+import { MapView } from './map/map.view';
+import { MinimapView } from './map/minimap.view';
 import { SettingsView } from './settings/settings.view';
 
 export const routes: Route[] = [
   { path: '/', component: InventoryView },
   { path: '/chat', component: ChatView },
   { path: '/journal', component: JournalView },
+  { path: '/map', component: MapView },
   // no NAV entries — these are detached-window routes (quest tracker,
-  // clickable macro bar)
+  // clickable macro bar, cooldown list, minimap)
   { path: '/tracker', component: TrackerView },
   { path: '/macrobar', component: MacroBarView },
+  { path: '/cooldowns', component: CooldownsView },
+  { path: '/minimap', component: MinimapView },
   { path: '/settings', component: SettingsView },
   { path: '/macros', component: MacrosView },
   {

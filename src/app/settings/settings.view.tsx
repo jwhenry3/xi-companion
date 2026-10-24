@@ -214,6 +214,11 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                     'macro bar',
                     'auto-launch on login',
                   )}
+                  {this.boolRow(
+                    'minimap',
+                    'minimap',
+                    'auto-launch on login',
+                  )}
                 </>,
               )}
               {this.section(

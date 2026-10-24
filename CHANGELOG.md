@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Minimap window + Map page** — a detached fab-layer `/minimap`
+  (square radar panel, click to cycle zoom) and a full `/map` nav page
+  fed by a new `map.lua` module. Positions come from
+  `windower.ffxi.get_map_data()` — the client's own world→map-pixel
+  projection, so multi-map zones just work; entities in render range
+  come from `get_mob_array()` (colored by type: party sky, mobs rose,
+  NPCs emerald, players violet). Widescan rides incoming 0x0F4 bursts
+  (index/level/type/map-offsets/name, committed ~0.35s after the burst
+  goes quiet), 0x0F5 track updates give the tracked target an absolute
+  live position, and 0x0F6 marks clear cancelled scans. The map page's
+  "widescan" button injects the same outgoing 0x0F4 request the map
+  menu sends. Live updates ride a `map` SSE event at ~10Hz; snapshot at
+  `GET /api/map`. Drop a PNG into `data/maps/<zone>_<map>.png`
+  (remapster/FFXIDB pack naming) to get the real zone image under the
+  radar — `GET /api/map/img` serves it, 404 falls back to the grid.
+  `//xic minimap` toggles/spawns; `settings.minimap` auto-launches on
+  login.
+- **Fab button cluster** — the floating button is now a 2×2 grid
+  (112px window): main UI, quest tracker, macro bar, and cooldowns each
+  get a one-tap button. Drag from any button or the gaps to reposition;
+  right-click still quits.
+- **Cooldowns window** — a detached fab-layer panel (`/cooldowns`) listing
+  active ability/spell recasts: name, live countdown, and a bar that
+  fills as the timer completes (amber = abilities, sky = spells). A new
+  `recasts.lua` module polls
+  `windower.ffxi.get_ability_recasts()`/`get_spell_recasts()` each pump,
+  rounds remaining to 0.1s, and pushes diffs over a `recasts` SSE event
+  (snapshot at `GET /api/recasts`). Since the client never reports full
+  recasts for abilities, the addon tracks each key's largest observed
+  remaining as the max (spells additionally floor at
+  `res.spells[id].recast`); job change and logout reset it. Open it via
+  the fab cluster or `//xic cooldowns`;
+  `settings.cooldowns` auto-spawns it on login.
 - **Training regimes** (Fields of Valor / Grounds of Valor) in the journal
   and tracker: outgoing 0x05B dialogue choices at a Field Manual/Grounds
   Tome capture the selected page, 0x029/0x02D messages drive live

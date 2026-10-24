@@ -303,6 +303,15 @@ const resModule = {
   auto_translates: {
     267: { id: 267, en: 'Hello!', ja: 'こんにちは。' },
   },
+  ability_recasts: {
+    1: { id: 1, en: 'Berserk', action_id: 31 },
+  },
+  job_abilities: {
+    31: { id: 31, en: 'Berserk' },
+  },
+  spells: {
+    4: { id: 4, en: 'Cure IV', recast: 8 },
+  },
 };
 
 const bags = {
@@ -326,6 +335,12 @@ const BAG_KEYS = { 0: 'inventory', 1: 'safe', 8: 'wardrobe' };
 let loggedIn = false;
 // npc/mob index -> entity (manual/tome names drive regime capture)
 const mobs = {};
+// the player's own index in the stubbed mob array — map.poll() reads
+// mobs[meIndex].mapPos for the player dot
+const meIndex = 0x101;
+// live-mutated recast tables — {recast_id: secs} / {spell_id: secs}
+const abilityRecasts = {};
+const spellRecasts = {};
 
 const windower = {
   addon_path: addonDir + '\\',
@@ -349,6 +364,28 @@ const windower = {
       return b ? { enabled: b.enabled, max: b.max, count: b.count } : null;
     }),
     get_mob_by_index: fn((i) => mobs[i] ?? null),
+    get_ability_recasts: fn(() => abilityRecasts),
+    get_spell_recasts: fn(() => spellRecasts),
+    // 'me' resolves to the player's mob record; get_map_data projects
+    // world coords into the client's map-pixel space. Raw jsfunction —
+    // fn() returns one value, this needs three.
+    get_mob_by_target: fn((t) => (t === 'me' ? mobs[meIndex] : null)),
+    get_map_data: (L) => {
+      const n = lua.lua_gettop(L);
+      let mid = 0, mx = 0, my = 0;
+      if (n >= 3) {
+        // world x,y,z — the stub maps 1:1 into map px (+256 centering)
+        mx = (jsval(1) ?? 0) + 256;
+        my = (jsval(3) ?? 0) + 256;
+      } else {
+        // by entity index — index -> [map_id, x, y]
+        const pos = mobs[jsval(1)]?.mapPos;
+        if (pos) [mid, mx, my] = pos;
+      }
+      push(mid); push(mx); push(my);
+      return 3;
+    },
+    get_mob_array: fn(() => mobs),
     get_items: fn((id) => {
       if (id == null) {
         const all = {};
@@ -1458,6 +1495,91 @@ function addonCmd(...args) {
   assert.equal(sj2.chat_history, 500, 'chat_history not updated');
   assert.equal(sj2.tracker, false, 'tracker flag not updated');
   console.log('PASS GET/POST /api/settings');
+
+  // recasts: ability + spell cooldowns land in /api/recasts (live
+  // updates ride the `recasts` SSE event; names come from res)
+  loggedIn = true;
+  abilityRecasts[1] = 240;
+  spellRecasts[4] = 3.5;
+  await step(3);
+  const rcp = fetch(`${base}/api/recasts`).then((r) => r.json());
+  await step(3);
+  const rcj = await rcp;
+  const berserk = rcj.list.find((e) => e.n === 'Berserk');
+  const cure = rcj.list.find((e) => e.n === 'Cure IV');
+  assert.ok(berserk, 'ability recast missing from /api/recasts');
+  assert.equal(berserk.t, 'a');
+  assert.equal(berserk.r, 240);
+  assert.ok(berserk.m >= 240, 'ability max below observed remaining');
+  assert.ok(cure, 'spell recast missing from /api/recasts');
+  assert.equal(cure.t, 's');
+  assert.ok(cure.m >= 8, 'spell max should floor at res.spells recast');
+  console.log('PASS recasts + GET /api/recasts');
+
+  // empty list must still encode as a json array — a bare {} crashes
+  // the view's .map
+  delete abilityRecasts[1];
+  delete spellRecasts[4];
+  await step(3);
+  const rce = fetch(`${base}/api/recasts`).then((r) => r.json());
+  await step(3);
+  const rcej = await rce;
+  assert.ok(Array.isArray(rcej.list), 'empty recast list not an array');
+  assert.equal(rcej.list.length, 0);
+  console.log('PASS recasts empty-list encodes as array');
+
+  // map: player pos via get_map_data (index), entity radar via
+  // get_mob_array (world xyz -> map px), widescan 0x0F4 bursts land in
+  // the same payload. Packet layout: addons/libs/packets/fields.lua
+  loggedIn = true;
+  mobs[meIndex] = {
+    index: meIndex, name: 'Tester', x: 0, y: 0, z: 0, facing: 0,
+    spawn_type: 1, valid_target: true, mapPos: [0, 300, 300],
+  };
+  mobs[0x202] = {
+    index: 0x202, name: 'Goblin Thug', x: 10, y: 0, z: -5, facing: 0,
+    spawn_type: 16, valid_target: true, hpp: 80, distance: 100,
+  };
+  const wsPacket = (index, level, xoff, yoff, name) => {
+    const b = new Uint8Array(28);
+    b[0] = 0xf4;
+    put16(b, 4, index);
+    b[6] = level;
+    put16(b, 8, xoff & 0xffff);
+    put16(b, 10, yoff & 0xffff);
+    for (let i = 0; i < name.length && i < 16; i++) {
+      b[12 + i] = name.charCodeAt(i);
+    }
+    return b;
+  };
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x21, 15, 40, -20, 'Goblin Thug'));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x22, 0, 0, 64, 'Gate Guard'));
+  // the player itself (index 0) is not a real blip
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0, 0, 0, 0, 'You'));
+  await step(12); // let the every-6th pump scan run
+  {
+    const mp = fetch(`${base}/api/map`).then((r) => r.json());
+    await step(3);
+    const mj = await mp;
+    assert.ok(mj.me, 'player map position missing: ' + JSON.stringify(mj));
+    assert.equal(mj.me.x, 300, 'player map x wrong');
+    assert.equal(mj.me.y, 300, 'player map y wrong');
+    const thug = mj.e?.find((e) => e.n === 'Goblin Thug');
+    assert.ok(thug, 'mob missing from entity radar');
+    assert.equal(thug.x, 266, 'mob map x wrong'); // 10 + 256
+    assert.equal(thug.y, 251, 'mob map y wrong'); // -5 + 256
+    assert.equal(thug.st, 16, 'mob spawn_type lost');
+    assert.ok(mj.e?.every((e) => e.n !== 'Tester'), 'player leaked into entity list');
+    const wsn = mj.ws?.map((w) => w.n);
+    assert.ok(wsn?.includes('Goblin Thug'), 'widescan mob missing');
+    assert.ok(wsn?.includes('Gate Guard'), 'widescan NPC missing');
+    assert.ok(!wsn?.includes('You'), 'widescan self-blip leaked');
+    assert.equal(mj.ws?.find((w) => w.n === 'Goblin Thug')?.l, 15, 'ws level lost');
+    assert.equal(mj.wsa, 1, 'wsa flag not set');
+    console.log('PASS map position + entities + widescan');
+  }
+  delete mobs[meIndex];
+  delete mobs[0x202];
 
   // leave no state behind for the next run
   rmSync(journalDir, { recursive: true, force: true });

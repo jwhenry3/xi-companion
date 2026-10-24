@@ -63,6 +63,19 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   some luas), `0x029`/`0x02D` messages `558/559/643` drive
   progress/completion/renewal, `0x05C` menu params enrich needs/levels,
   and `0x113` supplies tabs.
+- `recasts.lua` — ability/spell cooldowns for the detached `/cooldowns`
+  panel: polls `windower.ffxi.get_ability_recasts()`/
+  `get_spell_recasts()` each `pump()`, rounds remaining to 0.1s so the
+  `recasts` SSE event only fires on real change (snapshot also at
+  `GET /api/recasts`; the empty `list` goes through `json_array` — Lua
+  `{}` would otherwise encode as an object and crash `.map`). Entries
+  are `{k,n,t='a'|'s',r,m}` — `m` is the observed max (clients never
+  send full recasts for abilities; spells floor at
+  `res.spells[id].recast`), reset on job change and logout. The view
+  counts `r` down locally from the SSE `at` stamp so bars fill smoothly
+  between broadcasts. `//xic cooldowns` spawns the window (fab layer,
+  like the tracker), `settings.cooldowns` auto-spawns it on login, and
+  the fab cluster has a one-tap button for it.
 - `journal_names.lua` — GENERATED (do not edit): id→name/description
   tables for all quest areas, mission storylines, and RoE
   objectives/categories. Regenerate with `python
@@ -183,11 +196,14 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `Windows.HiddenOnTaskbar` keeps it out of the taskbar/alt-tab.
   `keepPinned` goroutine re-asserts `HWND_TOPMOST` every 2s (skipped while
   focused, same as Electron), and `WindowMinimise` → `Show()` undoes the
-  frameless auto-minimize quirk. The window has two modes: a 56px
+  frameless auto-minimize quirk. The window has two modes: a 112px
   transparent **fab** (`--fab` arg; the addon auto-spawns it on **login**
   — or on `load` while already logged in — `settings.fab`,
   `//xic fab on|off`; the addon taskkills the process on **logout**)
-  and the full UI.
+  and the full UI. The fab is a 2×2 button cluster (`src/app/fab.tsx`):
+  main UI (`xic:expand`), plus one-tap spawns for the `/tracker`,
+  `/macrobar`, and `/cooldowns` panels; drag from any button or the
+  grid gaps, right-click quits.
   `expand()`/`collapse()` swap min-size/resizable/bounds; both geometries
   persist in `%LOCALAPPDATA%/xic/window.json`. `trackGeometry`
   snapshots live bounds every 300ms and saves once settled — the native
@@ -199,7 +215,7 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   in event/cutscene status (player.status == 4), matching in-render
   addons. The page picks what
   to render from viewport size (`fabMode` signal in host.ts);
-  `body.fab-mode` drops the opaque background so the button reads
+  `body.fab-mode` drops the opaque background so the buttons read
   circular — `BackgroundType: BackgroundTypeTransparent` makes the
   WebView2 backdrop transparent. Chrome on the foreign-origin page works
   through Wails' raw message channel — v3 routes `wails:drag` /
@@ -219,8 +235,9 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   topmost, and `xic:close` on a spawned window destroys it (on the main
   window it collapses to the fab). `watchBackend`'s zoning/cutscene hide
   applies to the fab and "fab-layer" spawned windows (`/tracker`, the
-  quest tracker; `/macrobar`, the clickable macro bar) — other spawned
-  windows and the full UI stay visible.
+  quest tracker; `/macrobar`, the clickable macro bar; `/cooldowns`,
+  the recast list) — other spawned windows and the full UI stay
+  visible.
   The journal header's tracker button spawns `/tracker`; its rows post
   `xic:main:<path>` which `showInMain` ExecJS's into the main window's
   `__xicNavigate` (in-page router nav, expanding the fab first) — the

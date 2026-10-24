@@ -1,7 +1,14 @@
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
+import { Sparkles } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
-import { host, tipAnchor, tooltipPinned, TooltipRef } from '../core/host';
+import {
+  host,
+  detachedMode,
+  tipAnchor,
+  tooltipPinned,
+  TooltipRef,
+} from '../core/host';
 import type { Bag, BagItem, ItemMeta } from '../core/types';
 
 const EQUIP_CATEGORIES = new Set(['Weapon', 'Armor']);
@@ -20,7 +27,7 @@ export class InventoryView extends View {
   private api = inject(AddonApi);
 
   private q = signal('');
-  private gearOnly = signal(true);
+  private gearOnly = signal(false);
   private slotFilter = signal('');
   private catFilter = signal('');
   private equippedOnly = signal(false);
@@ -188,7 +195,9 @@ export class InventoryView extends View {
             <img
               src={this.api.iconUrl(item.id)}
               class="h-6 w-6 shrink-0 rounded object-contain"
-              loading="lazy"
+              // spawned WebView2 windows can start hidden/occluded —
+              // lazy images never get their load scheduled there
+              loading={detachedMode ? 'eager' : 'lazy'}
               alt=""
             />
             <span class="truncate font-medium text-slate-200">
@@ -201,16 +210,14 @@ export class InventoryView extends View {
           </span>
         </td>
         <td class="w-24 truncate px-2 py-1 text-slate-400">{meta?.category ?? ''}</td>
-        <td class="w-28 truncate px-2 py-1 text-slate-400">
-          {typeof meta?.type === 'string' ? meta.type : ''}
-        </td>
         <td class="w-10 px-2 py-1 text-slate-400">{meta?.level ?? ''}</td>
         <td class="w-10 px-2 py-1 text-indigo-300">{meta?.ilvl ?? ''}</td>
-        <td class="w-44 truncate px-2 py-1 text-slate-400">
-          {(meta?.slots ?? []).join(', ')}
-        </td>
         <td class="w-10 px-2 py-1">
-          {item.augments && <span class="text-fuchsia-300">aug</span>}
+          {item.augments && (
+            <span title="has augments — details in the item tooltip">
+              <Sparkles size={11} class="inline text-fuchsia-300" />
+            </span>
+          )}
         </td>
       </tr>
     );
@@ -290,7 +297,7 @@ export class InventoryView extends View {
             )}
           </div>
 
-          <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+          <div class="min-h-0 flex-1 overflow-auto pr-1">
             {!state && (
               <p class="text-sm text-slate-400">
                 {connected
@@ -319,15 +326,15 @@ export class InventoryView extends View {
                     <span class="font-normal text-rose-400"> — unavailable</span>
                   )}
                 </h2>
-                <table class="w-full table-fixed text-left text-xs">
+                {/* min-w keeps the fixed columns legible — narrow windows
+                    scroll sideways instead of crushing the name column */}
+                <table class="w-full min-w-[26rem] table-fixed text-left text-xs">
                   <thead>
                     <tr class="text-[10px] font-semibold uppercase tracking-wider text-slate-600">
                       {this.sortHeader('name', 'Item')}
                       {this.sortHeader('category', 'Type', 'w-24')}
-                      {this.sortHeader('subtype', 'Subtype', 'w-28')}
                       {this.sortHeader('level', 'Lv', 'w-10')}
                       {this.sortHeader('ilvl', 'iLv', 'w-10')}
-                      <th class="w-44 px-2 py-1">Slots</th>
                       <th class="w-10 px-2 py-1">Aug</th>
                     </tr>
                   </thead>

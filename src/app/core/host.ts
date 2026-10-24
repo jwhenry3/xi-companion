@@ -69,12 +69,24 @@ if (winParam && winParam !== '1' && winParam.startsWith('/')) {
 }
 export const detachedMode = winParam !== null;
 
-/** detached window on /tracker — the transparent quest tracker. The
- *  shell skips its opaque backdrop and the page renders on the same
- *  always-on-top layer as the fab (Go hides it during cutscenes). */
+/** detached windows that render as floating overlay panels — the
+ *  transparent backdrop + opaque card chrome. The shell skips the
+ *  opaque backdrop and Go keeps them on the always-on-top fab layer
+ *  (hidden during cutscenes). */
 export const trackerMode =
   detachedMode && window.location.pathname === '/tracker';
-if (trackerMode) document.body.classList.add('tracker-mode');
+export const cooldownsMode =
+  detachedMode && window.location.pathname === '/cooldowns';
+export const macrobarMode =
+  detachedMode && window.location.pathname === '/macrobar';
+export const minimapMode =
+  detachedMode && window.location.pathname === '/minimap';
+// every spawned window gets the transparent backdrop so the ffxi-panel
+// card's rounded corners clip cleanly; fab-layer panels additionally
+// disable selection (tracker-style overlay panels)
+if (detachedMode) document.body.classList.add('detached-mode');
+if (trackerMode || cooldownsMode || macrobarMode || minimapMode)
+  document.body.classList.add('panel-mode');
 
 /** ?tooltip=1 — this window IS the floating item tooltip. The shell
  *  positions/updates it via ExecJS; the page just renders the card and
@@ -165,6 +177,46 @@ export function tipAnchor(
   if (x + estW > wx + window.innerWidth) x = wx + r.left - estW - 6;
   if (y + estH > wy + window.innerHeight)
     y = wy + window.innerHeight - estH - 4;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** like tipAnchor but parks the card OUTSIDE the host window entirely —
+ *  off its right edge, or its left when there's more room that way. Used
+ *  by the gear grid, where an in-window tooltip lands on the slots it
+ *  describes. The card floats over the game instead; screen bounds are
+ *  the only clamp. */
+export function tipAnchorOutside(
+  el: HTMLElement,
+  estW = 320,
+  estH = 440,
+): { x: number; y: number } {
+  const r = el.getBoundingClientRect();
+  const wx = window.screenX;
+  const wy = window.screenY;
+  // availLeft/Top are real in Chromium but missing from the DOM lib
+  const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+  const left = s.availLeft ?? 0;
+  const top = s.availTop ?? 0;
+  const right = left + (s.availWidth || s.width);
+  const bottom = top + (s.availHeight || s.height);
+  const gap = 6;
+  const xRight = wx + window.innerWidth + gap;
+  const xLeft = wx - estW - gap;
+  // prefer whichever side keeps the whole card on-screen; if neither
+  // fits (window nearly fills the display) take the roomier side and
+  // clamp back into view
+  const fitsRight = xRight + estW <= right;
+  const fitsLeft = xLeft >= left;
+  let x = fitsRight
+    ? xRight
+    : fitsLeft
+      ? xLeft
+      : right - wx - window.innerWidth >= wx - left
+        ? xRight
+        : xLeft;
+  x = Math.min(Math.max(x, left + 2), Math.max(left + 2, right - estW - 2));
+  let y = wy + r.top;
+  y = Math.min(Math.max(y, top + 2), Math.max(top + 2, bottom - estH - 2));
   return { x: Math.round(x), y: Math.round(y) };
 }
 

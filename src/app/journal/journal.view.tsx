@@ -172,13 +172,15 @@ export class JournalView extends View implements OnInit, OnDestroy {
 
     if (sel.kind === 'roe') {
       const doneSet = new Set(j?.roe?.done ?? []);
-      // active objectives first (with progress), then completed log
-      for (const a of j?.roe?.active ?? []) {
+      // the client keeps completed objectives in the active slots — a
+      // done id isn't active; it belongs in the completed log below
+      const active = (j?.roe?.active ?? []).filter((a) => !doneSet.has(a.id));
+      for (const a of active) {
         const meta = names?.roe?.[String(a.id)];
         out.push({
           id: a.id,
           name: meta?.n ?? `Objective #${a.id}`,
-          status: doneSet.has(a.id) ? 'done' : 'current',
+          status: 'current',
           entry: meta,
           progress: a.progress,
           target: meta?.t,
@@ -189,7 +191,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
         .map(Number)
         .sort((a, b) => a - b);
       for (const id of ids) {
-        if (j?.roe?.active?.some((a) => a.id === id)) continue;
+        if (active.some((a) => a.id === id)) continue;
         const meta = names?.roe?.[String(id)];
         if (!meta) continue;
         out.push({
@@ -461,13 +463,18 @@ export class JournalView extends View implements OnInit, OnDestroy {
   private detail(e: Entry) {
     const isRoe = this.sel.value.kind === 'roe';
     const { kind, key } = this.sel.value;
-    // limited-time objectives are server-managed — no manual set/clear;
-    // completed non-repeatable objectives can't be re-taken
-    const canGiveUp = isRoe && !e.limited && e.status === 'current';
+    // limited-time objectives are server-managed — no manual set/clear.
+    // The client keeps completed objectives in the active slots, so a
+    // done entry can still be slotted: give-up frees the slot while
+    // accept(-again) only applies when it isn't set at all
+    const slotted =
+      isRoe &&
+      (this.api.journal.value?.roe?.active ?? []).some((a) => a.id === e.id);
+    const canGiveUp = isRoe && !e.limited && slotted;
     const canAccept =
       isRoe &&
       !e.limited &&
-      e.status !== 'current' &&
+      !slotted &&
       (e.status !== 'done' || e.entry?.r === 1);
     // tracker visibility — 'kind:key:id' hides this entry, 'kind:key'
     // hides the whole category (list-header toggle). A group hide wins

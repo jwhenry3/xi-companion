@@ -2,7 +2,7 @@ import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc
 import { ExternalLink } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, tooltipMode, trackerMode } from './core/host';
+import { host, fabMode, detachedMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode } from './core/host';
 import { Fab } from './fab';
 import { TooltipView } from './tooltip/tooltip.view';
 
@@ -10,6 +10,7 @@ const NAV = [
   { to: '/', match: '/', label: 'Inventory' },
   { to: '/chat', match: '/chat', label: 'Chat' },
   { to: '/journal', match: '/journal', label: 'Journal' },
+  { to: '/map', match: '/map', label: 'Map' },
   { to: '/macros', match: '/macros', label: 'Macros' },
   { to: '/profile', match: '/profile', label: 'GearSwap' },
   { to: '/settings', match: '/settings', label: 'Settings' },
@@ -40,40 +41,37 @@ export class AppShell extends View {
 
     const url = this.router.url.value;
 
-    // a spawned per-tab window (?window=1): slim draggable title bar +
-    // just the routed view — no nav, Esc/× close the window. The quest
-    // tracker (/tracker) keeps the same shape but stays transparent so
-    // it reads as an overlay panel rather than a window.
+    // a spawned per-tab window (?window=1): the classic FFXI window skin
+    // — deep navy card, pale border, blue title bar — over a transparent
+    // window backdrop, plus just the routed view (no nav). Fab-layer
+    // panels (/tracker, /macrobar, /cooldowns, /minimap) keep tighter
+    // padding so they read as overlay panels.
+    const panelMode =
+      trackerMode || cooldownsMode || macrobarMode || minimapMode;
     if (detachedMode) {
-      const title = trackerMode
-        ? 'Tracker'
-        : url === '/macrobar'
-          ? 'Macro Bar'
-          : (NAV.find(
-              (n) => (n.match === '/' ? url === '/' : url.startsWith(n.match)),
-            )?.label ?? url);
+      // router.url carries the ?window=1 query — compare the bare path
+      const path = url.split('?')[0];
+      const title =
+        (
+          {
+            '/tracker': 'Tracker',
+            '/cooldowns': 'Cooldowns',
+            '/macrobar': 'Macro Bar',
+            '/minimap': 'Minimap',
+          } as Record<string, string>
+        )[path] ??
+        NAV.find(
+          (n) => (n.match === '/' ? path === '/' : path.startsWith(n.match)),
+        )?.label ??
+        path;
       return (
-        <div
-          class={`flex h-screen flex-col overflow-hidden text-slate-200 ${
-            trackerMode
-              ? // opaque card like the item tooltip — the window itself
-                // stays transparent so the rounded corners clip cleanly
-                'rounded border border-slate-600 bg-slate-900 shadow-xl shadow-black/60'
-              : 'bg-slate-950'
-          }`}
-        >
-          <header
-            class={`flex h-6 shrink-0 items-center gap-2 pl-2 pr-1 ${
-              trackerMode
-                ? 'border-b border-slate-700 bg-slate-800'
-                : 'border-b border-slate-800 bg-slate-900/80'
-            }`}
-          >
-            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-slate-400">
+        <div class="ffxi-panel flex h-screen flex-col overflow-hidden text-slate-200">
+          <header class="ffxi-panel-title flex h-6 shrink-0 items-center gap-2 pl-2 pr-1">
+            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-indigo-100">
               {title}
             </span>
             <button
-              class="flex h-5 w-5 items-center justify-center rounded text-xs leading-none text-slate-500 hover:bg-slate-800 hover:text-rose-300"
+              class="flex h-5 w-5 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
               title="close (Esc does the same)"
               onClick={() => host.closeWindow()}
             >
@@ -81,7 +79,7 @@ export class AppShell extends View {
             </button>
           </header>
           <main
-            class={`min-h-0 flex-1 overflow-hidden ${trackerMode ? 'p-1' : 'p-3'}`}
+            class={`min-h-0 flex-1 overflow-hidden ${panelMode ? 'p-1' : 'p-3'}`}
           >
             <RouterOutlet />
           </main>

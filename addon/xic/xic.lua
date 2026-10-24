@@ -40,6 +40,10 @@ local defaults = {
     tracker = true,
     -- auto-launch the detached macro bar alongside; //xic macrobar off
     macrobar = true,
+    -- auto-launch the detached cooldowns panel; //xic cooldowns off
+    cooldowns = true,
+    -- auto-launch the detached minimap panel; //xic minimap off
+    minimap = true,
     poll_interval = 1.5,
     -- messages kept per chat thread (each channel + each tell peer);
     -- served on reconnect so a reopened UI still has history
@@ -915,6 +919,10 @@ do
     end
 end
 
+-- forward-declared so the packet handlers below close over it; the
+-- module itself loads later (after logged_in exists) in the recasts do
+local map = nil
+
 windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not journal then return end
     if id == 0x056 or id == 0x111 or id == 0x112
@@ -932,6 +940,22 @@ windower.register_event('outgoing chunk', function(id, data, modified, injected,
     if injected or blocked or not journal or id ~= 0x05B then return end
     local ok, err = pcall(journal.handle_outgoing, id, data)
     if not ok then log_err('journal-out: ' .. tostring(err)) end
+end)
+
+-- widescan traffic: 0x0F4 entries, 0x0F5 track updates, 0x0F6 scan marks
+windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked or not map then return end
+    if id == 0x0F4 or id == 0x0F5 or id == 0x0F6 then
+        local ok, err = pcall(map.handle_incoming, id, data)
+        if not ok then log_err('map: ' .. tostring(err)) end
+    end
+end)
+
+-- outgoing 0x0F5 records which widescan target the player tracks
+windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked or not map or id ~= 0x0F5 then return end
+    local ok, err = pcall(map.handle_outgoing, id, data)
+    if not ok then log_err('map-out: ' .. tostring(err)) end
 end)
 
 local function serve_static(conn, url_path)
@@ -1149,6 +1173,44 @@ end
 local function logged_in()
     local ok, info = pcall(windower.ffxi.get_info)
     return ok and type(info) == 'table' and info.logged_in == true
+end
+
+-- Recasts: ability/spell cooldown timers, polled each pump and pushed
+-- over SSE to the tracker window's Cooldowns section.
+local recasts = nil
+do
+    local ok, mod = pcall(dofile, join(windower.addon_path, 'recasts.lua'))
+    if ok and type(mod) == 'table' then
+        recasts = mod
+        recasts.setup({
+            json = json,
+            json_array = json_array,
+            sse_broadcast = sse_broadcast,
+            logged_in = logged_in,
+            res = res,
+        })
+    else
+        log_err('recasts.lua failed to load: ' .. tostring(mod))
+    end
+end
+
+-- Map: player position + nearby entities + widescan for the /map page
+-- and the detached /minimap window. `map` was forward-declared above the
+-- packet handlers — this assigns it.
+do
+    local ok, mod = pcall(dofile, join(windower.addon_path, 'map.lua'))
+    if ok and type(mod) == 'table' then
+        map = mod
+        map.setup({
+            json = json,
+            json_array = json_array,
+            sse_broadcast = sse_broadcast,
+            logged_in = logged_in,
+            res = res,
+        })
+    else
+        log_err('map.lua failed to load: ' .. tostring(mod))
+    end
 end
 
 local function macro_char_dir(char_id)
@@ -1420,6 +1482,12 @@ routes['GET /api/events'] = function(conn)
     if journal then
         send_all(conn.sock, 'event: journal\ndata: ' .. journal.snapshot_json() .. '\n\n')
     end
+    if recasts then
+        send_all(conn.sock, 'event: recasts\ndata: ' .. recasts.snapshot_json() .. '\n\n')
+    end
+    if map then
+        send_all(conn.sock, 'event: map\ndata: ' .. map.snapshot_json() .. '\n\n')
+    end
 end
 
 -- Chat history: ?after=<seq> returns newer messages across all threads
@@ -1429,6 +1497,53 @@ routes['GET /api/journal'] = function(conn)
         return send_json(conn, 200, { char = nil })
     end
     send_and_close(conn, 200, journal.snapshot_json(), 'application/json; charset=utf-8')
+end
+
+-- Recast timers for the detached cooldowns window — snapshot for new
+-- clients; live updates ride the `recasts` SSE event.
+routes['GET /api/recasts'] = function(conn)
+    local body = recasts and recasts.snapshot_json() or '{"list":[]}'
+    send_and_close(conn, 200, body, 'application/json; charset=utf-8')
+end
+
+-- Map state for the /map page + /minimap window — snapshot for new
+-- clients; live updates ride the `map` SSE event.
+routes['GET /api/map'] = function(conn)
+    local body = map and map.snapshot_json() or '{"on":0}'
+    send_and_close(conn, 200, body, 'application/json; charset=utf-8')
+end
+
+-- Optional zone map image: drop a PNG into data/maps/ named
+-- <zone>_<map>.png (or <zone>.png for single-map zones) — the remapster
+-- FFXIDB packs use this convention. 404 = radar-only fallback.
+routes['GET /api/map/img'] = function(conn, req)
+    local z = tonumber(req and req.query and req.query.z or '') or 0
+    local m = tonumber(req and req.query and req.query.m or '') or 0
+    local dir = join(windower.addon_path, 'data', 'maps')
+    local tries = {
+        join(dir, string.format('%d_%d.png', z, m)),
+        join(dir, string.format('%d.png', z)),
+    }
+    for _, path in ipairs(tries) do
+        local f = io.open(path, 'rb')
+        if f then
+            local body = f:read('*a')
+            f:close()
+            return send_and_close(conn, 200, body, 'image/png')
+        end
+    end
+    send_and_close(conn, 404, 'no map image')
+end
+
+-- Ask the server for a widescan refresh — injects the same 0x0F4 request
+-- the map menu's Widescan option sends (Flags=1).
+routes['POST /api/map/scan'] = function(conn)
+    local ok_p, packets = pcall(require, 'packets')
+    if not ok_p or type(packets) ~= 'table' then
+        return send_json(conn, 500, { error = 'packets lib unavailable' })
+    end
+    packets.inject(packets.new('outgoing', 0x0F4, { ['Flags'] = 1 }))
+    send_json(conn, 200, { ok = true })
 end
 
 routes['GET /api/journal/names'] = function(conn)
@@ -1493,6 +1608,7 @@ end
 local SETTABLE = {
     port = 'number', autostart = 'boolean',
     fab = 'boolean', tracker = 'boolean', macrobar = 'boolean',
+    cooldowns = 'boolean',
     poll_interval = 'number',
     chat_history = 'number', chat_tell_threads = 'number',
 }
@@ -1755,6 +1871,9 @@ local function poll_state()
         local jid = state.player.main_job_id
         if last_job_id ~= nil and jid ~= last_job_id then
             pcall(swapui.rescan)
+            -- recast ids are reused across jobs — stale observed maxes
+            -- would skew the cooldown bars
+            if recasts then pcall(recasts.reset) end
         end
         last_job_id = jid
     end
@@ -1800,6 +1919,18 @@ local function pump()
             log_err('journal flush: ' .. tostring(err3))
         end
     end
+    if recasts then
+        local ok4, err4 = pcall(recasts.poll)
+        if not ok4 then
+            log_err('recasts poll: ' .. tostring(err4))
+        end
+    end
+    if map then
+        local ok5, err5 = pcall(map.poll)
+        if not ok5 then
+            log_err('map poll: ' .. tostring(err5))
+        end
+    end
     heartbeat()
 end
 
@@ -1839,7 +1970,7 @@ windower.register_event('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | tracker | macrobar | start | stop | status | port <n> | refresh | swap | equip <set>')
+        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | start | stop | status | port <n> | refresh | swap | equip <set>')
     elseif cmd == 'open' then
         if server or start_server() then
             windower.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -1889,6 +2020,38 @@ windower.register_event('addon command', function(cmd, ...)
             return
         elseif launch_overlay(true, '--spawn /macrobar') then
             log('macro bar launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'cooldowns' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.cooldowns = (sub == 'on')
+            config.save(settings)
+            log('auto-cooldowns ' .. (settings.cooldowns and 'enabled' or 'disabled'))
+            if settings.cooldowns and server and logged_in() then
+                launch_overlay(true, '--spawn /cooldowns')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /cooldowns') then
+            log('cooldowns launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'minimap' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.minimap = (sub == 'on')
+            config.save(settings)
+            log('auto-minimap ' .. (settings.minimap and 'enabled' or 'disabled'))
+            if settings.minimap and server and logged_in() then
+                launch_overlay(true, '--spawn /minimap')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /minimap') then
+            log('minimap launched')
         else
             log_err('no overlay found (build with npm run build:overlay)')
         end
@@ -1970,6 +2133,9 @@ windower.register_event('incoming chunk', function(id, data, modified, injected,
     if injected or blocked then return end
     if id == 0x00B then
         zoning = true
+        -- zone-out: last zone's widescan list and entity positions are
+        -- stale now, clear them before the new zone's data lands
+        if map then pcall(map.reset) end
     elseif id == 0x00A then
         zoning = false
     end
@@ -1986,6 +2152,8 @@ local function reset_state()
     chat_seq = 0
     chat_boot = math.random(0x7fffffff)
     if journal then pcall(journal.reset) end
+    if recasts then pcall(recasts.reset) end
+    if map then pcall(map.reset) end
     if swapui then pcall(swapui.rescan) end
 end
 
@@ -2019,6 +2187,12 @@ local function spawn_fab()
     end
     if settings.macrobar then
         launch_overlay(true, '--spawn /macrobar')
+    end
+    if settings.cooldowns then
+        launch_overlay(true, '--spawn /cooldowns')
+    end
+    if settings.minimap then
+        launch_overlay(true, '--spawn /minimap')
     end
 end
 

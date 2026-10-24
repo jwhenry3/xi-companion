@@ -1,7 +1,9 @@
-// Floating action button — what the overlay renders while the shell is in
-// fab mode (56px window). Click expands to the full UI, drag repositions,
+// Floating action cluster — what the overlay renders while the shell is in
+// fab mode (112px window): a 2×2 grid of buttons — main UI, quest tracker,
+// macro bar, cooldowns. Click opens/focuses the target, drag repositions,
 // right-click quits the overlay process.
 import { host } from './core/host';
+import { ScrollText, Keyboard, Timer } from 'lucide-preact';
 
 const DRAG_THRESHOLD = 4; // px of movement before a press becomes a drag
 
@@ -38,18 +40,18 @@ function XicLogo({ size = 24 }: { size?: number }) {
   );
 }
 
-export function Fab() {
+// Shared press handling: a plain click runs the button's action; once the
+// pointer moves past the threshold we hand off to the native caption-move
+// loop — which then owns the rest of the gesture (mouseup never reaches
+// the page, so no click fires).
+function pressDrag(onPress: () => void) {
   let dragging = false;
-
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
+    e.stopPropagation(); // buttons handle their own press — not the grid's
     dragging = false;
     const sx = e.screenX;
     const sy = e.screenY;
-
-    // A plain click expands; once the pointer moves past the threshold we
-    // hand off to the native caption-move loop — which then owns the rest
-    // of the gesture (mouseup never reaches the page, so no click fires).
     const onMove = (ev: MouseEvent) => {
       if (dragging) return;
       if (Math.hypot(ev.screenX - sx, ev.screenY - sy) > DRAG_THRESHOLD) {
@@ -66,10 +68,19 @@ export function Fab() {
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);
   };
-
   const onClick = () => {
-    if (!dragging) host.expand();
+    if (!dragging) onPress();
   };
+  return { onMouseDown, onClick };
+}
+
+const BTN =
+  'ffxi-fab grid h-11 w-11 cursor-pointer place-items-center rounded-full transition';
+
+export function Fab() {
+  // drag from the gap between buttons too — the container doubles as a
+  // handle so there's no dead space in the cluster
+  const gap = pressDrag(() => {});
 
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
@@ -79,16 +90,42 @@ export function Fab() {
   return (
     <div
       class="grid h-screen w-screen cursor-default place-items-center bg-transparent"
-      title="XI Companion — click to open · drag to move · right-click to quit"
+      title="XI Companion — click a button · drag to move · right-click to quit"
       onContextMenu={onContextMenu}
     >
-      <button
-        class="grid h-12 w-12 cursor-pointer place-items-center rounded-full bg-slate-800 shadow-lg shadow-black/60 ring-1 ring-slate-600 transition hover:bg-slate-700"
-        onMouseDown={onMouseDown}
-        onClick={onClick}
+      <div
+        class="grid grid-cols-2 gap-1.5"
+        onMouseDown={gap.onMouseDown}
       >
-        <XicLogo size={34} />
-      </button>
+        <button
+          class={BTN}
+          title="main window"
+          {...pressDrag(() => host.expand())}
+        >
+          <XicLogo size={30} />
+        </button>
+        <button
+          class={BTN}
+          title="quest tracker"
+          {...pressDrag(() => host.spawnWindow('/tracker'))}
+        >
+          <ScrollText size={18} />
+        </button>
+        <button
+          class={BTN}
+          title="macro bar"
+          {...pressDrag(() => host.spawnWindow('/macrobar'))}
+        >
+          <Keyboard size={18} />
+        </button>
+        <button
+          class={BTN}
+          title="cooldowns"
+          {...pressDrag(() => host.spawnWindow('/cooldowns'))}
+        >
+          <Timer size={18} />
+        </button>
+      </div>
     </div>
   );
 }

@@ -238,18 +238,18 @@ export class TooltipView extends View {
       // fixed-size window: the card fills it, the body scrolls
       <div
         id="tip"
-        class="flex h-full w-full flex-col rounded border border-slate-600 bg-slate-900/95 shadow-xl shadow-black/60"
+        class="ffxi-panel flex h-full w-full flex-col"
       >
         {pinned && (
           <div
-            class="flex h-6 items-center gap-1 rounded-t border-b border-slate-700 bg-slate-800/90 pl-2 pr-1"
+            class="ffxi-panel-title flex h-6 items-center gap-1 pl-2 pr-1"
             style={{ '--wails-draggable': 'drag' }}
           >
-            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-slate-300">
+            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-indigo-100">
               {name}
             </span>
             <button
-              class="flex h-4 w-4 items-center justify-center rounded text-[11px] leading-none text-slate-500 hover:bg-slate-700 hover:text-rose-300"
+              class="flex h-4 w-4 items-center justify-center rounded text-[11px] leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
               style={{ '--wails-draggable': 'no-drag' }}
               onClick={() => host.closeTooltip()}
             >
