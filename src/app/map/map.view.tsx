@@ -130,7 +130,7 @@ export class MapView extends View implements OnInit, OnDestroy {
     // hand the thread to the chat window via shared localStorage —
     // storage events reach the already-open window, the onInit read
     // covers a freshly spawned one
-    localStorage.setItem('xic.chat.thread', `tell:${name}`);
+    localStorage.setItem('xicompanion.chat.thread', `tell:${name}`);
     if (host.inShell()) host.spawnWindow('/chat');
     else window.open('/chat', '_blank');
   }

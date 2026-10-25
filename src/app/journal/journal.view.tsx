@@ -792,7 +792,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
         </div>
         <p class="pt-3 text-[10px] leading-relaxed text-slate-600">
           shown as-encountered — the game sends no regime summary, so this
-          reflects what xic has observed (page selects, kill messages).
+          reflects what xicompanion has observed (page selects, kill messages).
           Regimes started before tracking began appear on first progress
           or when re-selected at a manual.
         </p>

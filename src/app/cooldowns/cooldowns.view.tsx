@@ -4,7 +4,7 @@
 // SSE signal (/api/recasts); each payload is stamped on arrival and
 // counted down locally on a 100ms tick so bars move smoothly between
 // the addon's ~0.4s broadcasts. Open from the tracker footer or
-// //xic cooldowns.
+// //xicompanion cooldowns.
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';

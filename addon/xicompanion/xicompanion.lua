@@ -1,7 +1,15 @@
-_addon.name = 'xic'
+_addon.name = 'xicompanion'
 _addon.author = 'XI Companion'
 _addon.version = '1.0.0'
-_addon.commands = { 'xic' }
+_addon.commands = { 'xicompanion', 'xicomp' }
+
+-- Ashita v4 reads `addon.*` instead of `_addon.*`; harmless under Windower.
+addon = addon or {}
+addon.name = 'xicompanion'
+addon.author = 'XI Companion'
+addon.version = '1.0.0'
+addon.desc = 'XI Companion overlay server (GearSwap/inventory/chat/macros/journal)'
+addon.commands = { '/xicompanion', '/xicomp' }
 
 --[[
     XI Companion — GearSwap, inventory, chat, macros & journal overlay.
@@ -12,18 +20,29 @@ _addon.commands = { 'xic' }
       * exposes GearSwap lua files under addons/GearSwap/data for read/write
 
     Commands:
-      //xic          - status + help
-      //xic open     - open the UI in the default browser
-      //xic overlay  - launch the overlay window
-      //xic start    - start the server
-      //xic stop     - stop the server
-      //xic port <n> - change the port (restarts the server)
-      //xic refresh  - push a fresh state snapshot to connected clients
-      //xic swap     - toggle the on-screen set picker (see //xic swap help)
-      //xic equip <set> - equip a sets.* path via GearSwap (`gs equip`)
+      //xicompanion          - status + help
+      //xicompanion open     - open the UI in the default browser
+      //xicompanion overlay  - launch the overlay window
+      //xicompanion start    - start the server
+      //xicompanion stop     - stop the server
+      //xicompanion port <n> - change the port (restarts the server)
+      //xicompanion refresh  - push a fresh state snapshot to connected clients
+      //xicompanion swap     - toggle the on-screen set picker (see //xicompanion swap help)
+      //xicompanion equip <set> - equip a sets.* path via GearSwap (`gs equip`)
 ]]
+local plat = require('plat')
 
-local socket = require('socket')
+-- socket comes from the host's libs (Windower addons/libs, Ashita
+-- addons/libs). Under Ashita this is the only unguarded host dep with no
+-- fallback — surface failures loudly rather than dying silently.
+local socket_ok, socket = pcall(require, 'socket')
+if not socket_ok then
+    local msg = '[xicompanion] LuaSocket unavailable — ' .. tostring(socket)
+    if plat and plat.add_to_chat then
+        pcall(plat.add_to_chat, 39, msg)
+    end
+    error(msg)
+end
 local res = require('resources')
 local config = require('config')
 local ok_macros, macrofs = pcall(require, 'macros')
@@ -33,16 +52,16 @@ local defaults = {
     port = 17890,
     autostart = true,
     -- auto-launch the floating overlay button once a character logs in;
-    -- //xic fab off disables it (then use //xic overlay to open manually)
+    -- //xicompanion fab off disables it (then use //xicompanion overlay to open manually)
     fab = true,
     -- auto-launch the transparent quest tracker alongside the fab;
-    -- //xic tracker off disables it
+    -- //xicompanion tracker off disables it
     tracker = true,
-    -- auto-launch the detached macro bar alongside; //xic macrobar off
+    -- auto-launch the detached macro bar alongside; //xicompanion macrobar off
     macrobar = true,
-    -- auto-launch the detached cooldowns panel; //xic cooldowns off
+    -- auto-launch the detached cooldowns panel; //xicompanion cooldowns off
     cooldowns = true,
-    -- auto-launch the detached minimap panel; //xic minimap off
+    -- auto-launch the detached minimap panel; //xicompanion minimap off
     minimap = true,
     poll_interval = 1.5,
     -- messages kept per chat thread (each channel + each tell peer);
@@ -51,7 +70,7 @@ local defaults = {
     -- distinct tell-peer threads remembered (LRU beyond this)
     chat_tell_threads = 64,
     swapui = {
-        -- headless set scanner: custom[] holds sets added via `//xic swap add`
+        -- headless set scanner: custom[] holds sets added via `//xicompanion swap add`
         custom = {},
     },
 }
@@ -61,11 +80,11 @@ config.save(settings)
 local CHAT_COLOR = 207
 
 local function log(msg)
-    windower.add_to_chat(CHAT_COLOR, '[xic] ' .. msg)
+    plat.add_to_chat(CHAT_COLOR, '[xicompanion] ' .. msg)
 end
 
 local function log_err(msg)
-    windower.add_to_chat(39, '[xic] ' .. msg)
+    plat.add_to_chat(39, '[xicompanion] ' .. msg)
 end
 
 ----------------------------------------------------------------------
@@ -79,7 +98,7 @@ local function join(a, b)
     return a .. b
 end
 
-local ui_dir = join(windower.addon_path, 'ui')
+local ui_dir = join(plat.addon_path, 'ui')
 
 local function gearswap_data_dir()
     local candidates = {
@@ -87,12 +106,12 @@ local function gearswap_data_dir()
         'addons\\gearswap\\data',
     }
     for _, rel in ipairs(candidates) do
-        local dir = join(windower.windower_path, rel)
-        if windower.dir_exists(dir) then
+        local dir = join(plat.windower_path, rel)
+        if plat.dir_exists(dir) then
             return dir
         end
     end
-    return join(windower.windower_path, 'addons\\GearSwap\\data')
+    return join(plat.windower_path, 'addons\\GearSwap\\data')
 end
 
 ----------------------------------------------------------------------
@@ -260,8 +279,8 @@ local function try_extdata(item_id, extdata_hex)
             if ok and type(ret) == 'table' and type(ret.decode) == 'function' then
                 extdata_decoder = ret
             else
-                local path = join(windower.windower_path, 'addons\\libs\\extdata.lua')
-                if windower.file_exists(path) then
+                local path = join(plat.windower_path, 'addons\\libs\\extdata.lua')
+                if plat.file_exists(path) then
                     local ok2, ret2 = pcall(dofile, path)
                     if ok2 and type(ret2) == 'table' and type(ret2.decode) == 'function' then
                         extdata_decoder = ret2
@@ -336,7 +355,7 @@ local function collect_state()
         catalog = {},
     }
 
-    local player = windower.ffxi.get_player()
+    local player = plat.ffxi.get_player()
     if player then
         local main_job = res.jobs and res.jobs[player.main_job_id]
         local sub_job = player.sub_job_id and res.jobs and res.jobs[player.sub_job_id]
@@ -358,9 +377,9 @@ local function collect_state()
     -- ('inventory', 'wardrobe2', ...) matching the BAGS values; numeric ids
     -- are accepted too, so fall back to both.
     local all_items, bag_infos = nil, nil
-    local ok_items, items_t = pcall(windower.ffxi.get_items)
+    local ok_items, items_t = pcall(plat.ffxi.get_items)
     if ok_items and type(items_t) == 'table' then all_items = items_t end
-    local ok_infos, infos_t = pcall(windower.ffxi.get_bag_info)
+    local ok_infos, infos_t = pcall(plat.ffxi.get_bag_info)
     if ok_infos and type(infos_t) == 'table' then bag_infos = infos_t end
 
     -- items.equipment maps equip slot -> where it's equipped. The real
@@ -375,7 +394,7 @@ local function collect_state()
     local equipment = type(all_items) == 'table' and all_items.equipment or nil
     if type(equipment) ~= 'table' then
         -- the no-arg call doesn't always carry it — the dedicated form does
-        local ok_eq, eq_t = pcall(windower.ffxi.get_items, 'equipment')
+        local ok_eq, eq_t = pcall(plat.ffxi.get_items, 'equipment')
         if ok_eq and type(eq_t) == 'table' then equipment = eq_t end
     end
     local equip_slots = {}
@@ -465,16 +484,16 @@ end
 local function list_gearswap_files()
     local dir = gearswap_data_dir()
     local files = json_array({})
-    local found = windower.dir_exists(dir)
+    local found = plat.dir_exists(dir)
     if found then
         local function scan(sub)
             local base = sub and join(dir, sub) or dir
-            local entries = windower.get_dir(base)
+            local entries = plat.get_dir(base)
             if type(entries) ~= 'table' then return end
             table.sort(entries)
             for _, name in ipairs(entries) do
                 local full = join(base, name)
-                if windower.dir_exists(full) then
+                if plat.dir_exists(full) then
                     if not sub then
                         scan(name) -- one level deep: player-named folders
                     end
@@ -510,8 +529,8 @@ local function write_gearswap_file(rel, content)
     local full = join(gearswap_data_dir(), rel)
     -- Create the parent directory when writing into a new player folder.
     local parent = full:match('^(.*)[/\\][^/\\]+$')
-    if parent and not windower.dir_exists(parent) then
-        windower.create_dir(parent)
+    if parent and not plat.dir_exists(parent) then
+        plat.create_dir(parent)
     end
     local f, err = io.open(full, 'wb')
     if not f then return nil, tostring(err) end
@@ -526,7 +545,7 @@ end
 
 local swapui = nil
 do
-    local ok, mod = pcall(dofile, join(windower.addon_path, 'swapui.lua'))
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'swapui.lua'))
     if ok and type(mod) == 'table' then
         swapui = mod
         swapui.setup({
@@ -534,7 +553,7 @@ do
             save = function() config.save(settings) end,
             data_dir = gearswap_data_dir,
             player = function()
-                local ok2, p = pcall(windower.ffxi.get_player)
+                local ok2, p = pcall(plat.ffxi.get_player)
                 if ok2 then return p end
                 return nil
             end,
@@ -720,7 +739,7 @@ local function push_chat(m)
 end
 
 local function player_name()
-    local ok, p = pcall(windower.ffxi.get_player)
+    local ok, p = pcall(plat.ffxi.get_player)
     return (ok and type(p) == 'table' and p.name) or 'me'
 end
 
@@ -735,7 +754,7 @@ local res_items, res_key_items
 
 local function at_names_table()
     if at_names == nil then
-        local ok, t = pcall(dofile, windower.addon_path .. 'at_names.lua')
+        local ok, t = pcall(dofile, plat.addon_path .. 'at_names.lua')
         at_names = (ok and type(t) == 'table') and t or false
     end
     return at_names or {}
@@ -950,7 +969,7 @@ local function handle_chat_packet(data)
     push_chat(m)
 end
 
-windower.register_event('incoming chunk', function(id, data)
+plat.on('incoming chunk', function(id, data)
     if id ~= 0x017 then return end
     -- never let a malformed packet kill the routing path — log and move on
     local ok, err = pcall(handle_chat_packet, data)
@@ -963,7 +982,7 @@ end)
 ----------------------------------------------------------------------
 local journal = nil
 do
-    local ok, mod = pcall(dofile, join(windower.addon_path, 'journal.lua'))
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'journal.lua'))
     if ok and type(mod) == 'table' then
         journal = mod
         journal.setup({
@@ -971,14 +990,14 @@ do
             json = json,
             json_array = json_array,
             sse_broadcast = sse_broadcast,
-            data_dir = join(windower.addon_path, 'data'),
-            addon_path = windower.addon_path,
+            data_dir = join(plat.addon_path, 'data'),
+            addon_path = plat.addon_path,
             player_name = player_name,
             log = log,
             log_err = log_err,
             zones = res.zones,
             mob_name = function(index)
-                local ok, mob = pcall(windower.ffxi.get_mob_by_index, index)
+                local ok, mob = pcall(plat.ffxi.get_mob_by_index, index)
                 return ok and mob and mob.name or nil
             end,
         })
@@ -991,7 +1010,7 @@ end
 -- module itself loads later (after logged_in exists) in the recasts do
 local map = nil
 
-windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not journal then return end
     if id == 0x056 or id == 0x111 or id == 0x112
         or id == 0x05C or id == 0x032 or id == 0x033 or id == 0x034
@@ -1004,7 +1023,7 @@ end)
 
 -- outgoing dialogue choices (0x05B) carry the manual/tome page selection
 -- that marks a training regime active
-windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
+plat.on('outgoing chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not journal or id ~= 0x05B then return end
     local ok, err = pcall(journal.handle_outgoing, id, data)
     if not ok then log_err('journal-out: ' .. tostring(err)) end
@@ -1012,7 +1031,7 @@ end)
 
 -- widescan traffic: 0x0F4 entries, 0x0F5 track updates, 0x0F6 scan marks;
 -- 0x017 chat feeds the linkshell-member roster (LS channel senders)
-windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not map then return end
     if id == 0x0F4 or id == 0x0F5 or id == 0x0F6 or id == 0x017 then
         local ok, err = pcall(map.handle_incoming, id, data)
@@ -1021,7 +1040,7 @@ windower.register_event('incoming chunk', function(id, data, modified, injected,
 end)
 
 -- outgoing 0x0F5 records which widescan target the player tracks
-windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
+plat.on('outgoing chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not map or id ~= 0x0F5 then return end
     local ok, err = pcall(map.handle_outgoing, id, data)
     if not ok then log_err('map-out: ' .. tostring(err)) end
@@ -1067,7 +1086,7 @@ end
 -- stop drawing for. The overlay polls this via /api/status.
 local function overlay_hidden()
     if zoning then return true end
-    local ok, player = pcall(windower.ffxi.get_player)
+    local ok, player = pcall(plat.ffxi.get_player)
     return ok and type(player) == 'table' and player.status == 4
 end
 
@@ -1116,7 +1135,7 @@ end
 routes['POST /api/gearswap/file'] = routes['PUT /api/gearswap/file']
 
 routes['POST /api/gearswap/reload'] = function(conn)
-    windower.send_command('gs reload')
+    plat.send_command('gs reload')
     send_json(conn, 200, { ok = true })
 end
 
@@ -1154,7 +1173,7 @@ routes['POST /api/command'] = function(conn, req)
     if type(cmd) ~= 'string' or cmd == '' then
         return send_json(conn, 400, { error = 'missing cmd' })
     end
-    windower.send_command(cmd)
+    plat.send_command(cmd)
     send_json(conn, 200, { ok = true })
 end
 
@@ -1187,7 +1206,7 @@ routes['POST /api/item'] = function(conn, req)
         if bag ~= 0 or index == nil then
             return send_json(conn, 400, { error = 'drop needs inventory bag + index' })
         end
-        local ok, err = pcall(windower.ffxi.drop_item, index, count)
+        local ok, err = pcall(plat.ffxi.drop_item, index, count)
         if not ok then
             return send_json(conn, 500, { error = tostring(err) })
         end
@@ -1240,7 +1259,7 @@ end
 ----------------------------------------------------------------------
 
 local function logged_in()
-    local ok, info = pcall(windower.ffxi.get_info)
+    local ok, info = pcall(plat.ffxi.get_info)
     return ok and type(info) == 'table' and info.logged_in == true
 end
 
@@ -1248,7 +1267,7 @@ end
 -- over SSE to the tracker window's Cooldowns section.
 local recasts = nil
 do
-    local ok, mod = pcall(dofile, join(windower.addon_path, 'recasts.lua'))
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'recasts.lua'))
     if ok and type(mod) == 'table' then
         recasts = mod
         recasts.setup({
@@ -1267,7 +1286,7 @@ end
 -- and the detached /minimap window. `map` was forward-declared above the
 -- packet handlers — this assigns it.
 do
-    local ok, mod = pcall(dofile, join(windower.addon_path, 'map.lua'))
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'map.lua'))
     if ok and type(mod) == 'table' then
         map = mod
         map.setup({
@@ -1277,7 +1296,7 @@ do
             logged_in = logged_in,
             res = res,
             join = join,
-            data_dir = join(windower.addon_path, 'data'),
+            data_dir = join(plat.addon_path, 'data'),
             player_name = player_name,
         })
     else
@@ -1288,7 +1307,7 @@ end
 -- Map image DATs: zone+map -> client DAT bytes (browser decodes them).
 local mapimg
 do
-    local ok, mod = pcall(dofile, join(windower.addon_path, 'mapimg.lua'))
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'mapimg.lua'))
     if ok and type(mod) == 'table' then
         mapimg = mod
         mapimg.setup()
@@ -1299,11 +1318,11 @@ end
 
 local function macro_char_dir(char_id)
     if type(char_id) ~= 'string' or not char_id:match('^[%w]+$')
-        or type(windower.ffxi_path) ~= 'string' then
+        or type(plat.ffxi_path) ~= 'string' then
         return nil
     end
-    local dir = join(join(windower.ffxi_path, 'USER'), char_id)
-    return windower.dir_exists(dir) and dir or nil
+    local dir = join(join(plat.ffxi_path, 'USER'), char_id)
+    return plat.dir_exists(dir) and dir or nil
 end
 
 routes['GET /api/macros'] = function(conn)
@@ -1311,7 +1330,7 @@ routes['GET /api/macros'] = function(conn)
         return send_json(conn, 500, { error = 'macros module unavailable' })
     end
     local chars = {}
-    for _, d in ipairs(macrofs.find_char_dirs(windower.ffxi_path)) do
+    for _, d in ipairs(macrofs.find_char_dirs(plat.ffxi_path)) do
         local pals = macrofs.read_palettes(d.path)
         for _, p in ipairs(pals) do
             for _, m in ipairs(p.macros) do
@@ -1374,13 +1393,13 @@ routes['PUT /api/macros/palette'] = function(conn, req)
         local book = math.floor(index / 10) + 1
         local page = index % 10 + 1
         local other = book == 1 and 2 or 1
-        windower.send_command(('input /macro book %d'):format(other))
+        plat.send_command(('input /macro book %d'):format(other))
         macro_schedule(function()
             macrofs.commit_image(path, image)
             macro_schedule(function()
-                windower.send_command(('input /macro book %d'):format(book))
+                plat.send_command(('input /macro book %d'):format(book))
                 macro_schedule(function()
-                    windower.send_command(('input /macro set %d'):format(page))
+                    plat.send_command(('input /macro set %d'):format(page))
                 end, MACRO_SWITCH_DELAY)
             end, MACRO_SWITCH_DELAY)
         end, MACRO_SWITCH_DELAY)
@@ -1448,7 +1467,7 @@ local function run_macro_lines(lines, i)
                     tonumber(wait) or 1)
                 return
             end
-            windower.send_command('input ' .. l)
+            plat.send_command('input ' .. l)
         end
     end
 end
@@ -1502,13 +1521,13 @@ routes['GET /api/icon'] = function(conn, req)
     if not id or id <= 0 then
         return send_json(conn, 400, { error = 'bad id' })
     end
-    local dir = join(join(windower.addon_path, 'data'), 'icons')
+    local dir = join(join(plat.addon_path, 'data'), 'icons')
     local path = dir .. '\\' .. tostring(id) .. '.bmp'
-    if not windower.file_exists(path) then
+    if not plat.file_exists(path) then
         local ok_x, icon_extractor = pcall(require, 'icon_extractor')
         if ok_x and icon_extractor and icon_extractor.item_by_id then
-            if not windower.dir_exists(dir) then
-                pcall(windower.create_dir, dir)
+            if not plat.dir_exists(dir) then
+                pcall(plat.create_dir, dir)
             end
             local co = coroutine.create(function()
                 icon_extractor.item_by_id(id, path)
@@ -1522,7 +1541,7 @@ routes['GET /api/icon'] = function(conn, req)
             end
         end
     end
-    if not windower.file_exists(path) then
+    if not plat.file_exists(path) then
         return send_json(conn, 404, { error = 'no icon' })
     end
     local f = io.open(path, 'rb')
@@ -1605,7 +1624,7 @@ end
 routes['GET /api/map/img'] = function(conn, req)
     local z = tonumber(req and req.query and req.query.z or '') or 0
     local m = tonumber(req and req.query and req.query.m or '') or 0
-    local dir = join(windower.addon_path, 'data', 'maps')
+    local dir = join(plat.addon_path, 'data', 'maps')
     local tries = {
         join(dir, string.format('%d_%d.png', z, m)),
         join(dir, string.format('%d.png', z)),
@@ -1783,7 +1802,7 @@ routes['POST /api/chat'] = function(conn, req)
         if not to or to == '' then
             return send_json(conn, 400, { error = 'tell requires to' })
         end
-        windower.send_command('input /tell ' .. to .. ' ' .. wire)
+        plat.send_command('input /tell ' .. to .. ' ' .. wire)
         -- sent tells don't echo back as packets — record the local half
         -- of the DM so the thread shows both sides
         push_chat({ channel = 'tell', peer = to, sender = player_name(), self = true, text = display })
@@ -1793,7 +1812,7 @@ routes['POST /api/chat'] = function(conn, req)
     if not cmd then
         return send_json(conn, 400, { error = 'cannot send to ' .. tostring(channel) })
     end
-    windower.send_command('input ' .. cmd .. ' ' .. wire)
+    plat.send_command('input ' .. cmd .. ' ' .. wire)
     -- the outgoing half may never come back as a packet — append it like
     -- the tell path. pending_self guards against a real echo doubling it
     local pend = pending_self[channel] or {}
@@ -1932,7 +1951,7 @@ local function start_server()
                 log('port ' .. base_port .. ' busy, using ' .. bound_port .. ' instead')
             end
             log('listening on http://127.0.0.1:' .. bound_port ..
-                ' - run //xic open to launch the UI')
+                ' - run //xicompanion open to launch the UI')
             return true
         end
     end
@@ -2036,16 +2055,16 @@ end
 -- (or it's minimized) presents can stop, which would starve the socket
 -- pump entirely. time change (~0.6s ticks) and incoming chunks are driven
 -- by the game loop, so they keep the server alive regardless of rendering.
-windower.register_event('prerender', pump)
-windower.register_event('time change', pump)
-windower.register_event('incoming chunk', pump)
+plat.on('prerender', pump)
+plat.on('time change', pump)
+plat.on('incoming chunk', pump)
 
 -- spawn the overlay shell. fab=true launches the collapsed floating
 -- button (bundled exe only — no Electron fallback, it's too heavy to
 -- auto-spawn). Returns true if something was launched.
 local function launch_overlay(fab, extra)
-    local exe = windower.addon_path .. 'overlay\\xic-overlay.exe'
-    if windower.file_exists(exe) then
+    local exe = plat.addon_path .. 'overlay\\xicompanion-overlay.exe'
+    if plat.file_exists(exe) then
         os.execute('start "" "' .. exe .. '"' .. (fab and ' --fab' or '') ..
             (extra and ' ' .. extra or ''))
         return true
@@ -2053,9 +2072,9 @@ local function launch_overlay(fab, extra)
     if fab then return false end
     -- dev build: Electron via the repo sibling (needs node + npm i);
     -- launch.mjs scrubs ELECTRON_RUN_AS_NODE from the inherited env
-    local script = windower.addon_path ..
+    local script = plat.addon_path ..
         '..\\..\\gearswapui\\overlay\\launch.mjs'
-    if windower.file_exists(script) then
+    if plat.file_exists(script) then
         os.execute('start "" node "' .. script .. '"')
         return true
     end
@@ -2063,7 +2082,7 @@ local function launch_overlay(fab, extra)
     return false
 end
 
-windower.register_event('addon command', function(cmd, ...)
+plat.on('addon command', function(cmd, ...)
     cmd = (cmd or ''):lower()
     local args = { ... }
 
@@ -2071,7 +2090,7 @@ windower.register_event('addon command', function(cmd, ...)
         log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | start | stop | status | port <n> | refresh | swap | equip <set>')
     elseif cmd == 'open' then
         if server or start_server() then
-            windower.open_url('http://127.0.0.1:' .. bound_port .. '/')
+            plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
         end
     elseif cmd == 'overlay' then
         if not (server or start_server()) then return end
@@ -2167,7 +2186,7 @@ windower.register_event('addon command', function(cmd, ...)
     elseif cmd == 'port' then
         local p = tonumber(args[1])
         if not p or p < 1 or p > 65535 then
-            log_err('usage: //xic port <number>')
+            log_err('usage: //xicompanion port <number>')
         else
             settings.port = p
             config.save(settings)
@@ -2187,14 +2206,14 @@ windower.register_event('addon command', function(cmd, ...)
     elseif cmd == 'equip' then
         local path = table.concat(args, ' ')
         if path == '' then
-            log_err('usage: //xic equip <set path>  e.g. //xic equip idle.Town')
+            log_err('usage: //xicompanion equip <set path>  e.g. //xicompanion equip idle.Town')
         elseif swapui then
             swapui.equip(path)
         else
-            windower.send_command('gs equip ' .. path)
+            plat.send_command('gs equip ' .. path)
         end
     elseif cmd == 'swap' then
-        -- swapui is a headless scanner powering `//xic equip` and the
+        -- swapui is a headless scanner powering `//xicompanion equip` and the
         -- list/add/remove bookkeeping commands.
         local sub = (args[1] or ''):lower()
         if not swapui then
@@ -2218,16 +2237,16 @@ windower.register_event('addon command', function(cmd, ...)
                 log_err('swap remove: ' .. tostring(err))
             end
         else
-            log('usage: //xic swap [scan|list|add <set>|remove <set>]')
+            log('usage: //xicompanion swap [scan|list|add <set>|remove <set>]')
         end
     else
-        log('unknown command: ' .. cmd .. ' (try //xic help)')
+        log('unknown command: ' .. cmd .. ' (try //xicompanion help)')
     end
 end)
 
 -- Track the zoning blackout for overlay_hidden: 0x00B = zone-out begins,
 -- 0x00A = zone-in complete (the same packets pointwatch hides its box on).
-windower.register_event('incoming chunk', function(id, data, modified, injected, blocked)
+plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked then return end
     if id == 0x00B then
         zoning = true
@@ -2256,6 +2275,8 @@ local function reset_state()
 end
 
 local function kill_overlay()
+    os.execute('taskkill /F /IM xicompanion-overlay.exe >nul 2>nul')
+    -- transitional: pre-rename binary
     os.execute('taskkill /F /IM xic-overlay.exe >nul 2>nul')
 end
 
@@ -2271,9 +2292,9 @@ end
 local function spawn_fab()
     -- on reload the running instance ignores --fab and just stays visible
     if not settings.fab then
-        -- //xic fab off persists per character — say so instead of
+        -- //xicompanion fab off persists per character — say so instead of
         -- silently skipping, a stale override reads as "fab didn't spawn"
-        log('auto-fab disabled for this character (//xic fab on to re-enable)')
+        log('auto-fab disabled for this character (//xicompanion fab on to re-enable)')
     elseif server then
         launch_overlay(true)
     end
@@ -2294,7 +2315,7 @@ local function spawn_fab()
     end
 end
 
-windower.register_event('load', function()
+plat.on('load', function()
     session_start()
     -- //lua load mid-session lands after login — spawn directly; at the
     -- title screen 'login' picks it up instead
@@ -2303,17 +2324,17 @@ windower.register_event('load', function()
     end
 end)
 
-windower.register_event('login', function()
+plat.on('login', function()
     session_start()
     spawn_fab()
 end)
 
-windower.register_event('logout', function()
+plat.on('logout', function()
     kill_overlay()
     reset_state()
 end)
 
-windower.register_event('unload', function()
+plat.on('unload', function()
     stop_server()
     if swapui then pcall(swapui.destroy) end
     kill_overlay()

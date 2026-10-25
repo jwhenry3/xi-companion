@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract the client's auto-translate phrase table -> addon/xic/at_names.lua
+"""Extract the client's auto-translate phrase table -> addon/xicompanion/at_names.lua
 
 The dictionary lives in a single client DAT (file id 0xD971 = English,
 0xD8F9 = Japanese — Windower ResourceExtractor's Program.cs). File ids
@@ -77,7 +77,7 @@ def parse(buf: bytes) -> dict[int, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--ffxi', default=DEFAULT_FFXI)
-    ap.add_argument('--out', default=os.path.join('addon', 'xic', 'at_names.lua'))
+    ap.add_argument('--out', default=os.path.join('addon', 'xicompanion', 'at_names.lua'))
     args = ap.parse_args()
 
     p = dat_path(args.ffxi, AT_EN_FID)

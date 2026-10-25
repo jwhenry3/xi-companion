@@ -13,6 +13,7 @@
 -- roe_quest bit type, 0x112 order page), and the generated
 -- journal_names.lua for area/storyline tables.
 
+local plat = require('plat')
 local M = {}
 
 local QUEST_AREAS = {
@@ -113,7 +114,7 @@ end
 
 local function load_persisted(char)
     local path = journal_file(char)
-    if not windower.file_exists(path) then return nil end
+    if not plat.file_exists(path) then return nil end
     local ok, t = pcall(dofile, path)
     if ok and type(t) == 'table' then
         return t
@@ -123,8 +124,8 @@ end
 
 local function persist()
     if not state or not state.char then return end
-    if not windower.dir_exists(journal_dir()) then
-        pcall(windower.create_dir, journal_dir())
+    if not plat.dir_exists(journal_dir()) then
+        pcall(plat.create_dir, journal_dir())
     end
     local path = journal_file(state.char)
     local f = io.open(path, 'wb')

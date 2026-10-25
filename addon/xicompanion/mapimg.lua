@@ -7,6 +7,7 @@ bytes are handed to the browser, which decodes the DXT/bitmap payload —
 keeps image decode off the game frame entirely.
 --]]
 
+local plat = require('plat')
 local M = {}
 
 local mapdats
@@ -15,7 +16,7 @@ local ftable_err   -- sticky failure so we only try/log once
 local dat_paths = {}
 
 function M.setup()
-    local ok, mod = pcall(dofile, windower.addon_path .. 'mapdats.lua')
+    local ok, mod = pcall(dofile, plat.addon_path .. 'mapdats.lua')
     if ok and type(mod) == 'table' then
         mapdats = mod
     end
@@ -24,11 +25,11 @@ end
 local function ftable_bytes()
     if ftable then return ftable end
     if ftable_err then return nil end
-    if type(windower.ffxi_path) ~= 'string' then
+    if type(plat.ffxi_path) ~= 'string' then
         ftable_err = 'no ffxi_path'
         return nil
     end
-    local f = io.open(windower.ffxi_path .. '/FTABLE.DAT', 'rb')
+    local f = io.open(plat.ffxi_path .. '/FTABLE.DAT', 'rb')
     if not f then
         ftable_err = 'no FTABLE.DAT'
         return nil
@@ -50,8 +51,8 @@ local function dat_path(fid)
         return nil
     end
     local f = ft:byte(i) + ft:byte(i + 1) * 256
-    local p = ('%s/ROM/%d/%d.DAT'):format(windower.ffxi_path, math.floor(f / 128), f % 128)
-    if not windower.file_exists(p) then
+    local p = ('%s/ROM/%d/%d.DAT'):format(plat.ffxi_path, math.floor(f / 128), f % 128)
+    if not plat.file_exists(p) then
         dat_paths[fid] = false
         return nil
     end

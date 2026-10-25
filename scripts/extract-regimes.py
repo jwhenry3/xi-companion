@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Extract Fields of Valor / Grounds of Valor regime page data from
-bg-wiki into addon/xic/regime_names.lua.
+bg-wiki into addon/xicompanion/regime_names.lua.
 
 The regime page->objectives mapping is client dialog DAT data that is not
 trivially reachable, so this scrapes the canonical community tables:
@@ -17,7 +17,7 @@ runtime); each page record is
   {page=N, desc='<objective text>', needs={n1,..}, low=L, high=H}
 
 Usage:
-    python scripts/extract-regimes.py [--out addon/xic/regime_names.lua]
+    python scripts/extract-regimes.py [--out addon/xicompanion/regime_names.lua]
 """
 
 import argparse
@@ -27,7 +27,7 @@ import sys
 import urllib.request
 
 API = 'https://www.bg-wiki.com/api.php'
-UA = {'User-Agent': 'xic-journal/1.0 (regime table generator)'}
+UA = {'User-Agent': 'xicompanion-journal/1.0 (regime table generator)'}
 
 
 def fetch_wikitext(title, section=None):
@@ -199,7 +199,7 @@ def emit(zones_by_kind):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--out', default='addon/xic/regime_names.lua')
+    ap.add_argument('--out', default='addon/xicompanion/regime_names.lua')
     args = ap.parse_args()
 
     fov_wt = fetch_wikitext('Fields_of_Valor', section=2)

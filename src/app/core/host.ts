@@ -6,18 +6,18 @@
 // (fabMode signal) and talks to the shell through WebView2's
 // chrome.webview.postMessage with raw strings:
 //
-//   "xic:drag"                  → native caption move loop (button-gated
-//   "xic:resize:<cursor>"       → native size loop in Go — NOT wails:*
+//   "xicompanion:drag"                  → native caption move loop (button-gated
+//   "xicompanion:resize:<cursor>"       → native size loop in Go — NOT wails:*
 //                                 messages, which bypass RawMessageHandler
 //                                 and can't be gated on button state)
-//   "xic:expand"               → fab → full window
-//   "xic:collapse"             → full → fab (Esc/× both collapse now)
-//   "xic:quit"                 → exit the overlay process
-//   "xic:spawn:<route>"        → open/focus a detached per-tab window
-//   "xic:toggle:<route>"       → spawn-or-close (the fab's menu bar)
-//   "xic:windows"              → ask for the open spawned-route list
-//   "xic:close"                → destroy a detached window (main collapses)
-//   "xic:refocus"              → hand keyboard focus back to the FFXI window
+//   "xicompanion:expand"               → fab → full window
+//   "xicompanion:collapse"             → full → fab (Esc/× both collapse now)
+//   "xicompanion:quit"                 → exit the overlay process
+//   "xicompanion:spawn:<route>"        → open/focus a detached per-tab window
+//   "xicompanion:toggle:<route>"       → spawn-or-close (the fab's menu bar)
+//   "xicompanion:windows"              → ask for the open spawned-route list
+//   "xicompanion:close"                → destroy a detached window (main collapses)
+//   "xicompanion:refocus"              → hand keyboard focus back to the FFXI window
 import { signal } from '@preact/signals';
 
 interface Webview2Host {
@@ -143,7 +143,7 @@ if (inWebView()) {
   };
   // the shell only reports on change — ask once at load so a page that
   // mounted after windows were already up starts with the right list
-  if (!detachedMode && !tooltipMode) tell('xic:windows');
+  if (!detachedMode && !tooltipMode) tell('xicompanion:windows');
 }
 
 // ---------- theme ----------
@@ -155,8 +155,8 @@ if (inWebView()) {
 
 export type Theme = 'dark' | 'light' | 'glass' | 'bare';
 export const THEMES: Theme[] = ['dark', 'light', 'glass', 'bare'];
-const THEME_KEY = 'xic.theme';
-const WTHEME_KEY = `xic.wintheme.${window.location.pathname}`;
+const THEME_KEY = 'xicompanion.theme';
+const WTHEME_KEY = `xicompanion.wintheme.${window.location.pathname}`;
 const storedTheme = (detachedMode
   ? localStorage.getItem(WTHEME_KEY)
   : null) as Theme | null;
@@ -175,7 +175,7 @@ export function setTheme(t: Theme) {
   localStorage.setItem(detachedMode ? WTHEME_KEY : THEME_KEY, t);
   applyTheme(t);
 }
-const winKey = (path: string) => `xic.wintheme.${path}`;
+const winKey = (path: string) => `xicompanion.wintheme.${path}`;
 /** a detached route's stored pick (null = follows the global theme) */
 export function getWinTheme(path: string): Theme | null {
   return localStorage.getItem(winKey(path)) as Theme | null;
@@ -223,7 +223,7 @@ let lastTip: TooltipRef | null = null;
 };
 
 const sendTip = () => {
-  if (lastTip) tell(`xic:tooltip:${JSON.stringify(lastTip)}`);
+  if (lastTip) tell(`xicompanion:tooltip:${JSON.stringify(lastTip)}`);
 };
 
 /** screen coords anchoring a tooltip just right of an element (flipped
@@ -293,47 +293,47 @@ export const host = {
    *  retries the initial SetURL until it hears this, since a failed
    *  navigation fires NavigationCompleted just like a good one */
   loaded() {
-    tell('xic:loaded');
+    tell('xicompanion:loaded');
   },
 
   /** start the native caption-move loop (fab drag, fallback for header) */
   drag() {
-    tell('xic:drag');
+    tell('xicompanion:drag');
   },
 
   /** pop the current route out into its own small window */
   spawnWindow(path: string) {
-    tell(`xic:spawn:${path}`);
+    tell(`xicompanion:spawn:${path}`);
   },
 
   /** spawn-or-close a detached window — the fab's menu-bar buttons
    *  toggle rather than always opening */
   toggleWindow(path: string) {
-    tell(`xic:toggle:${path}`);
+    tell(`xicompanion:toggle:${path}`);
   },
 
   /** close this window (a spawned tab). On the main window Esc/× use
    *  collapse() instead — the fab is its "closed" state. */
   closeWindow() {
-    if (inWebView()) tell('xic:close');
+    if (inWebView()) tell('xicompanion:close');
     else window.close();
   },
 
   /** fab → full window */
   expand() {
-    tell('xic:expand');
+    tell('xicompanion:expand');
   },
 
   /** full → fab. Esc and the × button both collapse — the fab is the
    *  persistent "closed" state unless the addon is unloaded. */
   collapse() {
-    if (inWebView()) tell('xic:collapse');
+    if (inWebView()) tell('xicompanion:collapse');
     else window.close();
   },
 
   /** quit the overlay process entirely (fab right-click) */
   quit() {
-    if (inWebView()) tell('xic:quit');
+    if (inWebView()) tell('xicompanion:quit');
     else window.close();
   },
 
@@ -357,26 +357,26 @@ export const host = {
   /** unconditional hide — the tooltip window's own × (its signals are a
    *  separate context, so the pinned/visible guards don't apply) */
   closeTooltip() {
-    tell('xic:tooltip-hide');
+    tell('xicompanion:tooltip-hide');
   },
 
 
   /** navigate the MAIN window to a route (from a detached window or the
    *  main one — the shell ExecJS's __xicNavigate either way) */
   showInMain(url: string) {
-    if (inWebView()) tell(`xic:main:${url}`);
+    if (inWebView()) tell(`xicompanion:main:${url}`);
     else location.assign(url);
   },
 
   /** pull the shell's persisted window bounds into shellGeom */
   refreshGeom() {
-    if (inWebView()) tell('xic:geom');
+    if (inWebView()) tell('xicompanion:geom');
   },
 
   /** open a url in the system browser — the overlay can't navigate
    *  itself, so it goes through the shell's ShellExecute */
   openExternal(url: string) {
-    if (inWebView()) tell(`xic:open:${url}`);
+    if (inWebView()) tell(`xicompanion:open:${url}`);
     else window.open(url, '_blank', 'noopener');
   },
 
@@ -384,7 +384,7 @@ export const host = {
    *  ('/tracker'); w/h optional — the shell keeps the known size */
   setGeom(key: string, r: { x: number; y: number; w?: number; h?: number }) {
     const wh = r.w != null && r.h != null ? `,${r.w},${r.h}` : '';
-    tell(`xic:geom-set:${key}:${r.x},${r.y}${wh}`);
+    tell(`xicompanion:geom-set:${key}:${r.x},${r.y}${wh}`);
   },
 };
 
@@ -429,9 +429,9 @@ function dragRegionOf(t: HTMLElement | null): 'drag' | 'no-drag' | null {
 //    ungrabbable, and the × button inside the corner zone would resize
 //    instead of clicking
 //  - edges: mousemove shows the resize cursor; mousedown starts the
-//    Go-driven size loop via "xic:resize:<cursor>"
+//    Go-driven size loop via "xicompanion:resize:<cursor>"
 //  - drag: mousedown on a --wails-draggable:drag element (honoring
-//    no-drag) starts the Go-driven caption move via "xic:drag"
+//    no-drag) starts the Go-driven caption move via "xicompanion:drag"
 export function installWindowChrome() {
   if (!inWebView()) return;
   updateFabMode();
@@ -453,7 +453,7 @@ export function installWindowChrome() {
     (e) => {
       // NOACTIVATE windows can't raise themselves — the shell lifts the
       // touched window to band-top on our behalf (z-order, not focus)
-      if (e.button === 0) tell('xic:raise');
+      if (e.button === 0) tell('xicompanion:raise');
       if (e.button !== 0 || fabMode.value) return;
       switch (dragRegionOf(e.target as HTMLElement)) {
         case 'no-drag':
@@ -461,14 +461,14 @@ export function installWindowChrome() {
         case 'drag':
           e.preventDefault(); // no text selection while dragging
           e.stopPropagation();
-          tell('xic:drag');
+          tell('xicompanion:drag');
           return;
       }
       const edge = tooltipMode ? null : edgeAt(e.clientX, e.clientY);
       if (edge) {
         e.preventDefault();
         e.stopPropagation();
-        tell(`xic:resize:${edge}`);
+        tell(`xicompanion:resize:${edge}`);
       }
     },
     true,
@@ -477,14 +477,14 @@ export function installWindowChrome() {
   // every click hands keyboard focus back to the game — the webview
   // claims foreground on click and losing game input mid-fight is the
   // surprise we're avoiding. Text-entry elements keep focus so typing
-  // still works; the shell SetForegroundWindows FFXI on xic:refocus.
+  // still works; the shell SetForegroundWindows FFXI on xicompanion:refocus.
   document.addEventListener(
     'mouseup',
     (e) => {
       if (e.button !== 0) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, [contenteditable="true"]')) return;
-      tell('xic:refocus');
+      tell('xicompanion:refocus');
     },
     true,
   );

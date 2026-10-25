@@ -1,4 +1,4 @@
-// End-to-end smoke test for addon/xic/xic.lua.
+// End-to-end smoke test for addon/xicompanion/xicompanion.lua.
 //
 // Runs the real addon under fengari (Lua 5.3 in JS) with stubbed windower /
 // res / config globals and a `socket` module backed by node:net, then drives
@@ -15,13 +15,13 @@ import { lua, lauxlib, lualib, to_luastring, to_jsstring } from 'fengari';
 const { LUA_REGISTRYINDEX, LUA_OK, LUA_MULTRET, LUA_TSTRING, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TFUNCTION, LUA_TTABLE } = lua;
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const addonDir = join(repoRoot, 'addon', 'xic');
-const addonFile = join(addonDir, 'xic.lua');
+const addonDir = join(repoRoot, 'addon', 'xicompanion');
+const addonFile = join(addonDir, 'xicompanion.lua');
 const uiDir = join(addonDir, 'ui');
 assert.ok(existsSync(join(uiDir, 'index.html')), 'run `npm run build:addon` first — ui/index.html missing');
 
 // Fake Windower root with a GearSwap data dir.
-const fakeRoot = mkdtempSync(join(tmpdir(), 'xic-'));
+const fakeRoot = mkdtempSync(join(tmpdir(), 'xicompanion-'));
 const gsData = join(fakeRoot, 'addons', 'GearSwap', 'data');
 mkdirSync(gsData, { recursive: true });
 writeFileSync(join(gsData, 'DUMMY.lua'), '-- dummy\n');
@@ -640,7 +640,7 @@ await step(5);
   const p = fetch(`${base}/api/status`).then((r) => r.json());
   await step(5);
   const j = await p;
-  assert.equal(j.addon, 'xic');
+  assert.equal(j.addon, 'xicompanion');
   assert.equal(j.port, port);
   console.log('PASS /api/status');
 }
@@ -845,7 +845,7 @@ await step(5);
   // record 19 name sits at 28 + 19*380 + 366
   const last = 28 + 19 * 380 + 366;
   assert.equal(img.subarray(last, last + 8).toString('latin1').replace(/\0+$/, ''), 'Last');
-  assert.ok(existsSync(join(macroDir, 'mcr10.dat.xic-bak')), 'no backup written');
+  assert.ok(existsSync(join(macroDir, 'mcr10.dat.xicompanion-bak')), 'no backup written');
   console.log('PASS PUT /api/macros/palette');
 
   // PUT to a brand-new palette index creates mcr20.dat
@@ -992,7 +992,7 @@ await step(5);
   console.log('PASS SSE /api/events');
 }
 
-// //xic open command fires open_url
+// //xicompanion open command fires open_url
 function addonCmd(...args) {
   const refs = events.get('addon command') ?? [];
   assert.ok(refs.length > 0);
@@ -1032,7 +1032,7 @@ function addonCmd(...args) {
   addonCmd('swap', 'list');
   assert.ok(chats.join('\n').includes('defense.MDT *'), 'custom set not listed');
   addonCmd('swap');
-  assert.ok(chats.join('\n').includes('usage: //xic swap'), 'bare swap did not print usage');
+  assert.ok(chats.join('\n').includes('usage: //xicompanion swap'), 'bare swap did not print usage');
   console.log('PASS swap scanner + commands');
 }
 
@@ -1653,7 +1653,7 @@ const chatPacket = (mode, name, text) => {
     ftable.writeUInt16LE((17 << 7) | 24, 5744 * 2); // zone 1 fid -> ROM/17/24.DAT
     writeFileSync(join(ffxiDir, 'FTABLE.DAT'), ftable);
     mkdirSync(join(ffxiDir, 'ROM', '17'), { recursive: true });
-    const payload = 'xic-map-dat-payload';
+    const payload = 'xicompanion-map-dat-payload';
     writeFileSync(join(ffxiDir, 'ROM', '17', '24.DAT'), payload);
 
     const riP = fetch(`${base}/api/map/img?z=1&m=0`);

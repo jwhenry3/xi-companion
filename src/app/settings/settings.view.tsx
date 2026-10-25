@@ -1,5 +1,5 @@
 // Settings: persisted addon preferences (data/settings.xml via
-// /api/settings), overlay window geometry (xic:geom -> the shell's
+// /api/settings), overlay window geometry (xicompanion:geom -> the shell's
 // window.json), and the UI theme (localStorage — applies on load in
 // every window, including the tracker/tooltip).
 import { Component, View, inject, signal, effect } from '@preact-mvc/core';

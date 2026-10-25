@@ -1,4 +1,4 @@
-// xic-overlay — Wails v3 (WebView2) shell for the XI Companion addon.
+// xicompanion-overlay — Wails v3 (WebView2) shell for the XI Companion addon.
 //
 // Thin window wrapper: the Lua addon's HTTP server stays the backend, this
 // process just finds it (probing 127.0.0.1:17890..17899 for /api/status,
@@ -7,18 +7,18 @@
 // The window has two modes:
 //
 //	fab  — a small always-on-top floating button (--fab starts this way).
-//	       The addon spawns it on load; it survives //xic hide/close/Esc.
+//	       The addon spawns it on load; it survives //xicompanion hide/close/Esc.
 //	full — the whole XI Companion UI.
 //
 // The page itself decides what to render from the viewport size, and talks
 // to the shell through Wails' raw message channel — "wails:drag" /
 // "wails:resize:<cursor>" are routed from any main-frame origin, while
-// "xic:expand|collapse|quit" land in RawMessageHandler.
+// "xicompanion:expand|collapse|quit" land in RawMessageHandler.
 //
 // Build:
 //
 //	go build -tags production -ldflags "-s -w -H windowsgui" \
-//	    -o ../../addon/xic/overlay/xic-overlay.exe .
+//	    -o ../../addon/xicompanion/overlay/xicompanion-overlay.exe .
 package main
 
 import (
@@ -443,7 +443,7 @@ func screenSize() (int, int) {
 // ownership (spawned windows pass nil; their hwnd is only needed for
 // one-shot style flips at spawn time). No periodic z-order asserts:
 // polling re-asserts caused visible flicker as windows popped to
-// band-top and back, so stacking is left to Windows + xic:raise.
+// band-top and back, so stacking is left to Windows + xicompanion:raise.
 func resolveHwnd(w *application.WebviewWindow, store *atomic.Uintptr) {
 	var hwnd uintptr
 	for tries := 0; hwnd == 0; tries++ {
@@ -584,7 +584,7 @@ func dataDir() string {
 	if base == "" {
 		base = os.TempDir()
 	}
-	d := filepath.Join(base, "xic")
+	d := filepath.Join(base, "xicompanion")
 	os.MkdirAll(d, 0o755)
 	return d
 }
@@ -720,7 +720,7 @@ func trackGeometry() {
 
 // --------------------------------------------------------- spawned tabs
 
-// Detached per-tab windows ("pop out" in the header posts xic:spawn:<path>).
+// Detached per-tab windows ("pop out" in the header posts xicompanion:spawn:<path>).
 // Each is its own frameless always-on-top Webview2 window navigated to the
 // addon page with ?window=<path> — the app renders just that view plus a
 // slim title bar. Bounds persist per route in window.json.
@@ -763,7 +763,7 @@ func fabLayerSpawned(key string) bool {
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
 // line — the addon uses it to open a detached window (the tracker) from
-// a //xic command without touching the main window.
+// a //xicompanion command without touching the main window.
 func spawnArg(args []string) (string, bool) {
 	for i, a := range args {
 		var r string
@@ -795,11 +795,11 @@ func navURL(base string) string {
 }
 
 // pageLoaded carries each window's "the app page booted" report — the
-// page posts xic:loaded at the end of bootstrap and RawMessageHandler
+// page posts xicompanion:loaded at the end of bootstrap and RawMessageHandler
 // signals the channel keyed by the source window.
 var pageLoaded sync.Map // map[application.Window]chan struct{}
 
-// armLoadRetry re-issues SetURL until the page itself posts xic:loaded
+// armLoadRetry re-issues SetURL until the page itself posts xicompanion:loaded
 // (bounded at 8 tries). A NavigationCompleted alone can't confirm the
 // app landed: connection-refused error pages fire it too, which is how
 // a wedged first navigation still counted as "landed" and stranded the
@@ -1054,7 +1054,7 @@ func toggleWindow(route string) {
 
 // windowsReport pushes the list of open spawned routes to the main
 // window — the fab's menu bar marks the ones that are up. Called on
-// every spawn/close; the page also asks (xic:windows) on load.
+// every spawn/close; the page also asks (xicompanion:windows) on load.
 func windowsReport() {
 	if win == nil || win.NativeWindow() == nil {
 		return
@@ -1085,7 +1085,7 @@ func geomReport(w application.Window) {
 
 // geomSet persists bounds for the fab ("fab") or a spawned route
 // ("/tracker" etc.) and live-applies them when that window is up.
-// Message form: xic:geom-set:<key>:<x>,<y>[,<w>,<h>]
+// Message form: xicompanion:geom-set:<key>:<x>,<y>[,<w>,<h>]
 func geomSet(arg string) {
 	sep := strings.LastIndexByte(arg, ':')
 	if sep < 0 {
@@ -1198,7 +1198,7 @@ func showInMain(path string) {
 	}
 }
 
-// closeFor routes xic:close from a page: a spawned window is destroyed,
+// closeFor routes xicompanion:close from a page: a spawned window is destroyed,
 // the tooltip hides, the main window collapses to the fab.
 func closeFor(w application.Window) {
 	if w == tooltipWin {
@@ -1535,19 +1535,19 @@ func main() {
 	}
 
 	app = application.New(application.Options{
-		Name: "xic-overlay",
-		// //xic overlay (and the addon's auto-fab spawn on load) can fire
+		Name: "xicompanion-overlay",
+		// //xicompanion overlay (and the addon's auto-fab spawn on load) can fire
 		// repeatedly — surface the existing window instead of stacking.
 		// A plain relaunch expands the UI; a --fab relaunch (addon reload)
 		// just makes sure the button is visible.
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.xic.overlay",
+			UniqueID: "com.xicompanion.overlay",
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				log.Printf("second instance: args=%v", data.Args)
 				if win == nil {
 					return
 				}
-				// //xic tracker & friends — open just the detached window;
+				// //xicompanion tracker & friends — open just the detached window;
 				// the main window stays in whatever mode it's in
 				if route, ok := spawnArg(data.Args); ok {
 					go spawnWindow(route)
@@ -1587,19 +1587,19 @@ func main() {
 		RawMessageHandler: func(w application.Window, message string, _ *application.OriginInfo) {
 			log.Printf("page message: %q", message)
 			switch {
-			case message == "xic:expand":
+			case message == "xicompanion:expand":
 				go expand()
-			case message == "xic:collapse" || message == "xic:hide":
+			case message == "xicompanion:collapse" || message == "xicompanion:hide":
 				go collapse()
-			case message == "xic:quit":
+			case message == "xicompanion:quit":
 				go quit()
-			case message == "xic:close":
+			case message == "xicompanion:close":
 				go closeFor(w) // spawned window → destroy; main → collapse
-			case strings.HasPrefix(message, "xic:spawn:"):
-				go spawnWindow(strings.TrimPrefix(message, "xic:spawn:"))
-			case strings.HasPrefix(message, "xic:toggle:"):
-				go toggleWindow(strings.TrimPrefix(message, "xic:toggle:"))
-			case message == "xic:loaded":
+			case strings.HasPrefix(message, "xicompanion:spawn:"):
+				go spawnWindow(strings.TrimPrefix(message, "xicompanion:spawn:"))
+			case strings.HasPrefix(message, "xicompanion:toggle:"):
+				go toggleWindow(strings.TrimPrefix(message, "xicompanion:toggle:"))
+			case message == "xicompanion:loaded":
 				// the page finished booting — releases the window's
 				// navigateWhenReady retry loop (no-op once it exits)
 				if ch, ok := pageLoaded.Load(w); ok {
@@ -1608,42 +1608,42 @@ func main() {
 					default:
 					}
 				}
-			case message == "xic:windows":
+			case message == "xicompanion:windows":
 				go windowsReport()
-			case strings.HasPrefix(message, "xic:main:"):
-				go showInMain(strings.TrimPrefix(message, "xic:main:"))
-			case message == "xic:geom":
+			case strings.HasPrefix(message, "xicompanion:main:"):
+				go showInMain(strings.TrimPrefix(message, "xicompanion:main:"))
+			case message == "xicompanion:geom":
 				go geomReport(w)
-			case strings.HasPrefix(message, "xic:geom-set:"):
-				go geomSet(strings.TrimPrefix(message, "xic:geom-set:"))
-			case message == "xic:raise":
+			case strings.HasPrefix(message, "xicompanion:geom-set:"):
+				go geomSet(strings.TrimPrefix(message, "xicompanion:geom-set:"))
+			case message == "xicompanion:raise":
 				// panels are NOACTIVATE — clicking can't raise them
 				// naturally, so the page asks on mousedown. Raising
 				// needs no activation: the user's stacking order is
 				// whichever window they touched last.
 				go pSetWindowPos.Call(hwndOf(w), hwndTopmost, 0, 0, 0, 0,
 					swpNoMove|swpNoSize|swpNoActivate)
-			case message == "xic:refocus":
+			case message == "xicompanion:refocus":
 				// let the click finish dispatching first — the macro's
 				// send_command / the tooltip's pin go out on this gesture
 				go func() {
 					time.Sleep(50 * time.Millisecond)
 					refocusGame()
 				}()
-			case strings.HasPrefix(message, "xic:open:"):
-				go openURL(strings.TrimPrefix(message, "xic:open:"))
-			case strings.HasPrefix(message, "xic:show:"): // older pages
-				go showInMain(strings.TrimPrefix(message, "xic:show:"))
-			case message == "xic:tooltip-hide":
+			case strings.HasPrefix(message, "xicompanion:open:"):
+				go openURL(strings.TrimPrefix(message, "xicompanion:open:"))
+			case strings.HasPrefix(message, "xicompanion:show:"): // older pages
+				go showInMain(strings.TrimPrefix(message, "xicompanion:show:"))
+			case message == "xicompanion:tooltip-hide":
 				go tooltipHide()
-			case strings.HasPrefix(message, "xic:tooltip-size:"):
+			case strings.HasPrefix(message, "xicompanion:tooltip-size:"):
 				// fixed-size window — ignore size reports from older pages
-			case strings.HasPrefix(message, "xic:tooltip:"):
-				go tooltipShow(w, strings.TrimPrefix(message, "xic:tooltip:"))
-			case message == "xic:drag":
+			case strings.HasPrefix(message, "xicompanion:tooltip:"):
+				go tooltipShow(w, strings.TrimPrefix(message, "xicompanion:tooltip:"))
+			case message == "xicompanion:drag":
 				go startMoveLoop(hwndOf(w), htCaption)
-			case strings.HasPrefix(message, "xic:resize:"):
-				go startMoveLoop(hwndOf(w), edgeHT[strings.TrimPrefix(message, "xic:resize:")])
+			case strings.HasPrefix(message, "xicompanion:resize:"):
+				go startMoveLoop(hwndOf(w), edgeHT[strings.TrimPrefix(message, "xicompanion:resize:")])
 			}
 		},
 		Windows: application.WindowsOptions{
@@ -1702,13 +1702,13 @@ func main() {
 		addonTarget = probeTarget()
 		// the addon auto-spawning the fab on (re)load steals foreground —
 		// hand it back once our hwnd is registered; a user-invoked
-		// //xic overlay (no --fab) keeps focus on purpose
+		// //xicompanion overlay (no --fab) keeps focus on purpose
 		if startFab {
 			setStyleFlag(hwndOf(win), wsExNoActivate, true)
 			refocusAfterActivate()
 		}
 		go func() {
-			// cold start with --spawn (e.g. `//xic tracker` while the
+			// cold start with --spawn (e.g. `//xicompanion tracker` while the
 			// overlay wasn't running) — open the detached window once
 			// the app is up
 			if route, ok := spawnArg(os.Args[1:]); ok {

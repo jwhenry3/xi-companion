@@ -1,5 +1,5 @@
-// Sync the shippable addon tree (addon/xic) into the live Windower
-// install at ../addons/xic. The live dir's data/ folder (settings, icon
+// Sync the shippable addon tree (addon/xicompanion) into the live Windower
+// install at ../addons/xicompanion. The live dir's data/ folder (settings, icon
 // cache, journal) is never touched.
 //   node scripts/deploy.mjs [target-dir]
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
-const src = path.join(root, 'addon', 'xic');
+const src = path.join(root, 'addon', 'xicompanion');
 const dst = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.join(root, '..', 'addons', 'xic');
+  : path.join(root, '..', 'addons', 'xicompanion');
 
 mkdirSync(dst, { recursive: true });
 
@@ -23,7 +23,7 @@ if (existsSync(assets)) {
   }
 }
 
-// copy file-by-file, skipping unchanged content — xic-overlay.exe stays
+// copy file-by-file, skipping unchanged content — xicompanion-overlay.exe stays
 // locked while running and must not be rewritten anyway
 const skip = new Set([path.join(src, 'data')]);
 let copied = 0;
@@ -78,4 +78,4 @@ function sync(s, d) {
 }
 sync(src, dst);
 
-console.log(`deployed addon/xic -> ${dst} (${copied} updated${swapped ? `, ${swapped} swapped` : ''}${locked ? `, ${locked} locked` : ''})`);
+console.log(`deployed addon/xicompanion -> ${dst} (${copied} updated${swapped ? `, ${swapped} swapped` : ''}${locked ? `, ${locked} locked` : ''})`);

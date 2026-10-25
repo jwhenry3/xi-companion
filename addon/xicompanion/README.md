@@ -1,4 +1,4 @@
-# xic — XI Companion (Windower 4 addon)
+# xicompanion — XI Companion (Windower 4 addon)
 
 Companion addon for the XI Companion frontend. It runs a small local HTTP
 server (LuaSocket) that:
@@ -14,37 +14,37 @@ server (LuaSocket) that:
 
 ## Install
 
-1. Copy this whole `xic` folder into `Windower4/addons/`.
+1. Copy this whole `xicompanion` folder into `Windower4/addons/`.
 2. Build the frontend into `./ui` (from the repo root):
 
    ```
    npm run build:addon
    ```
 
-   That produces `addons/xic/ui/index.html` + assets inside the
+   That produces `addons/xicompanion/ui/index.html` + assets inside the
    addon folder.
 
-3. In game: `//lua load xic` (or add it to your init script).
+3. In game: `//lua load xicompanion` (or add it to your init script).
 
 ## Commands
 
-The addon command is `//xic`.
+The addon command is `//xicompanion` (`//xicomp` is an alias).
 
 | Command                  | Action                                        |
 | ------------------------ | --------------------------------------------- |
-| `//xic`                 | show status / help                            |
-| `//xic ui`              | toggle the in-game UI (inventory/sets/files)  |
-| `//xic open`            | open the UI in the default browser            |
-| `//xic start`           | start the local server                        |
-| `//xic stop`            | stop the local server                         |
-| `//xic port <n>`        | change the port (saved to data/settings.xml)  |
-| `//xic refresh`         | push a fresh state snapshot to clients        |
-| `//xic swap`            | toggle the in-game UI (same as `//xic ui`)   |
-| `//xic swap scan`       | rescan the GearSwap file for `sets.*` paths   |
-| `//xic swap list`       | print discovered sets to the chat log         |
-| `//xic swap add <path>` | pin a set path the scanner can't see          |
-| `//xic swap remove <p>` | remove a pinned set path                      |
-| `//xic equip <path>`    | equip a set, e.g. `//xic equip idle.Town`    |
+| `//xicompanion`                 | show status / help                            |
+| `//xicompanion ui`              | toggle the in-game UI (inventory/sets/files)  |
+| `//xicompanion open`            | open the UI in the default browser            |
+| `//xicompanion start`           | start the local server                        |
+| `//xicompanion stop`            | stop the local server                         |
+| `//xicompanion port <n>`        | change the port (saved to data/settings.xml)  |
+| `//xicompanion refresh`         | push a fresh state snapshot to clients        |
+| `//xicompanion swap`            | toggle the in-game UI (same as `//xicompanion ui`)   |
+| `//xicompanion swap scan`       | rescan the GearSwap file for `sets.*` paths   |
+| `//xicompanion swap list`       | print discovered sets to the chat log         |
+| `//xicompanion swap add <path>` | pin a set path the scanner can't see          |
+| `//xicompanion swap remove <p>` | remove a pinned set path                      |
+| `//xicompanion equip <path>`    | equip a set, e.g. `//xicompanion equip idle.Town`    |
 
 ## Set scanner
 
@@ -57,7 +57,7 @@ and equips sets on click.
 
 - Only assignments the scanner can see are listed — sets built at runtime
   (e.g. via `set_combine` inside functions, or Mote-style dynamic paths)
-  can be pinned with `//xic swap add`.
+  can be pinned with `//xicompanion swap add`.
 - Pinned paths persist in `data/settings.xml`.
 
 ## HTTP API

@@ -27,7 +27,7 @@ function XicLogo({ size = 24 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <defs>
-        <linearGradient id="xic-gold" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id="xicompanion-gold" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stop-color="#f9e7a8" />
           <stop offset="0.45" stop-color="#e0b64f" />
           <stop offset="1" stop-color="#8a5f14" />
@@ -42,7 +42,7 @@ function XicLogo({ size = 24 }: { size?: number }) {
         font-size="14.5"
         textLength="20.5"
         lengthAdjust="spacingAndGlyphs"
-        fill="url(#xic-gold)"
+        fill="url(#xicompanion-gold)"
         stroke="#171106"
         stroke-width="0.7"
         paint-order="stroke"
@@ -71,7 +71,7 @@ function pressDrag(onPress: () => void) {
         dragging = true;
         window.removeEventListener('mousemove', onMove, true);
         window.removeEventListener('mouseup', onUp, true);
-        host.drag(); // → xic:drag
+        host.drag(); // → xicompanion:drag
       }
     };
     const onUp = () => {

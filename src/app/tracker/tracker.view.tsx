@@ -2,7 +2,7 @@
 // A compact, mostly-transparent list of what's actually in progress —
 // current missions, accepted quests, tracked RoE objectives — fed live
 // by the same `journal` SSE signal as the journal view. Clicking a row
-// posts xic:main:<path> so the main window surfaces on that journal
+// posts xicompanion:main:<path> so the main window surfaces on that journal
 // entry; the tracker itself stays up.
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import type { OnInit } from '@preact-mvc/core';

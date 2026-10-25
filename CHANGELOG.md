@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts ping-ponged siblings, and the coordinated `zSweep` visibly
   flickered whenever a foreign always-on-top window kept it running.
   All polling z-order machinery removed; stacking is Windows-managed
-  plus `xic:raise` (posted on page mousedown — lifts the touched
+  plus `xicompanion:raise` (posted on page mousedown — lifts the touched
   window without activating it, needed since `WS_EX_NOACTIVATE`
   panels can't raise themselves).
 
@@ -51,13 +51,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that gap were dropped and the window sat on the dark splash page
   forever. `navigateWhenReady` now waits for the splash's own
   `WebViewNavigationCompleted` (with a timed fallback) and re-issues
-  `SetURL` until the page itself posts `xic:loaded` after bootstrap —
+  `SetURL` until the page itself posts `xicompanion:loaded` after bootstrap —
   NavigationCompleted fires for connection-refused error pages too, so
   it can't confirm a mount. Applied to the main window, spawned
   windows, and the item tooltip.
 
 ### Added
 
+- **Ashita v4 target (untested against a live client)** — `plat.lua`
+  now dispatches to `plat_windower`/`plat_ashita` so the same
+  `addon/xicompanion/` tree installs under both hosts (`xicompanion.lua` is the Ashita
+  entry point; `addon.*` metadata added). The Ashita binding implements
+  the full plat surface over `AshitaCore:GetMemoryManager()` (party,
+  entity, inventory, recast, player), ffi fs/registry helpers, and
+  registers `package.preload` shims for `resources`, `config`, and
+  `packets`. Known gaps are marked in-file: `get_map_data` returns nil
+  (the client's mapinfo transform needs live calibration — map radar
+  off), GearSwap paths don't exist under Ashita (Sets tab empty —
+  expected, no GearSwap there), and packet injection uses the 6 outgoing
+  packet layouts we emit. Deploy with
+  `node scripts/deploy.mjs <ashita>\addons\xicompanion`.
 - **Shared transport worker** — every window's addon traffic now goes
   through one `SharedWorker` (`core/bridge.worker.ts`): a single SSE
   stream + request queue replaces the per-window stream that starved
@@ -90,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/map`. Drop a PNG into `data/maps/<zone>_<map>.png`
   (remapster/FFXIDB pack naming) to get the real zone image under the
   radar — `GET /api/map/img` serves it, 404 falls back to the grid.
-  `//xic minimap` toggles/spawns; `settings.minimap` auto-launches on
+  `//xicompanion minimap` toggles/spawns; `settings.minimap` auto-launches on
   login.
 - **Fab menu bar** — the floating button is now a one-row bar
   (540×56px window): the XIC mark opens the main UI, then toggle
@@ -110,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recasts for abilities, the addon tracks each key's largest observed
   remaining as the max (spells additionally floor at
   `res.spells[id].recast`); job change and logout reset it. Open it via
-  the fab cluster or `//xic cooldowns`;
+  the fab cluster or `//xicompanion cooldowns`;
   `settings.cooldowns` auto-spawns it on login.
 - **Training regimes** (Fields of Valor / Grounds of Valor) in the journal
   and tracker: outgoing 0x05B dialogue choices at a Field Manual/Grounds
@@ -125,24 +138,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Rebranded as **XI Companion**: window/app titles, splash, fab tooltip,
-  release names, and artifacts (`gsui-overlay.exe` → `xic-overlay.exe`,
+  release names, and artifacts (`gsui-overlay.exe` → `xicompanion-overlay.exe`,
   `gearswapui-<ver>.zip` → `xicompanion-<ver>.zip`). The addon itself is
-  renamed `gearswapui` → **`xic`** (`addons/xic/xic.lua`) with `//xic` as
-  the only command — page messages (`xic:`), localStorage
-  (`xic.sets.v2`), overlay data dir (`%LOCALAPPDATA%/xic`), macro backups
-  (`.xic-bak`), and the `com.xic.overlay` instance lock all renamed too.
-  Migration shims kept: existing `<gearswapui sets>` blocks in profiles
-  are replaced in place on the next save, and `gsui.sets.v2`/`v1`
-  localStorage is read as a fallback so saved sets aren't lost. Note the
-  overlay data dir move orphans prior window geometry and the WebView2
-  profile.
+  renamed `gearswapui` → **`xicompanion`** (`addons/xicompanion/xicompanion.lua`)
+  with `//xicompanion`/`//xicomp` commands — page messages (`xicompanion:`),
+  localStorage (`xicompanion.sets.v2`), overlay data dir
+  (`%LOCALAPPDATA%/xicompanion`), macro backups (`.xicompanion-bak`), and
+  the `com.xicompanion.overlay` instance lock all renamed too.
+  Migration shims kept: existing `<gearswapui sets>`/`<xic sets>` blocks
+  in profiles are replaced in place on the next save, and
+  `xic.sets.v2`/`gsui.sets.v2`/`gsui.sets.v1` localStorage is read as a
+  fallback so saved sets aren't lost. Note the overlay data dir move
+  orphans prior window geometry and the WebView2 profile.
 - The **Profile** tab is now labeled **GearSwap** — "Profile" meant
   nothing without the GearSwap context.
 
 ### Added
 
 - Detached per-tab windows: a pop-out button in the header opens the
-  current tab in its own small always-on-top window (`xic:spawn:<route>`
+  current tab in its own small always-on-top window (`xicompanion:spawn:<route>`
   → `WindowManager.NewWithOptions` at `/<route>?window=1`, which renders
   the routed view under a slim draggable title bar). Each keeps its own
   saved bounds in `window.json`, can be shrunk to 280×180, drags/resizes
@@ -153,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Enter opens, Esc/click-outside cancels) instead of an inline sidebar
   field.
 - Detached macro bar: `/macrobar` (via the "macro bar" button on the
-  Macros page or `//xic macrobar`) is an always-up fab-layer window —
+  Macros page or `//xicompanion macrobar`) is an always-up fab-layer window —
   char/book/page pickers plus the 20 Ctrl/Alt cells as clickable
   buttons. A click calls `POST /api/macros/run`, which replays the
   macro's lines through the client's input line (`input`, with `/wait N`
@@ -167,7 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all 40 books with title subtitles and ● content markers, matching the
   journal's group column) instead of a header dropdown.
 - Overlay clicks return keyboard focus to the game: a capture-phase
-  `mouseup` listener posts `xic:refocus` and the shell calls
+  `mouseup` listener posts `xicompanion:refocus` and the shell calls
   `SetForegroundWindow` on the FFXI window (found via its `FFXiClass`
   window class, falling back to a `pol.exe` process scan). Text-entry
   elements (input/textarea/contenteditable) keep focus so typing still
@@ -196,9 +210,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now an **owned window** of whatever window summoned it
   (`GWLP_HWNDPARENT` — owned windows always outrank their owner in
   z-order), so re-pinning can never bury it.
-- `deploy` now rename-swaps a locked `xic-overlay.exe`: Windows can't
+- `deploy` now rename-swaps a locked `xicompanion-overlay.exe`: Windows can't
   overwrite a running binary but can rename it, so the new build lands
-  as `xic-overlay.exe` immediately and the old one is deleted once the
+  as `xicompanion-overlay.exe` immediately and the old one is deleted once the
   process exits.
 - Item tooltip actions: multi-slot equipment (weapons → `equip main` /
   `equip sub`, rings → left/right) now gets one button per valid slot —
@@ -217,10 +231,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panel: clicking an item pins a small frameless always-on-top window
   beside it with its details and actions (equip/unequip/use/move/drop,
   augment and extdata details, drop confirm). One shared window is
-  reused and updated via `ExecJS` (`xic:tooltip:{json}`, `-hide`) so
+  reused and updated via `ExecJS` (`xicompanion:tooltip:{json}`, `-hide`) so
   sweeping items doesn't reload or reflow anything; the Inventory and
   GearSwap views no longer reserve space for a detail panel. A tracker
-  row click also got `xic:main:<url>` → `showInMain` so detached
+  row click also got `xicompanion:main:<url>` → `showInMain` so detached
   windows can navigate the main one.
 
 ### Changed (cont.)

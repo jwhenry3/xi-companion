@@ -1,22 +1,23 @@
 --[[
-    swapui.lua -- headless GearSwap set scanner for the xic addon.
+    swapui.lua -- headless GearSwap set scanner for the xicompanion addon.
 
     Finds every `sets.*` path in the GearSwap user file for the current
     player/job, recursively following include()/require() calls, plus any
-    paths added manually with `//xic swap add`. The compiled in-game UI
-    (igui Sets tab) renders the result; `//xic swap list`,
-    `//xic swap scan`, and `//xic equip` work headless.
+    paths added manually with `//xicompanion swap add`. The compiled in-game UI
+    (igui Sets tab) renders the result; `//xicompanion swap list`,
+    `//xicompanion swap scan`, and `//xicompanion equip` work headless.
 
-    Loaded via dofile() from xic.lua.
+    Loaded via dofile() from xicompanion.lua.
 ]]
 
+local plat = require('plat')
 local M = {}
 
 local S = {
     cfg = nil,          -- settings.swapui (persisted through config lib)
     save = nil,         -- fn() -> writes settings
     data_dir = nil,     -- fn() -> GearSwap data dir
-    player = nil,       -- fn() -> windower.ffxi.get_player() or nil
+    player = nil,       -- fn() -> plat.ffxi.get_player() or nil
     jobs = nil,         -- res.jobs
     log = nil,
     log_err = nil,
@@ -140,7 +141,7 @@ end
 local function search_dirs(data_dir, player_name)
     local dirs = {}
     local function add(d)
-        if d and windower.dir_exists(d) then
+        if d and plat.dir_exists(d) then
             dirs[#dirs + 1] = d
         end
     end
@@ -193,7 +194,7 @@ local function resolve_main(dirs, player)
     for _, d in ipairs(dirs) do
         for _, f in ipairs(candidate_names(player)) do
             local p = join(d, f)
-            if windower.file_exists(p) then
+            if plat.file_exists(p) then
                 return p
             end
         end
@@ -208,7 +209,7 @@ local function resolve_include(dirs, ref)
     if ref:sub(-4) ~= '.lua' then ref = ref .. '.lua' end
     for _, d in ipairs(dirs) do
         local p = join(d, ref)
-        if windower.file_exists(p) then
+        if plat.file_exists(p) then
             return p
         end
     end
@@ -310,7 +311,7 @@ function M.rescan()
     table.sort(S.sets, function(a, b) return a.equip:lower() < b.equip:lower() end)
 
     if #S.sets == 0 and not S.scan_note then
-        S.scan_note = 'no sets found (//xic swap add <path>)'
+        S.scan_note = 'no sets found (//xicompanion swap add <path>)'
     end
 
     return #S.sets
@@ -334,10 +335,10 @@ end
 function M.equip(str)
     local canon = canon_path(str)
     if not canon then
-        S.log_err('usage: //xic equip <set path>  e.g. //xic equip idle.Town')
+        S.log_err('usage: //xicompanion equip <set path>  e.g. //xicompanion equip idle.Town')
         return
     end
-    windower.send_command('gs equip ' .. canon)
+    plat.send_command('gs equip ' .. canon)
     S.log('gs equip ' .. canon)
 end
 

@@ -25,6 +25,7 @@
     other non-printable bytes to "\xNN", so they round-trip losslessly.
 ]]
 
+local plat = require('plat')
 local M = {}
 
 ----------------------------------------------------------------------
@@ -345,12 +346,12 @@ function M.find_char_dirs(ffxi_path)
     end
     local root = M.user_root(ffxi_path)
     local out = {}
-    for _, name in ipairs(windower.get_dir(root) or {}) do
+    for _, name in ipairs(plat.get_dir(root) or {}) do
         if name ~= '.' and name ~= '..' then
             local p = join(root, name)
-            if windower.dir_exists(p)
-                and (windower.file_exists(join(p, 'mcr.ttl'))
-                    or windower.file_exists(join(p, 'mcr.dat'))) then
+            if plat.dir_exists(p)
+                and (plat.file_exists(join(p, 'mcr.ttl'))
+                    or plat.file_exists(join(p, 'mcr.dat'))) then
                 out[#out + 1] = { id = name, path = p }
             end
         end
@@ -377,7 +378,7 @@ end
 -- Read every palette file present in a char dir.
 function M.read_palettes(dir)
     local out = {}
-    for _, fname in ipairs(windower.get_dir(dir) or {}) do
+    for _, fname in ipairs(plat.get_dir(dir) or {}) do
         local index = fname == 'mcr.dat' and 0 or tonumber((fname:match('^mcr(%d+)%.dat$')))
         if index then
             local macros = M.parse_palette(read_file(join(dir, fname)))
@@ -422,12 +423,12 @@ end
 function M.commit_image(path, image)
     local prev = read_file(path)
     if prev then
-        write_file(path .. '.xic-bak', prev)
+        write_file(path .. '.xicompanion-bak', prev)
     end
     return write_file(path, image)
 end
 
--- Write a palette. Returns true, or nil + error. A .xic-bak copy of the
+-- Write a palette. Returns true, or nil + error. A .xicompanion-bak copy of the
 -- previous file is left beside it.
 function M.write_palette(dir, index, macros)
     local image, path = M.palette_image(dir, index, macros)
@@ -444,7 +445,7 @@ function M.write_title(dir, book, title)
     local titles = M.parse_titles(prev)
     titles[slot] = title
     if prev then
-        write_file(path .. '.xic-bak', prev)
+        write_file(path .. '.xicompanion-bak', prev)
     end
     local prefix = prev and #prev >= 8 and prev:sub(1, 8) or header_prefix(dir, fname)
     local image, err = M.build_titles(titles, prefix)

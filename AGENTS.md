@@ -1,31 +1,60 @@
 # XI Companion
 
-Branded **XI Companion** (window/app title, `xic-overlay.exe`,
-`xicompanion-<ver>.zip` releases). The addon is `xic` — directory,
-`xic.lua`, `//xic` command. Pre-rename `gearswapui`/`gsui` artifacts still
-read for one-time migration: `<xic sets>` profile markers (stripped
-on next save, replaced by `<xic sets>`) and `xic.sets.v2`/`v1`
-localStorage keys (read as a fallback, written only to `xic.sets.v2`).
+Branded **XI Companion** (window/app title, `xicompanion-overlay.exe`,
+`xicompanion-<ver>.zip` releases). The addon is `xicompanion` — directory,
+`xicompanion.lua`, `//xicompanion` command (alias `//xicomp`). Pre-rename
+`xic`/`gearswapui`/`gsui` artifacts still read for one-time migration:
+`<xic sets>`/`<gearswapui sets>` profile markers (stripped on next save,
+replaced by `<xicompanion sets>`) and `xic.sets.v2`/`gsui.sets.v2`/`v1`
+localStorage keys (read as a fallback, written only to `xicompanion.sets.v2`).
 
 ## Architecture
 
 Single target: a **browser UI** (`src/app/`, Preact + `@preact-mvc/core`) served
 by the Windower addon over localhost, viewed either in a normal browser tab
-(`//xic open`), in the **Wails/WebView2 overlay** (distributed build,
-`overlay/wails/` → `addon/xic/overlay/xic-overlay.exe`), or in the
-**Electron overlay** (dev, `overlay/`, `npm run overlay`). `//xic overlay`
+(`//xicompanion open`), in the **Wails/WebView2 overlay** (distributed build,
+`overlay/wails/` → `addon/xicompanion/overlay/xicompanion-overlay.exe`), or in the
+**Electron overlay** (dev, `overlay/`, `npm run overlay`). `//xicompanion overlay`
 prefers the bundled exe and falls back to the Electron dev launcher.
 
-### Addon — `addon/xic/`
+### Addon — `addon/xicompanion/`
 
-- `xic.lua` — LuaSocket HTTP server (default port 17890, `//xic port`),
+- `plat.lua` — **platform adapter dispatch** (dual-target: the same
+  `addon/xicompanion/` tree installs under Windower *and* Ashita — Ashita loads
+  `addons/xicompanion/xicompanion.lua` as its entry). Picks `plat_windower` or
+  `plat_ashita` on `windower ~= nil`. Every host-runtime call —
+  `windower.ffxi.*` reads, `send_command`, `add_to_chat`, `open_url`,
+  `file_exists`/`dir_exists`/`create_dir`/`get_dir`,
+  `addon_path`/`windower_path`/`ffxi_path`, and `register_event` — is
+  exposed as `plat.*` / `plat.on(...)`. The event contract is
+  signature-normalized: chunk handlers get `fn(id, data, modified,
+  injected, blocked)` (Ashita feeds `e.data_modified`), `addon command`
+  gets `fn(cmd, ...)` (Ashita parses the raw `e.command`), and
+  `login`/`logout` are synthesized from party-name edges under Ashita.
+  Module files call `require('plat')` directly; nothing outside
+  `plat_*.lua` should touch `windower.*`/`AshitaCore`.
+- `plat_windower.lua` — Windower binding (thin alias over windower.*).
+- `plat_ashita.lua` — Ashita v4 binding: memory-manager ffxi reads
+  (entity/party/inventory/recast/player), ffi fs helpers, registry-based
+  `ffxi_path`, `QueueCommand(-1,...)` commands, packet injection via
+  `AddOutgoingPacket`, and `package.preload` shims for `resources`
+  (IResourceManager-backed lazy res.items/spells/ability_recasts/
+  key_items/zones + static jobs/slots/bags), `config` (data/settings.lua
+  serialize), `packets` (byte-layout builders for the 6 outgoing packets
+  we inject). **Untested against a live client** — sites marked
+  `[UNVERIFIED]`/`[NOT PORTED]` in the file; `get_map_data` is stubbed
+  nil (map radar degrades; needs the client's mapinfo transform) and
+  GearSwap-facing dirs just won't exist under Ashita (Sets tab shows no
+  files — correct, there's no GearSwap). Deploy to Ashita with
+  `node scripts/deploy.mjs <ashita>\addons\xicompanion`.
+- `xicompanion.lua` — LuaSocket HTTP server (default port 17890, `//xicompanion port`),
   SSE state stream, GearSwap file CRUD, `/api/icon` (DAT extraction via
   `icon_extractor`, cached under `data/icons/`), `POST /api/command`
   (`{"cmd": ...}` → `windower.send_command`), `POST /api/item`
   (packet-injected item ops: `drop` → `windower.ffxi.drop_item`,
   `move` → outgoing 0x029, `unequip` → outgoing 0x050 with Item
   Index 0 — there is no `/unequip` client command), static UI serving with
-  `Cache-Control: no-cache` on HTML. `//xic` commands: `open`, `overlay`,
+  `Cache-Control: no-cache` on HTML. `//xicompanion` commands: `open`, `overlay`,
   `fab`, `start`, `stop`, `status`, `port`, `refresh`, `swap` (scanner commands),
   `equip <set>`. **Chat**: an `incoming chunk` handler parses chat packets
   0x017 (mode @0x04 → channel via the res/chat.lua ids, sender char[0xF]
@@ -34,13 +63,13 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `{channel,text,to?}` sends via `input /<cmd>` — most channels echo back
   as packets (no optimistic append), sent tells get a local `self` echo
   since they don't echo. Assist channels (modes 34/35) are read-only.
-- `swapui.lua` — headless GearSwap profile scanner powering `//xic equip`,
+- `swapui.lua` — headless GearSwap profile scanner powering `//xicompanion equip`,
   `swap list/add/remove/scan`. No UI.
 - `macros.lua` — FFXI macro file r/w under `<ffxi>/USER/<content id>/`:
   `mcr.dat`+`mcrN.dat` palettes (28B hdr + 20 × `6×61B lines + 8B name`),
   `mcr.ttl`/`mcr_2.ttl` book titles (24B hdr + 20×16B, books 1-40), index i →
   book `i/10+1` page `i%10+1`. Header embeds md5 of bytes 24+; writes
-  recompute it (pure-Lua md5, `bit` or 5.3 natives) and leave `*.xic-bak`.
+  recompute it (pure-Lua md5, `bit` or 5.3 natives) and leave `*.xicompanion-bak`.
   Auto-translate `FD…FD` phrases ↔ `[AT:xxxxxxxx]`, other bytes ↔ `\xNN`.
   `GET /api/macros`, `PUT /api/macros/palette[?apply=1]`,
   `PUT /api/macros/title`, `POST /api/macros/run` (replays one cell's
@@ -73,7 +102,7 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   send full recasts for abilities; spells floor at
   `res.spells[id].recast`), reset on job change and logout. The view
   counts `r` down locally from the SSE `at` stamp so bars fill smoothly
-  between broadcasts. `//xic cooldowns` spawns the window (fab layer,
+  between broadcasts. `//xicompanion cooldowns` spawns the window (fab layer,
   like the tracker), `settings.cooldowns` auto-spawns it on login, and
   the fab cluster has a one-tap button for it.
 - `journal_names.lua` — GENERATED (do not edit): id→name/description
@@ -94,16 +123,16 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   so image decode never touches the game frame. User PNGs in
   `data/maps/<zone>_<map>.png` still take precedence.
 - `icon_extractor.lua` — decodes FFXI DAT item icons to BMP.
-- `ui/` — vite build output; deploy copies `addon/xic/` to
-  `windower/addons/xic/` (keep in sync; `data/` there is live state).
+- `ui/` — vite build output; deploy copies `addon/xicompanion/` to
+  `windower/addons/xicompanion/` (keep in sync; `data/` there is live state).
 
 ### Web UI — `src/app/`
 
 - `sets/sets.store.ts` — profile-scoped `FileSets` model: sets + set-type
   bindings per GearSwap file, `sets.*` auto-import on selection, auto-save of
-  the previous profile on switch, managed `<xic sets>` block spliced
+  the previous profile on switch, managed `<xicompanion sets>` block spliced
   into `get_sets()` (default handlers injected only when the profile has
-  none). localStorage `xic.sets.v2` is metadata/unbound-set cache; profile
+  none). localStorage `xicompanion.sets.v2` is metadata/unbound-set cache; profile
   Lua is authoritative.
 - `sets/sets.view.tsx` — file picker, save/dirty/reload header, set dropdown
   + new-set dialog, icon grid with `×` clear + `!` missing markers, bindings
@@ -176,10 +205,10 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   (tooltip.view's per-item description). Call `dispose()` in `onDestroy`.
 - `core/host.ts` — shell shim over `chrome.webview.postMessage`: `wails:drag`,
   `wails:resize:<cursor>` (edge zones detected in-page, 8px border),
-  `xic:expand`/`collapse`/`quit` for the fab↔full state machine, and
-  `xic:spawn:<route>`/`xic:close` for detached per-tab windows plus
-  `xic:toggle:<route>` (spawn-or-close, the fab's menu bar) and
-  `xic:windows` (`__xicWindows` pushes the open-route list →
+  `xicompanion:expand`/`collapse`/`quit` for the fab↔full state machine, and
+  `xicompanion:spawn:<route>`/`xicompanion:close` for detached per-tab windows plus
+  `xicompanion:toggle:<route>` (spawn-or-close, the fab's menu bar) and
+  `xicompanion:windows` (`__xicWindows` pushes the open-route list →
   `openWindows` signal). `fabMode`
   signal (viewport height < 200px, width unconstrained — the bar is
   ~540px wide; detached/tooltip excluded) picks button-vs-app render;
@@ -193,16 +222,16 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   (tooltip updates, `__xicNavigate`, `__xicTooltipUnpinned` all dead).
   Item tooltip plumbing:
   `pinTooltip`/`setTooltip`/`closeTooltip` emit
-  `xic:tooltip:{bag,slot,id,name,x,y,pinned}` / `xic:tooltip-hide`;
+  `xicompanion:tooltip:{bag,slot,id,name,x,y,pinned}` / `xicompanion:tooltip-hide`;
   `tooltipMode` (`?tooltip=1`) renders `tooltip/tooltip.view.tsx` in the
   shared native tooltip window (fixed 320×440, always interactive —
   `pinned=false` still toggles click-through `WS_EX_TRANSPARENT` but the
   page only ever sends pinned payloads; content updates via `ExecJS
   __xicTooltip`). The shell owns the tooltip to the summoning window
-  (`GWLP_HWNDPARENT` on each `xic:tooltip:`) — owned windows always
+  (`GWLP_HWNDPARENT` on each `xicompanion:tooltip:`) — owned windows always
   outrank their owner, so it can't slide under the summoning
   window. `tipAnchor(el)` maps a
-  hovered element to screen coords; `showInMain(url)` (`xic:main:`) lets
+  hovered element to screen coords; `showInMain(url)` (`xicompanion:main:`) lets
   detached windows navigate the main one via `__xicNavigate`.
   Esc-hide/close is wired in `main.tsx` (capture phase; skips while a
   `[data-modal]` dialog is open; in tooltip mode Esc closes the tip —
@@ -221,7 +250,7 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   coming up, which stranded windows on the dark splash; every window
   navigates via `navigateWhenReady`, which waits for the splash's own
   `WebViewNavigationCompleted` — timed fallback included — then
-  re-issues `SetURL` until the page itself posts `xic:loaded` at the
+  re-issues `SetURL` until the page itself posts `xicompanion:loaded` at the
   end of bootstrap; NavigationCompleted alone can't be trusted since
   connection-refused error pages fire it too).
   `SingleInstanceOptions` surfaces the first window on re-launch;
@@ -230,7 +259,7 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   (per-window `HWND_TOPMOST`, then the coordinated `zSweep`) caused
   visible flicker: each `SetWindowPos` pops a window to band-top, and
   any foreign always-on-top window made the sweep re-run every cycle.
-  Stacking is now left to Windows + `xic:raise` (posted on page
+  Stacking is now left to Windows + `xicompanion:raise` (posted on page
   mousedown — lifts the touched window without activating it, needed
   since panels carry `WS_EX_NOACTIVATE` and can't raise themselves).
   `resolveHwnd` only waits for the hwnd to exist (feeds the focus /
@@ -238,17 +267,17 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   still undoes the frameless auto-minimize quirk. The window has two modes: a 540×56px
   transparent **fab** (`--fab` arg; the addon auto-spawns it on **login**
   — or on `load` while already logged in — `settings.fab`,
-  `//xic fab on|off`; the addon taskkills the process on **logout**)
+  `//xicompanion fab on|off`; the addon taskkills the process on **logout**)
   and the full UI. The fab is a one-row menu bar (`src/app/fab.tsx`):
-  the XIC mark expands the main UI (`xic:expand`), then toggle buttons
-  (`xic:toggle:<route>`) for the fab-layer panels (`/tracker`,
+  the XIC mark expands the main UI (`xicompanion:expand`), then toggle buttons
+  (`xicompanion:toggle:<route>`) for the fab-layer panels (`/tracker`,
   `/macrobar`, `/cooldowns`, `/minimap`) and every app page (`/`,
   `/chat`, `/journal`, `/map`, `/macros`, `/profile`, `/settings`) —
   open routes get a gold ring driven by `openWindows`/`__xicWindows`,
   pushed by `windowsReport()` on every spawn/close. Drag from any button
   or the gaps, right-click quits.
   `expand()`/`collapse()` swap min-size/resizable/bounds; both geometries
-  persist in `%LOCALAPPDATA%/xic/window.json`. `trackGeometry`
+  persist in `%LOCALAPPDATA%/xicompanion/window.json`. `trackGeometry`
   snapshots live bounds every 300ms and saves once settled — the native
   drag loop gives no end-of-move callback and taskkill beats `quit()`.
   `watchBackend` polls `/api/status` every 2s: it quits the overlay when
@@ -270,36 +299,36 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   WebView2 backdrop transparent. Chrome on the foreign-origin page works
   through Wails' raw message channel — v3 routes `wails:drag` /
   `wails:resize:<cursor>` from any main-frame origin (unlike v2's
-  origin-gated bindings), and `xic:expand`/`xic:collapse`/`xic:quit`
+  origin-gated bindings), and `xicompanion:expand`/`xicompanion:collapse`/`xicompanion:quit`
   land in `RawMessageHandler`; `src/app/core/host.ts` posts them via
   `chrome.webview.postMessage`. Esc and × collapse to the fab; only
   `//lua unload` (taskkill) or fab right-click quits the process.
   Drag region: `--wails-draggable` in `src/styles.css`; edge-resize
   cursors/zones are detected in-page (8px border, fab mode excluded)
   since `WM_NCHITTEST` never reaches the webview child window.
-  `xic:drag`/`xic:resize:<cursor>` run a **Go-driven** move/size loop
+  `xicompanion:drag`/`xicompanion:resize:<cursor>` run a **Go-driven** move/size loop
   (poll `GetCursorPos` + `SetWindowPos` until button-up) — never post
   `WM_NCLBUTTONDOWN`: a modal loop entered with the button already up
   parks holding global mouse capture and eats all input. The fab and
   fab-layer panels carry `WS_EX_NOACTIVATE` (like the tooltip) so their
   clicks — including transparent margins — can't steal game focus.
-  `xic:spawn:<route>` from the page's pop-out header button creates a
+  `xicompanion:spawn:<route>` from the page's pop-out header button creates a
   detached per-tab window via `WindowManager.NewWithOptions` (frameless,
   always-on-top, 280×180 min, same message bridge): one window per route
   key, re-spawn focuses instead of duplicating, geometry persists per
   route under `windows` in window.json, `resolveHwnd` registers its
-  hwnd, and `xic:close` on a spawned window destroys it (on the main
+  hwnd, and `xicompanion:close` on a spawned window destroys it (on the main
   window it collapses to the fab). `watchBackend`'s zoning/cutscene hide
   applies to the fab and "fab-layer" spawned windows (`/tracker`, the
   quest tracker; `/macrobar`, the clickable macro bar; `/cooldowns`,
   the recast list) — other spawned windows and the full UI stay
   visible.
   The journal header's tracker button spawns `/tracker`; its rows post
-  `xic:main:<path>` which `showInMain` ExecJS's into the main window's
+  `xicompanion:main:<path>` which `showInMain` ExecJS's into the main window's
   `__xicNavigate` (in-page router nav, expanding the fab first) — the
   journal selects via `/journal?g=<kind>&s=<key>&id=<n>` params, and the
   tracker window itself stays up.
-  `xic:refocus`: a capture-phase `mouseup` listener in host.ts posts it
+  `xicompanion:refocus`: a capture-phase `mouseup` listener in host.ts posts it
   after every primary-button click except on `input`/`textarea`/
   `contenteditable` (typing keeps focus); the shell `SetForegroundWindow`s
   the game — found via its `FFXiClass` window class, falling back to a
@@ -307,8 +336,8 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   Drag/resize end refocuses too: the modal WM_NCLBUTTONDOWN loop eats
   the DOM mouseup, so `startMoveLoop` spawns `watchDragEnd`, which polls
   the button state and refocuses on release.
-  Logs to `%LOCALAPPDATA%/xic/overlay.log`; WebView2 UDF at
-  `%LOCALAPPDATA%/xic/webview2`.
+  Logs to `%LOCALAPPDATA%/xicompanion/overlay.log`; WebView2 UDF at
+  `%LOCALAPPDATA%/xicompanion/webview2`.
 - `launch.mjs` — dev path: spawns Electron detached, strips
   `ELECTRON_RUN_AS_NODE` / `ELECTRON_NO_ATTACH_CONSOLE` (set in this
   machine's env), pipes child stdio to `overlay.log`, exits immediately.
@@ -322,14 +351,14 @@ prefers the bundled exe and falls back to the Electron dev launcher.
 
 ## Verify / build
 
-- `npm run build:addon` — typecheck + vite build into `addon/xic/ui/`
+- `npm run build:addon` — typecheck + vite build into `addon/xicompanion/ui/`
 - `npm run build:overlay` — go build the Wails shell into
-  `addon/xic/overlay/xic-overlay.exe`
-- `npm run deploy` — sync `addon/xic/` → `../addons/xic/`
+  `addon/xicompanion/overlay/xicompanion-overlay.exe`
+- `npm run deploy` — sync `addon/xicompanion/` → `../addons/xicompanion/`
   (live Windower install; preserves its `data/`)
 - `npm run release` — build ui + overlay, then `dist/xicompanion-<ver>.zip`:
   the standalone addon (extract into `addons/`)
-- `node scripts/smoke-test.mjs` — runs the real `xic.lua` under
+- `node scripts/smoke-test.mjs` — runs the real `xicompanion.lua` under
   fengari with stubs; covers HTTP routes, SSE, file CRUD, swap scanner,
   commands
 - fengari cannot parse `'x':method()` literal calls in Windower libs — those

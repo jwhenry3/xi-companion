@@ -25,9 +25,10 @@
 -- icon_extractor v1.1.3
 -- Written by Rubenator of Leviathan
 -- Base Extraction Code graciously provided by Trv of Windower discord
+local plat = require('plat')
 local icon_extractor = {}
 
-local game_path_default = windower.ffxi_path
+local game_path_default = plat.ffxi_path
 local game_path = game_path_default
 
 local string = require('string')
@@ -262,7 +263,7 @@ function close_dats()
     end
 end
 
-windower.register_event('unload', function()
+plat.on('unload', function()
     close_dats()
 end);
 

@@ -1,5 +1,5 @@
 -- recasts.lua: ability + spell cooldowns for the detached /cooldowns
--- window. windower.ffxi.get_ability_recasts()/get_spell_recasts() expose
+-- window. plat.ffxi.get_ability_recasts()/get_spell_recasts() expose
 -- remaining seconds keyed by recast_id / spell_id; the client never tells
 -- us the FULL recast for abilities, so `maxes` remembers the largest
 -- remaining each key has shown (first sighting is the post-use full
@@ -9,6 +9,7 @@
 -- polled from pump() every frame; remaining is rounded to 0.1s so the
 -- payload diff (and therefore the `recasts` SSE broadcast) only changes
 -- ~10x/sec while a cooldown is running — an idle player costs nothing.
+local plat = require('plat')
 local M = {}
 local ctx
 
@@ -24,7 +25,7 @@ local function scan()
     -- {} would arrive as an object and break .map in the view
     local out = ctx.json_array and ctx.json_array({}) or {}
     local res = ctx.res or {}
-    local ok, abil = pcall(windower.ffxi.get_ability_recasts)
+    local ok, abil = pcall(plat.ffxi.get_ability_recasts)
     if ok and type(abil) == 'table' then
         for rid, secs in pairs(abil) do
             secs = tonumber(secs) or 0
@@ -45,7 +46,7 @@ local function scan()
             end
         end
     end
-    local ok2, spl = pcall(windower.ffxi.get_spell_recasts)
+    local ok2, spl = pcall(plat.ffxi.get_spell_recasts)
     if ok2 and type(spl) == 'table' then
         for sid, secs in pairs(spl) do
             secs = tonumber(secs) or 0

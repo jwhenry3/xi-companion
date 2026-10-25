@@ -6,7 +6,7 @@ import './styles.css';
 // Esc collapses the overlay back to the floating button — in Electron the
 // shell intercepts the key before the page; under Wails we handle it here.
 // A detached (?window=) tab closes its own window instead.
-// Capture phase so it behaves the same either way (expand via //xic
+// Capture phase so it behaves the same either way (expand via //xicompanion
 // overlay or clicking the fab).
 window.addEventListener(
   'keydown',

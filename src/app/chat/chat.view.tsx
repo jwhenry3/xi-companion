@@ -181,9 +181,9 @@ export class ChatView extends View implements OnInit, OnDestroy {
     void this.ensurePhrases();
     // another window (e.g. the map's player → tell action) hands us a
     // thread through localStorage — consume it on boot and on change
-    const pending = localStorage.getItem('xic.chat.thread');
+    const pending = localStorage.getItem('xicompanion.chat.thread');
     if (pending) {
-      localStorage.removeItem('xic.chat.thread');
+      localStorage.removeItem('xicompanion.chat.thread');
       this.open(pending);
     }
     window.addEventListener('storage', this.onStorage);
@@ -194,8 +194,8 @@ export class ChatView extends View implements OnInit, OnDestroy {
   }
 
   private onStorage = (e: StorageEvent) => {
-    if (e.key === 'xic.chat.thread' && e.newValue) {
-      localStorage.removeItem('xic.chat.thread');
+    if (e.key === 'xicompanion.chat.thread' && e.newValue) {
+      localStorage.removeItem('xicompanion.chat.thread');
       this.open(e.newValue);
     }
   };

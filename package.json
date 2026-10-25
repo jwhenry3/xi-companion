@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:addon": "tsc --noEmit && vite build --outDir addon/xic/ui --emptyOutDir",
-    "build:overlay": "cd overlay/wails && go build -tags production -ldflags \"-s -w -H windowsgui\" -o ../../addon/xic/overlay/xic-overlay.exe .",
+    "build:addon": "tsc --noEmit && vite build --outDir addon/xicompanion/ui --emptyOutDir",
+    "build:overlay": "cd overlay/wails && go build -tags production -ldflags \"-s -w -H windowsgui\" -o ../../addon/xicompanion/overlay/xicompanion-overlay.exe .",
     "deploy": "node scripts/deploy.mjs",
     "package": "node scripts/package.mjs",
     "release": "npm run build:addon && npm run build:overlay && node scripts/package.mjs",

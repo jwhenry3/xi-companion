@@ -17,7 +17,7 @@ const NAV = [
 ];
 
 // per-window theme picker for detached windows — the choice persists
-// under xic.wintheme.<route> so each spawned window keeps its own look
+// under xicompanion.wintheme.<route> so each spawned window keeps its own look
 function ThemePicker() {
   return (
     <select
@@ -46,7 +46,7 @@ export class AppShell extends View {
 
   onInit() {
     // detached windows (tracker etc.) ask the shell to navigate us —
-    // ExecJS lands here via xic:main:<url>
+    // ExecJS lands here via xicompanion:main:<url>
     (window as any).__xicNavigate = (p: string) => this.router.navigate(p);
   }
 

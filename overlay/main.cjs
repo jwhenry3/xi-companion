@@ -69,7 +69,7 @@ function create() {
     // a borderless always-on-top window has no taskbar entry or chrome, so
     // re-assert z-order periodically in case the game pushes past it, and
     // give the user a hide key since there's nothing else to close it with
-    // (//xic overlay / FAB re-shows it via the second-instance handler)
+    // (//xicompanion overlay / FAB re-shows it via the second-instance handler)
     const keepTop = setInterval(() => {
         if (win.isDestroyed()) {
             clearInterval(keepTop);
@@ -103,7 +103,7 @@ function create() {
     });
 }
 
-// FAB clicks and //xic overlay can fire repeatedly — focus the existing
+// FAB clicks and //xicompanion overlay can fire repeatedly — focus the existing
 // window instead of stacking instances.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {

@@ -1,4 +1,4 @@
-module xic-overlay
+module xicompanion-overlay
 
 go 1.26.0
 

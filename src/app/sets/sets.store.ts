@@ -124,7 +124,7 @@ export function resolveItem(
 
 // ---------------------------------------------------------------------------
 // lua generation — bound sets become sets.<path> = { slot='item', ... } lines
-// inside a managed <xic sets> block, spliced into get_sets()
+// inside a managed <xicompanion sets> block, spliced into get_sets()
 // ---------------------------------------------------------------------------
 
 function luaStr(s: string): string {
@@ -138,7 +138,7 @@ function luaSeg(seg: string): string {
 const SLOT_KEYS = new Set(EQUIP_SLOTS.map((s) => s.key));
 
 export function genSetsBlock(fs: FileSets): string {
-  const lines: string[] = ['    -- <xic sets>'];
+  const lines: string[] = ['    -- <xicompanion sets>'];
   for (const key of Object.keys(fs.bindings).sort()) {
     const set = fs.sets.find((s) => s.id === fs.bindings[key]);
     if (!set) continue;
@@ -186,7 +186,7 @@ export function genSetsBlock(fs: FileSets): string {
   lines.push('            if s then equip(s) end');
   lines.push('        end');
   lines.push('    end');
-  lines.push('    -- </xic>');
+  lines.push('    -- </xicompanion>');
   return lines.join('\n');
 }
 
@@ -235,7 +235,7 @@ function injectIntoGetSets(lines: string[], blockLines: string[]): boolean {
 // in place instead of left behind as stale duplicates.
 function stripBlocks(content: string): string {
   return content.replace(
-    /[ \t]*--\s*<(?:xic|gearswapui)[^>]*>[\s\S]*?--\s*<\/(?:xic|gearswapui)>\s*\n?/g,
+    /[ \t]*--\s*<(?:xicompanion|xic|gearswapui)[^>]*>[\s\S]*?--\s*<\/(?:xicompanion|xic|gearswapui)>\s*\n?/g,
     '',
   );
 }
@@ -332,9 +332,10 @@ export function parseSetsLua(
 // store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'xic.sets.v2';
+const STORAGE_KEY = 'xicompanion.sets.v2';
 // pre-rename keys — read once for migration, never written
-const LEGACY_KEYS = ['gsui.sets.v2', 'gsui.sets.v1'];
+const LEGACY_V2_KEYS = ['xic.sets.v2', 'gsui.sets.v2'];
+const LEGACY_V1_KEY = 'gsui.sets.v1';
 
 function uid(): string {
   return (
@@ -371,7 +372,8 @@ export class SetsStore {
     this.loaded = true;
     try {
       const raw =
-        localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_KEYS[0]);
+        localStorage.getItem(STORAGE_KEY) ??
+        LEGACY_V2_KEYS.map((k) => localStorage.getItem(k)).find((r) => r != null);
       if (raw) {
         const data = JSON.parse(raw) as {
           files?: Record<string, FileSets>;
@@ -392,7 +394,7 @@ export class SetsStore {
   // v1 stored a global set list where group+name formed the sets.* path.
   private migrateLegacy() {
     try {
-      const raw = localStorage.getItem(LEGACY_KEYS[1]);
+      const raw = localStorage.getItem(LEGACY_V1_KEY);
       if (!raw) return;
       const data = JSON.parse(raw) as {
         sets?: Array<GearSetDef & { group?: string }>;

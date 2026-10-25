@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Extract FFXI quest/mission/RoE names from the client DATs into
-addon/xic/journal_names.lua.
+addon/xicompanion/journal_names.lua.
 
 Sources (all decoded from the local FFXI install):
   - d_msg files 55706-55742: quest and mission name records. Body is
@@ -21,7 +21,7 @@ directly from the FFXI install dir that ffxi_fs exposes.
 
 Usage:
     python scripts/extract-journal.py [--re-dir <path>] [--ffxi <path>]
-        [--out addon/xic/journal_names.lua]
+        [--out addon/xicompanion/journal_names.lua]
 """
 
 import argparse
@@ -263,7 +263,7 @@ def main():
     ap.add_argument('--ffxi', default=None,
                     help='FFXI install dir (defaults to ffxi_fs.BASE)')
     ap.add_argument('--out', default=os.path.join(
-        os.path.dirname(__file__), '..', 'addon', 'xic',
+        os.path.dirname(__file__), '..', 'addon', 'xicompanion',
         'journal_names.lua'))
     args = ap.parse_args()
 

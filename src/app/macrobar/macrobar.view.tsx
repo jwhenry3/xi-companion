@@ -1,7 +1,7 @@
 // Detached macro bar — the 20 Ctrl/Alt cells of one palette as clickable
 // buttons. A click POSTs /api/macros/run, which replays the macro's lines
 // through the client's input line just like pressing the keybind would.
-// No NAV entry; reached via "macro bar" on the Macros page or //xic
+// No NAV entry; reached via "macro bar" on the Macros page or //xicompanion
 // macrobar. Char/book/page persist in localStorage so the bar reopens
 // where it was.
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 const NUM_BOOKS = 40;
 const PALS_PER_BOOK = 10;
 const NUM_MACROS = 20;
-const LS_KEY = 'xic.macrobar';
+const LS_KEY = 'xicompanion.macrobar';
 
 const keyLabel = (i: number) =>
   `${i < 10 ? 'Ctrl' : 'Alt'}+${((i % 10) + 1) % 10}`;

@@ -1,7 +1,7 @@
 -- map.lua: player position + nearby entities + widescan entries for the
 -- /map page and the /minimap floating window.
 --
--- Positions come from windower.ffxi.get_map_data() — the client's own
+-- Positions come from plat.ffxi.get_map_data() — the client's own
 -- world->map-pixel projection, so multi-map zones and floor selection are
 -- already handled. The pixel space is the installed map DAT's resolution
 -- (512 retail, larger under hi-res map mods); `ms` in the payload tracks
@@ -20,6 +20,7 @@
 -- everyone heard speaking in the LS channels (0x017 modes 5/27) —
 -- persisted under data/lsnames/<char>.lua and matched by name. Only
 -- talkers are covered; the client never exposes a full member list.
+local plat = require('plat')
 local M = {}
 local ctx
 
@@ -53,7 +54,7 @@ local function ls_load()
     ls_char = char
     ls_names = { {}, {} }
     local path = ls_file(char)
-    if windower.file_exists(path) then
+    if plat.file_exists(path) then
         local ok, t = pcall(dofile, path)
         if ok and type(t) == 'table' then
             for _, n in ipairs(t.ls1 or {}) do ls_names[1][n] = true end
@@ -67,8 +68,8 @@ local function ls_save(now)
     ls_dirty = false
     ls_next_save = now + 15
     local dir = ctx.join(ctx.data_dir, 'lsnames')
-    if not windower.dir_exists(dir) then
-        pcall(windower.create_dir, dir)
+    if not plat.dir_exists(dir) then
+        pcall(plat.create_dir, dir)
     end
     local function dump(set)
         local names = {}
@@ -92,13 +93,13 @@ local function grow_space(px)
 end
 
 local function scan(now)
-    local ok, me = pcall(windower.ffxi.get_mob_by_target, 'me')
+    local ok, me = pcall(plat.ffxi.get_mob_by_target, 'me')
     if not ok or type(me) ~= 'table' or not me.index then return nil end
     local mid, mx, my
-    local ok2, a, b, c = pcall(windower.ffxi.get_map_data, me.index)
+    local ok2, a, b, c = pcall(plat.ffxi.get_map_data, me.index)
     if ok2 then mid, mx, my = a, b, c end
     if not mx then
-        local ok3, a2, b2, c2 = pcall(windower.ffxi.get_map_data, me.x, me.y, me.z)
+        local ok3, a2, b2, c2 = pcall(plat.ffxi.get_map_data, me.x, me.y, me.z)
         if ok3 then mid, mx, my = a2, b2, c2 end
     end
     if not mx then return nil end -- un-mapped area (limbus cutscenes etc.)
@@ -106,14 +107,14 @@ local function scan(now)
     grow_space(math.max(math.abs(mx), math.abs(my)))
 
     local zone = 0
-    local okz, info = pcall(windower.ffxi.get_info)
+    local okz, info = pcall(plat.ffxi.get_info)
     if okz and type(info) == 'table' then zone = info.zone or 0 end
     local zn
     local zr = ctx.res and ctx.res.zones and ctx.res.zones[zone]
     if zr then zn = zr.en end
 
     local ents = ctx.json_array and ctx.json_array({}) or {}
-    local okm, arr = pcall(windower.ffxi.get_mob_array)
+    local okm, arr = pcall(plat.ffxi.get_mob_array)
     if okm and type(arr) == 'table' then
         for idx, e in pairs(arr) do
             -- the mob array is keyed by index and includes the player;
@@ -121,7 +122,7 @@ local function scan(now)
             -- entities, so they must not reach the radar or the list
             if type(e) == 'table' and idx ~= me.index and e.valid_target
                 and e.name ~= nil and e.name ~= '' then
-                local _, ex, ey = windower.ffxi.get_map_data(e.x, e.y, e.z)
+                local _, ex, ey = plat.ffxi.get_map_data(e.x, e.y, e.z)
                 if ex then
                     ex = math.floor(ex + 0.5)
                     ey = math.floor(ey + 0.5)
@@ -244,7 +245,7 @@ function M.handle_incoming(id, data)
             e.tr = 1
             if fx and fy and fz then
                 local _, tx, ty = pcall(
-                    windower.ffxi.get_map_data, fx, fy, fz)
+                    plat.ffxi.get_map_data, fx, fy, fz)
                 if tx then
                     e.wx = math.floor(tx + 0.5)
                     e.wy = math.floor(ty + 0.5)

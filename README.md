@@ -2,7 +2,7 @@
 
 A persistent companion overlay for Final Fantasy XI — a separate desktop
 process that floats always-on-top panels over the game, backed by the
-`xic` Windower addon's local HTTP/SSE server. Everything the addon sees
+`xicompanion` Windower addon's local HTTP/SSE server. Everything the addon sees
 (packets, bags, journal, chat, recasts, map data) streams to the UI;
 everything the UI does goes back through injected packets or normal
 `input /` commands — no in-game UI hacks, no input blocking.
@@ -71,13 +71,13 @@ Preact, with signal reactivity.
 ## Usage
 
 ```text
-//lua load xic         # start the addon (spawns the fab menu bar)
-//xic open             # open the full UI window
-//xic minimap          # toggle the minimap window
-//xic tracker          # toggle the tracker window
-//xic macrobar         # toggle the macro bar
-//xic cooldowns        # toggle the cooldowns window
-//xic fab on|off       # toggle the fab
+//lua load xicompanion         # start the addon (spawns the fab menu bar)
+//xicompanion open             # open the full UI window
+//xicompanion minimap          # toggle the minimap window
+//xicompanion tracker          # toggle the tracker window
+//xicompanion macrobar         # toggle the macro bar
+//xicompanion cooldowns        # toggle the cooldowns window
+//xicompanion fab on|off       # toggle the fab
 ```
 
 ## Development
@@ -89,7 +89,7 @@ pmvc test             # vitest
 pmvc g view my-page   # scaffold a view
 pmvc g module admin   # scaffold a feature module
 
-npm run build:addon   # typecheck + build into addon/xic/ui/
+npm run build:addon   # typecheck + build into addon/xicompanion/ui/
 npm run build:overlay # go build the Wails shell
 npm run deploy        # sync addon -> live Windower install
 node scripts/smoke-test.mjs   # addon exercised under fengari
