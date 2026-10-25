@@ -9,32 +9,60 @@ everything the UI does goes back through injected packets or normal
 
 ![XI Companion overlaying FFXI — minimap, tracker, macro bar, cooldowns, chat, and fab](image.png)
 
-## Features
+## Windows
 
-- **Floating panels** — every view can pop out into its own detached
-  window (quest tracker, macro bar, cooldowns, minimap, plus all app
-  pages). Per-window themes (`dark` / `light` / `glass` / `bare`) and
-  persisted geometry; `bare` paints only the controls over the game.
-- **Minimap & map page** — real zone imagery decoded from the client
-  DATs, player position/facing via `get_map_data()`, nearby entities,
-  and widescan results (request scans from the UI). Click a player in
-  the entity list to `/tell` or `/check` them.
-- **Journal** — missions, quests, Records of Eminence, and Field
-  Manual/Grounds of Valor training regimes, with per-entry and
-  per-category tracking toggles that feed the detached tracker window.
-  Wiki links on every entry.
-- **GearSwap** — set editor with an equipment grid, per-file bindings,
-  slot-filtered item picker, and item tooltips that open outside the
-  main window.
-- **Inventory** — every bag with icons, filters, and item actions:
-  equip/unequip, use, move between bags, drop. Names color-coded by the
-  native flag scheme (yellow Rare, green Ex).
-- **Macro bar & editor** — reads/writes the client's `mcr` files
-  directly, live-applies palette changes in game, and mirrors your
-  palettes onto a clickable bar.
-- **Cooldowns** — ability/spell recast timers in a detached strip.
-- **Chat** — Discord-style unified chat: channels plus `/tell` threads
-  as DMs, autotranslate-aware phrase completion.
+Every view is a page in the main window and can also pop out into its own
+detached window. Windows persist their position and size, and each can
+pick its own theme (`dark` / `light` / `glass` / `bare`) — `bare` paints
+only the controls over the game.
+
+### GearSwap
+
+Set editor with a 16-slot equipment grid, per-file bindings, a
+slot/bag-filtered item picker, and tooltips that open outside the main
+window. `sets.*` handlers auto-import and changes write back into the
+profile's `get_sets()` block.
+
+![GearSwap set editor — set list, equipment grid, item picker](gearswap.png)
+
+### Inventory
+
+Every bag with icons, search and bag/slot/type filters, and item actions —
+equip/unequip, use, move between bags, drop. Names are color-coded by the
+native flag scheme (yellow Rare, green Ex) with the client's dot markers.
+
+![Inventory — bag list with native rare/ex flag colors](inventory.png)
+
+### Journal
+
+Missions, quests, Records of Eminence, and Field Manual / Grounds of Valor
+training regimes — progress bars, per-entry and per-category tracker
+toggles, wiki links, and a "show all" filter. Tracked entries feed the
+detached tracker window.
+
+![Journal — RoE objectives with progress and detail pane](journal.png)
+
+### Macros
+
+A full macro editor on the client's own `mcr` files: books and pages,
+Ctrl/Alt 2×10 palette grid, label + 6-line editor with byte counters,
+autotranslate phrases, book rename, palette copy/paste, and a live
+"save & apply" that switches books in game while it writes.
+
+![Macro editor — book list, palette grid, line editor](macros.png)
+
+### Also included
+
+- **Map** — whole-zone radar page with real client map imagery, nearby
+  entities, widescan, and click-to-tell/check on players.
+- **Minimap** — floating player-centered radar (visible top-right in the
+  hero shot).
+- **Tracker** — detached journal tracker with live progress bars.
+- **Macro bar** — a clickable strip mirroring your in-game palettes.
+- **Cooldowns** — ability/spell recast timers.
+- **Chat** — unified channels plus `/tell` threads as DMs.
+- **Settings** — global + per-window themes and geometry controls.
+- **Fab** — the persistent one-row menu bar that spawns/toggles windows.
 
 A [preact-mvc](https://github.com/jwhenry3/preact-mvc) application —
 Angular-style modules, DI, and MVC on class-based JSX views rendered by
