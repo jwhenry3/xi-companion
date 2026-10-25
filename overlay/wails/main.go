@@ -87,6 +87,8 @@ var (
 )
 
 const (
+	swHide        = 0
+	swShowNA      = 8 // show without activating — restores must not steal fg
 	swRestore     = 9
 	hwndTopmost   = ^uintptr(0) // (HWND)-1
 	swpNoSize     = 0x0001
@@ -727,6 +729,7 @@ var (
 	spawnMu       sync.Mutex
 	addonTarget   string      // probed addon base URL, set once found
 	backendHidden atomic.Bool // zoning blackout / cutscene flag
+	fgHidden      atomic.Bool // foreign-foreground blackout — all windows hide
 )
 
 // spawnKey normalizes a route path for use as a map/geometry key.
@@ -978,9 +981,9 @@ func spawnWindow(route string) {
 			return navURL(target + spawnPath)
 		})
 	}
-	// a fab-layer window spawned mid-blackout starts hidden — the
-	// watchBackend poll restores it when the world comes back
-	if fabLayerSpawned(key) && backendHidden.Load() {
+	// spawned mid-blackout (zoning or foreign-foreground) starts hidden —
+	// the watchers restore it when the world/focus comes back
+	if fgHidden.Load() || (fabLayerSpawned(key) && backendHidden.Load()) {
 		w.Hide()
 	}
 	go trackSpawned(w, key)
@@ -1248,6 +1251,90 @@ func setTooltipOwner(ownerHwnd uintptr) {
 		return
 	}
 	pSetWindowLongPtr.Call(th, uintptr(gwlpOwner), ownerHwnd)
+}
+
+// sameProcess reports whether two hwnds belong to the same process —
+// FFXI's own dialogs/IME surfaces still count as "game foreground".
+func sameProcess(a, b uintptr) bool {
+	if a == 0 || b == 0 {
+		return false
+	}
+	var pa, pb uint32
+	pGetWindowThreadProcessId.Call(a, uintptr(unsafe.Pointer(&pa)))
+	pGetWindowThreadProcessId.Call(b, uintptr(unsafe.Pointer(&pb)))
+	return pa != 0 && pa == pb
+}
+
+// applyFgHidden hides or restores the whole overlay family. Restores go
+// through SW_SHOWNA on the hwnd — w.Show() activates, which would steal
+// foreground right back from whatever the user switched to. The zoning
+// blackout still wins over a restore: windows it wants hidden stay down.
+func applyFgHidden(hide bool) {
+	if !fgHidden.CompareAndSwap(!hide, hide) {
+		return
+	}
+	log.Printf("fg-hidden=%v", hide)
+	op := uintptr(swHide)
+	if !hide {
+		op = swShowNA
+	}
+	apply := func(w application.Window) {
+		if w == nil {
+			return
+		}
+		if hwnd := hwndOf(w); hwnd != 0 {
+			pShowWindow.Call(hwnd, op)
+		}
+	}
+	if hide || !backendHidden.Load() || !fabMode {
+		apply(win) // blackout owns the fab — a restore must not resurface it
+	}
+	spawnMu.Lock()
+	var list []*application.WebviewWindow
+	keys := map[*application.WebviewWindow]string{}
+	for k, sw := range spawned {
+		list = append(list, sw)
+		keys[sw] = k
+	}
+	spawnMu.Unlock()
+	for _, sw := range list {
+		if !hide && backendHidden.Load() && fabLayerSpawned(keys[sw]) {
+			continue
+		}
+		apply(sw)
+	}
+	tooltipMu.Lock()
+	tw := tooltipWin
+	tooltipMu.Unlock()
+	if tw != nil {
+		apply(tw)
+	}
+}
+
+// watchForeground hides every overlay window while an unrelated app owns
+// the foreground — always-on-top panels covering an alt-tabbed browser is
+// the annoyance this removes. Ours holding foreground (the expanded UI
+// is a legitimate focus owner) or any FFXI-process window keeps
+// everything visible. Two consecutive foreign polls (~0.7s) are required
+// to hide so quick alt-tab pass-throughs don't flicker; one good poll
+// restores. With no game running the overlay stays put — nothing to
+// hide for.
+func watchForeground() {
+	foreign := 0
+	for {
+		time.Sleep(350 * time.Millisecond)
+		ffxi := findFFXIWindow()
+		fg, _, _ := pGetForegroundWindow.Call()
+		if ffxi == 0 || fg == ffxi || sameProcess(fg, ffxi) || ourHwnd(fg) {
+			foreign = 0
+			applyFgHidden(false)
+		} else {
+			foreign++
+			if foreign >= 2 {
+				applyFgHidden(true)
+			}
+		}
+	}
 }
 
 func hwndOf(w application.Window) uintptr {
@@ -1629,6 +1716,7 @@ func main() {
 			}
 		}()
 		go watchBackend(addonTarget)
+		go watchForeground()
 		return navURL(addonTarget)
 	})
 

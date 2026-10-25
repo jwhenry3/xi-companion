@@ -256,7 +256,14 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   handler) and hides/shows the window on the response's `hidden` flag —
   set during the zoning blackout (incoming `0x00B`→`0x00A` packets) and
   in event/cutscene status (player.status == 4), matching in-render
-  addons. The page picks what
+  addons. `watchForeground` polls `GetForegroundWindow` every ~350ms:
+  while FFXI runs and a **foreign** window owns foreground (not ours,
+  not the game's process — dialogs/IME surfaces count), the whole
+  overlay family hides after ~0.7s of persistence (alt-tab flicker
+  guard) and restores on the first good poll — restore uses
+  `SW_SHOWNA` so it can't steal focus back, and the zoning blackout
+  still wins over a restore. With no game running nothing hides.
+  The page picks what
   to render from viewport size (`fabMode` signal in host.ts);
   `body.fab-mode` drops the opaque background so the buttons read
   circular — `BackgroundType: BackgroundTypeTransparent` makes the
