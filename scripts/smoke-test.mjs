@@ -286,6 +286,11 @@ const ITEM = {
     id: 22222, en: 'Test Sword', category: 'Weapon', level: 99, ilvl: 119,
     jobs: { 1: true }, slots: { 0: true }, flags: {}, stack: 1,
   },
+  // AT item phrases resolve against res.items — including ids newer
+  // than the installed auto_translates table
+  26367: { id: 26367, en: 'Null Belt', category: 'Armor' },
+  // id with a 0x00 low byte — goes over the wire masked (type 0x0A)
+  768: { id: 768, en: 'Bronze Mask', category: 'Armor' },
 };
 
 const resModule = {
@@ -302,6 +307,9 @@ const resModule = {
   },
   auto_translates: {
     267: { id: 267, en: 'Hello!', ja: 'こんにちは。' },
+  },
+  key_items: {
+    2914: { id: 2914, en: 'Test Permit' },
   },
   ability_recasts: {
     1: { id: 1, en: 'Berserk', action_id: 31 },
@@ -1028,16 +1036,19 @@ function addonCmd(...args) {
   console.log('PASS swap scanner + commands');
 }
 
+// chat packet builder — mode @5, sender char[15] @9, text @24; shared
+// by the chat tests and the map linkshell-roster test
+const chatPacket = (mode, name, text) => {
+  const b = [0x17, 0x40, 0x00, 0x00]; // header
+  b.push(mode, 0, 0, 0); // mode, gm, padding
+  for (let i = 0; i < 15; i++) b.push(i < name.length ? name.charCodeAt(i) : 0);
+  for (const c of text) b.push(c.charCodeAt(0));
+  b.push(0);
+  return new Uint8Array(b); // raw bytes — a JS string would be UTF-8-encoded
+};
+
 // chat: incoming 0x017 packets parse into the log; POST sends via input /
 {
-  const chatPacket = (mode, name, text) => {
-    const b = [0x17, 0x40, 0x00, 0x00]; // header
-    b.push(mode, 0, 0, 0); // mode, gm, padding
-    for (let i = 0; i < 15; i++) b.push(i < name.length ? name.charCodeAt(i) : 0);
-    for (const c of text) b.push(c.charCodeAt(0));
-    b.push(0);
-    return new Uint8Array(b); // raw bytes — a JS string would be UTF-8-encoded
-  };
   fireEvent('incoming chunk', 0x017, chatPacket(4, 'Allymate', 'hello party'));
   fireEvent('incoming chunk', 0x017, chatPacket(3, 'Someguy', 'psst'));
   fireEvent('incoming chunk', 0x017, chatPacket(200, '', 'system junk ignored'));
@@ -1046,6 +1057,12 @@ function addonCmd(...args) {
   // so "Hello!" (id 267 = 0x010B) arrives as 01 0B)
   fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'well \xFD\x02\x02\x01\x0B\xFD met'));
   fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'unk \xFD\x02\x02\xFF\x7F\xFD id'));
+  // type byte selects the table: 0x07 = item name (res.items),
+  // 0x0A = item with the low id byte masked 0x00 -> 0xFF on the wire,
+  // 0x13 = key item (res.key_items)
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'want \xFD\x07\x02\x66\xFF\xFD pls'));
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'masked \xFD\x0A\x02\x03\xFF\xFD too'));
+  fireEvent('incoming chunk', 0x017, chatPacket(4, 'Greeter', 'have \xFD\x13\x02\x0B\x62\xFD ok'));
   // malformed content: truncated/lone auto-translate runs and high bytes
   // must not throw or kill the routing path
   fireEvent('incoming chunk', 0x017, chatPacket(4, 'Trouble', 'hi \xFD\x02\x01\x02\xFD there'));
@@ -1068,6 +1085,12 @@ function addonCmd(...args) {
   assert.ok(hello, 'auto-translate phrase not decoded: ' + JSON.stringify(j.messages));
   const unk = j.messages.find((m) => m.text === 'unk {AT:0202ff7f} id');
   assert.ok(unk, 'unknown auto-translate id lost: ' + JSON.stringify(j.messages));
+  assert.ok(j.messages.some((m) => m.text === 'want {Null Belt} pls'),
+    'item AT phrase not decoded: ' + JSON.stringify(j.messages));
+  assert.ok(j.messages.some((m) => m.text === 'masked {Bronze Mask} too'),
+    'masked item AT phrase not decoded: ' + JSON.stringify(j.messages));
+  assert.ok(j.messages.some((m) => m.text === 'have {Test Permit} ok'),
+    'key item AT phrase not decoded: ' + JSON.stringify(j.messages));
   const at = j.messages.find((m) => m.text === 'hi {AT} there');
   assert.ok(at, 'auto-translate run not collapsed: ' + JSON.stringify(j.messages));
   const lone = j.messages.find((m) => m.text === 'ends with lone {AT}');
@@ -1104,6 +1127,7 @@ function addonCmd(...args) {
   const echo = j2.messages.find((m) => m.self === true && m.channel === 'tell');
   assert.ok(echo && echo.peer === 'Someguy' &&
     echo.text === 'back at you', 'tell local echo missing');
+
   // channel sends append locally too — the server doesn't echo them back
   const lsEcho = j2.messages.find(
     (m) => m.self === true && m.channel === 'linkshell' && m.text === 'ls test',
@@ -1136,17 +1160,31 @@ function addonCmd(...args) {
     'input /party hi ý\x02\x02\x01\x0Bý',
     'braced phrase not wire-encoded: ' + JSON.stringify(atCmd),
   );
+  // item names encode as type 0x07 — masked to 0x0A here because
+  // Bronze Mask's low id byte is 0x00 and rides the wire as 0xFF
+  const p3i = fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'party', text: 'got {Bronze Mask}' }),
+  }).then((r) => r.json());
+  await step(3);
+  await p3i;
+  assert.equal(
+    commands[commands.length - 1],
+    'input /party got ý\x0A\x02\x03ÿý',
+    'item phrase not wire-encoded: ' + JSON.stringify(commands[commands.length - 1]),
+  );
   // braces that don't resolve to a phrase pass through as literal text
   const p4 = fetch(`${base}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channel: 'say', text: 'a {nope} b' }),
+    body: JSON.stringify({ channel: 'party', text: 'a {nope} b' }),
   }).then((r) => r.json());
   await step(3);
   await p4;
   assert.equal(
     commands[commands.length - 1],
-    'input /say a {nope} b',
+    'input /party a {nope} b',
     'literal braces mangled: ' + JSON.stringify(commands[commands.length - 1]),
   );
 
@@ -1546,6 +1584,14 @@ function addonCmd(...args) {
     index: 0x203, name: '', x: 5, y: 0, z: 5, facing: 0,
     spawn_type: 16, valid_target: true,
   };
+  // no entity field marks linkshell membership — the roster is names
+  // heard speaking in the LS channels; Linkbuddy's 0x017 (mode 5)
+  // should flag their radar blip f&8
+  mobs[0x204] = {
+    index: 0x204, name: 'Linkbuddy', x: -8, y: 0, z: 4, facing: 0,
+    spawn_type: 1, valid_target: true, hpp: 100, distance: 64,
+  };
+  fireEvent('incoming chunk', 0x017, chatPacket(5, 'Linkbuddy', 'anyone around?'));
   const wsPacket = (index, level, typ, xoff, yoff, name) => {
     const b = new Uint8Array(28);
     b[0] = 0xf4;
@@ -1581,6 +1627,10 @@ function addonCmd(...args) {
     assert.equal(thug.st, 16, 'mob spawn_type lost');
     assert.ok(mj.e?.every((e) => e.n !== 'Tester'), 'player leaked into entity list');
     assert.ok(mj.e?.every((e) => e.n), 'nameless mob-array row leaked');
+    const buddy = mj.e?.find((e) => e.n === 'Linkbuddy');
+    assert.ok(buddy, 'player entity missing from radar');
+    assert.ok((buddy.f & 8) === 8, 'linkshell member not flagged: ' + JSON.stringify(buddy));
+    assert.ok(!(thug.f & 8), 'non-ls mob flagged as linkshell');
     const wsn = mj.ws?.map((w) => w.n);
     assert.ok(wsn?.includes('Goblin Thug'), 'widescan mob missing');
     assert.ok(wsn?.includes('Gate Guard'), 'widescan NPC missing');
@@ -1594,6 +1644,7 @@ function addonCmd(...args) {
   delete mobs[meIndex];
   delete mobs[0x202];
   delete mobs[0x203];
+  delete mobs[0x204];
 
   // map image route: mapdats + FTABLE resolve a zone/map to a client DAT;
   // the route serves raw bytes as application/x-ffxi-map (browser decodes).

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Item / key-item auto-translate phrases** rendered as raw
+  `{AT:xxxxxxxx}` tokens in chat (e.g. `{Null Belt}` in bazaar shouts).
+  The FD block's type byte selects the id's source table: `0x02` phrase,
+  `0x07`/`0x09`/`0x0A` item, `0x13`/`0x15`/`0x16` key item — `09`/`0A`
+  and `15`/`16` unmask a 0x00 id byte that rides the wire as `0xFF`.
+  Items resolve through `res.items`, key items through `res.key_items`,
+  and phrases gain a client-extracted table (`at_names.lua`, generated
+  by `scripts/extract-autotranslate.py` from the AT DAT at file id
+  `0xD971` — ~150 entries newer than the installed `res` table).
+  Outbound `{Name}` braces now encode items/key items too, with the
+  correct masked type byte.
 - **Detached windows fighting for always-on-top** — every periodic
   re-assert scheme stole band-top per `SetWindowPos` call: per-window
   asserts ping-ponged siblings, and the coordinated `zSweep` visibly

@@ -8,6 +8,8 @@ import type { MapState, MapEntity, MapWsEntry } from '../core/types';
 
 const C = {
   party: '#38bdf8', // sky-400
+  ally: '#22d3ee', // cyan-400
+  ls: '#fb923c', // orange-400
   mob: '#fb7185', // rose-400
   npc: '#34d399', // emerald-400
   pc: '#a78bfa', // violet-400
@@ -17,7 +19,9 @@ const C = {
 };
 
 function entColor(e: MapEntity): string {
-  if (e.f & 3) return C.party; // party/alliance first — always friendly
+  if (e.f & 1) return C.party; // social rings first — always friendly
+  if (e.f & 2) return C.ally;
+  if (e.f & 8) return C.ls;
   if (e.st === 16) return C.mob;
   if (e.f & 4 || e.st === 2) return C.npc;
   if (e.st === 1) return C.pc;

@@ -1,20 +1,24 @@
 // Minimap: detached panel-mode window (/minimap?window=1) — the MapRadar
-// zoomed to a player-centered radius. Click the map to cycle zoom
-// (quarter-zone → half → whole); the zone name + map coords sit in the
-// window's title bar via the app shell. Same `map` SSE feed as /map.
+// zoomed to a player-centered radius. A bottom slider sets the zoom:
+// left = close radar, right = whole-zone fit. The zone name + map coords
+// sit in the window's title bar via the app shell. Same `map` SSE feed
+// as /map.
 import { Component, View, inject, signal } from '@preact-mvc/core';
 import type { OnInit } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { MapRadar } from './map-radar';
 import { resolveMapImage } from './map-image';
 
-// zoom steps in map-px half-extent; 0 = fit the whole zone map
-const ZOOMS = [48, 96, 192, 0];
+// slider 0..100 -> map-px half-extent, exponential so the close end gets
+// fine granularity; at 100 the radar switches to whole-map fit
+const MIN_R = 24;
+const radiusFor = (v: number, ms: number) =>
+  v >= 100 ? undefined : Math.round(MIN_R * Math.pow(ms / 2 / MIN_R, v / 100));
 
 @Component()
 export class MinimapView extends View implements OnInit {
   private api = inject(AddonApi);
-  private zoom = signal(1); // index into ZOOMS — start mid-zoom
+  private zoom = signal(50); // slider %
   private mapImg = signal<string | null>(null);
   private imgFor = '';
 
@@ -36,14 +40,22 @@ export class MinimapView extends View implements OnInit {
   render() {
     const s = this.api.map.value;
     this.resolveImage();
-    const radius = ZOOMS[this.zoom.value] || undefined;
+    const radius = radiusFor(this.zoom.value, s?.ms ?? 512);
     return (
-      <div
-        class="h-full w-full cursor-pointer"
-        title="click to zoom"
-        onClick={() => (this.zoom.value = (this.zoom.value + 1) % ZOOMS.length)}
-      >
+      <div class="relative h-full w-full">
         <MapRadar s={s} radius={radius} img={this.mapImg.value} />
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={this.zoom.value}
+          title="zoom"
+          class="absolute inset-x-2 bottom-1 h-1.5 accent-sky-400 opacity-80 hover:opacity-100"
+          onInput={(e) =>
+            (this.zoom.value = Number((e.currentTarget as HTMLInputElement).value))
+          }
+        />
       </div>
     );
   }

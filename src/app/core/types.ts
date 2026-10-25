@@ -272,7 +272,7 @@ export interface MapEntity {
   y: number;
   /** raw spawn_type (16 = monster, 1 = PC, 2 = NPC) */
   st: number;
-  /** flags: 1 = in party, 2 = in alliance, 4 = is_npc */
+  /** flags: 1 = in party, 2 = in alliance, 4 = is_npc, 8 = linkshell */
   f: number;
   /** hp percent (0..100) */
   hp: number;

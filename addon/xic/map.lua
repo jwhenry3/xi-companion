@@ -14,6 +14,12 @@
 --
 -- polled from pump() every call; internally throttled to 4Hz. Map px are
 -- rounded to ints so the payload diff only fires on real movement.
+--
+-- Party/alliance membership rides entity flags (f&1/f&2); linkshell has
+-- no entity flag, so a per-character roster accumulates the names of
+-- everyone heard speaking in the LS channels (0x017 modes 5/27) —
+-- persisted under data/lsnames/<char>.lua and matched by name. Only
+-- talkers are covered; the client never exposes a full member list.
 local M = {}
 local ctx
 
@@ -25,8 +31,60 @@ local poll_n = 0
 local last_payload = nil     -- last json we broadcast/snapshotted
 local mspace = 512           -- observed map pixel space (hi-res mods > 512)
 
+local ls_names = { {}, {} }  -- [1]=linkshell, [2]=linkshell2 name sets
+local ls_char = nil          -- character the loaded sets belong to
+local ls_dirty = false
+local ls_next_save = 0
+
 function M.setup(deps)
     ctx = deps
+end
+
+local function ls_file(char)
+    return ctx.join(ctx.data_dir, 'lsnames',
+        (char:gsub('[^%w]', '_')) .. '.lua')
+end
+
+local function ls_load()
+    if not ctx.player_name then return end
+    local char = ctx.player_name()
+    if not char or char == 'me' or char == '' then return end
+    if ls_char == char then return end
+    ls_char = char
+    ls_names = { {}, {} }
+    local path = ls_file(char)
+    if windower.file_exists(path) then
+        local ok, t = pcall(dofile, path)
+        if ok and type(t) == 'table' then
+            for _, n in ipairs(t.ls1 or {}) do ls_names[1][n] = true end
+            for _, n in ipairs(t.ls2 or {}) do ls_names[2][n] = true end
+        end
+    end
+end
+
+local function ls_save(now)
+    if not ls_dirty or not ls_char or now < ls_next_save then return end
+    ls_dirty = false
+    ls_next_save = now + 15
+    local dir = ctx.join(ctx.data_dir, 'lsnames')
+    if not windower.dir_exists(dir) then
+        pcall(windower.create_dir, dir)
+    end
+    local function dump(set)
+        local names = {}
+        for n in pairs(set) do names[#names + 1] = n end
+        table.sort(names)
+        local out = {}
+        for _, n in ipairs(names) do
+            out[#out + 1] = string.format('%q', n)
+        end
+        return '{' .. table.concat(out, ',') .. '}'
+    end
+    local f = io.open(ls_file(ls_char), 'wb')
+    if not f then return end
+    f:write('return {ls1=' .. dump(ls_names[1])
+        .. ',ls2=' .. dump(ls_names[2]) .. '}')
+    f:close()
 end
 
 local function grow_space(px)
@@ -72,6 +130,9 @@ local function scan(now)
                     if e.in_party then fl = fl + 1 end
                     if e.in_alliance then fl = fl + 2 end
                     if e.is_npc then fl = fl + 4 end
+                    if ls_names[1][e.name] or ls_names[2][e.name] then
+                        fl = fl + 8
+                    end
                     ents[#ents + 1] = {
                         i = idx, n = e.name, x = ex, y = ey,
                         st = e.spawn_type or 0,
@@ -121,7 +182,10 @@ function M.poll()
         end
         return
     end
-    local s = scan(os.clock())
+    local now = os.clock()
+    ls_load()
+    ls_save(now)
+    local s = scan(now)
     local payload = s and ctx.json.encode(s) or '{"on":0}'
     if payload ~= last_payload then
         last_payload = payload
@@ -136,7 +200,20 @@ end
 -- so marks just reset an empty scan.
 function M.handle_incoming(id, data)
     local now = os.clock()
-    if id == 0x0F4 and data and #data >= 28 then
+    if id == 0x017 and data and #data >= 24 then
+        -- chat message: mode byte @5, sender char[15] @9. Linkshell
+        -- speakers are by definition members — grow the roster.
+        local ch = data:byte(5)
+        local which = ch == 5 and 1 or ch == 27 and 2 or nil
+        if which then
+            ls_load()
+            local name = data:sub(9, 23):match('^([^%z]*)')
+            if name ~= '' and not ls_names[which][name] then
+                ls_names[which][name] = true
+                ls_dirty = true
+            end
+        end
+    elseif id == 0x0F4 and data and #data >= 28 then
         local index = data:byte(5) + data:byte(6) * 256
         local level = data:byte(7)
         local typ = data:byte(8)

@@ -18,20 +18,31 @@ function entLabel(e: MapEntity): string {
 }
 
 // entity category — drives the row label, the dot color, and the
-// list's type-filter chips
+// list's type-filter chips. Grouping wins over the linkshell ring:
+// an LS mate who's also in your party reads as party.
 function entKind(e: MapEntity): string {
   if (e.f & 1) return 'party';
   if (e.f & 2) return 'alliance';
+  if (e.f & 8) return 'linkshell';
   if (e.st === 16) return 'mob';
   if (e.f & 4 || e.st === 2) return 'npc';
   if (e.st === 1) return 'player';
   return 'other';
 }
 
-const KIND_ORDER = ['party', 'alliance', 'player', 'npc', 'mob', 'other'];
+const KIND_ORDER = [
+  'party',
+  'alliance',
+  'linkshell',
+  'player',
+  'npc',
+  'mob',
+  'other',
+];
 const KIND_COLOR: Record<string, string> = {
   party: 'text-sky-300',
-  alliance: 'text-sky-300',
+  alliance: 'text-cyan-300',
+  linkshell: 'text-orange-300',
   player: 'text-violet-300',
   npc: 'text-emerald-300',
   mob: 'text-rose-300',
