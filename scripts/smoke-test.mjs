@@ -1540,11 +1540,18 @@ function addonCmd(...args) {
     index: 0x202, name: 'Goblin Thug', x: 10, y: 0, z: -5, facing: 0,
     spawn_type: 16, valid_target: true, hpp: 80, distance: 100,
   };
-  const wsPacket = (index, level, xoff, yoff, name) => {
+  // nameless mob-array rows are padding — targetable but not real
+  // entities; they must not reach the radar payload
+  mobs[0x203] = {
+    index: 0x203, name: '', x: 5, y: 0, z: 5, facing: 0,
+    spawn_type: 16, valid_target: true,
+  };
+  const wsPacket = (index, level, typ, xoff, yoff, name) => {
     const b = new Uint8Array(28);
     b[0] = 0xf4;
     put16(b, 4, index);
     b[6] = level;
+    b[7] = typ;
     put16(b, 8, xoff & 0xffff);
     put16(b, 10, yoff & 0xffff);
     for (let i = 0; i < name.length && i < 16; i++) {
@@ -1552,10 +1559,13 @@ function addonCmd(...args) {
     }
     return b;
   };
-  fireEvent('incoming chunk', 0x0f4, wsPacket(0x21, 15, 40, -20, 'Goblin Thug'));
-  fireEvent('incoming chunk', 0x0f4, wsPacket(0x22, 0, 0, 64, 'Gate Guard'));
-  // the player itself (index 0) is not a real blip
-  fireEvent('incoming chunk', 0x0f4, wsPacket(0, 0, 0, 0, 'You'));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x21, 15, 1, 40, -20, 'Goblin Thug'));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x22, 0, 2, 0, 64, 'Gate Guard'));
+  // the player itself (index 0) is not a real blip; neither are the
+  // padding rows — typeless and/or nameless — the client sends in bursts
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0, 0, 0, 0, 0, 'You'));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x23, 0, 0, 10, 10, 'No Type'));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x24, 0, 1, 10, 10, ''));
   await step(12); // let the every-6th pump scan run
   {
     const mp = fetch(`${base}/api/map`).then((r) => r.json());
@@ -1570,16 +1580,47 @@ function addonCmd(...args) {
     assert.equal(thug.y, 251, 'mob map y wrong'); // -5 + 256
     assert.equal(thug.st, 16, 'mob spawn_type lost');
     assert.ok(mj.e?.every((e) => e.n !== 'Tester'), 'player leaked into entity list');
+    assert.ok(mj.e?.every((e) => e.n), 'nameless mob-array row leaked');
     const wsn = mj.ws?.map((w) => w.n);
     assert.ok(wsn?.includes('Goblin Thug'), 'widescan mob missing');
     assert.ok(wsn?.includes('Gate Guard'), 'widescan NPC missing');
     assert.ok(!wsn?.includes('You'), 'widescan self-blip leaked');
+    assert.ok(!wsn?.includes('No Type'), 'typeless widescan row leaked');
+    assert.equal(mj.ws?.length, 2, 'widescan padding rows not filtered');
     assert.equal(mj.ws?.find((w) => w.n === 'Goblin Thug')?.l, 15, 'ws level lost');
     assert.equal(mj.wsa, 1, 'wsa flag not set');
     console.log('PASS map position + entities + widescan');
   }
   delete mobs[meIndex];
   delete mobs[0x202];
+  delete mobs[0x203];
+
+  // map image route: mapdats + FTABLE resolve a zone/map to a client DAT;
+  // the route serves raw bytes as application/x-ffxi-map (browser decodes).
+  {
+    const ftable = Buffer.alloc(5744 * 2 + 2);
+    ftable.writeUInt16LE((17 << 7) | 24, 5744 * 2); // zone 1 fid -> ROM/17/24.DAT
+    writeFileSync(join(ffxiDir, 'FTABLE.DAT'), ftable);
+    mkdirSync(join(ffxiDir, 'ROM', '17'), { recursive: true });
+    const payload = 'xic-map-dat-payload';
+    writeFileSync(join(ffxiDir, 'ROM', '17', '24.DAT'), payload);
+
+    const riP = fetch(`${base}/api/map/img?z=1&m=0`);
+    await step(3);
+    const ri = await riP;
+    assert.equal(ri.status, 200, 'map img route failed: ' + ri.status);
+    assert.equal(
+      ri.headers.get('content-type'),
+      'application/x-ffxi-map',
+      'map img content-type wrong',
+    );
+    const rjP = fetch(`${base}/api/map/img?z=999&m=0`);
+    await step(3);
+    const missing = await rjP;
+    assert.equal(missing.status, 404, 'unknown zone should 404');
+    assert.equal(await ri.text(), payload, 'map img payload wrong');
+    console.log('PASS map image DAT route');
+  }
 
   // leave no state behind for the next run
   rmSync(journalDir, { recursive: true, force: true });

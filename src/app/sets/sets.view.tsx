@@ -11,6 +11,7 @@ import {
 } from './sets.store';
 import type { GearSetDef } from './sets.store';
 import type { Bag, BagItem } from '../core/types';
+import { itemNameClass, flagDots } from '../core/item-flags';
 import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -208,9 +209,12 @@ export class SetsView extends View implements OnInit {
         class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-slate-300 hover:bg-slate-800"
       >
         {this.icon(item.id, 'h-7 w-7 shrink-0')}
-        <span class="min-w-0 flex-1 leading-tight">
+        <span
+          class={`min-w-0 flex-1 leading-tight ${itemNameClass(meta)}`}
+        >
           {item.equipped && <span class="mr-1 text-amber-400">*</span>}
           {meta?.name ?? `item ${item.id}`}
+          {flagDots(meta) && <span class="ml-1">{flagDots(meta)}</span>}
         </span>
         {usedSlot && (
           <span class="rounded bg-sky-950 px-1 py-0.5 text-[9px] text-sky-300">{usedSlot}</span>

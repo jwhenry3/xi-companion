@@ -58,8 +58,11 @@ local function scan(now)
     local okm, arr = pcall(windower.ffxi.get_mob_array)
     if okm and type(arr) == 'table' then
         for idx, e in pairs(arr) do
-            -- the mob array is keyed by index and includes the player
-            if type(e) == 'table' and idx ~= me.index and e.valid_target then
+            -- the mob array is keyed by index and includes the player;
+            -- nameless rows are array padding — targetable but not real
+            -- entities, so they must not reach the radar or the list
+            if type(e) == 'table' and idx ~= me.index and e.valid_target
+                and e.name ~= nil and e.name ~= '' then
                 local _, ex, ey = windower.ffxi.get_map_data(e.x, e.y, e.z)
                 if ex then
                     ex = math.floor(ex + 0.5)
@@ -70,7 +73,7 @@ local function scan(now)
                     if e.in_alliance then fl = fl + 2 end
                     if e.is_npc then fl = fl + 4 end
                     ents[#ents + 1] = {
-                        n = e.name, x = ex, y = ey,
+                        i = idx, n = e.name, x = ex, y = ey,
                         st = e.spawn_type or 0,
                         f = fl,
                         hp = e.hpp or 0,
@@ -142,8 +145,9 @@ function M.handle_incoming(id, data)
         if xo >= 0x8000 then xo = xo - 0x10000 end
         if yo >= 0x8000 then yo = yo - 0x10000 end
         local name = data:sub(13, 28):match('^([^%z]*)')
-        -- index 0 is the player ("You") — not a real blip
-        if index ~= 0 then
+        -- index 0 is the player ("You"); nameless / typeless rows are
+        -- padding the client sends in the burst — not real blips
+        if index ~= 0 and name ~= nil and name ~= '' and typ ~= 0 then
             ws_pending[index] = {
                 i = index, l = level, t = typ,
                 x = xo, y = yo, n = name,

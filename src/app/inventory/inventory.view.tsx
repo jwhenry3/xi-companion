@@ -10,6 +10,7 @@ import {
   TooltipRef,
 } from '../core/host';
 import type { Bag, BagItem, ItemMeta } from '../core/types';
+import { itemNameClass, flagDots } from '../core/item-flags';
 
 const EQUIP_CATEGORIES = new Set(['Weapon', 'Armor']);
 
@@ -200,12 +201,13 @@ export class InventoryView extends View {
               loading={detachedMode ? 'eager' : 'lazy'}
               alt=""
             />
-            <span class="truncate font-medium text-slate-200">
+            <span class={`truncate font-medium ${itemNameClass(meta) || 'text-slate-200'}`}>
               {item.equipped && <span class="mr-1 text-amber-400">*</span>}
               {name}
               {item.count > 1 && (
                 <span class="ml-1 text-slate-500">×{item.count}</span>
               )}
+              {flagDots(meta) && <span class="ml-1">{flagDots(meta)}</span>}
             </span>
           </span>
         </td>

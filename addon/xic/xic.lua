@@ -1213,6 +1213,18 @@ do
     end
 end
 
+-- Map image DATs: zone+map -> client DAT bytes (browser decodes them).
+local mapimg
+do
+    local ok, mod = pcall(dofile, join(windower.addon_path, 'mapimg.lua'))
+    if ok and type(mod) == 'table' then
+        mapimg = mod
+        mapimg.setup()
+    else
+        log_err('mapimg.lua failed to load: ' .. tostring(mod))
+    end
+end
+
 local function macro_char_dir(char_id)
     if type(char_id) ~= 'string' or not char_id:match('^[%w]+$')
         or type(windower.ffxi_path) ~= 'string' then
@@ -1513,9 +1525,11 @@ routes['GET /api/map'] = function(conn)
     send_and_close(conn, 200, body, 'application/json; charset=utf-8')
 end
 
--- Optional zone map image: drop a PNG into data/maps/ named
+-- Zone map image. User-dropped PNGs take precedence: data/maps/
 -- <zone>_<map>.png (or <zone>.png for single-map zones) — the remapster
--- FFXIDB packs use this convention. 404 = radar-only fallback.
+-- FFXIDB packs use this convention. Otherwise the client's own map DAT is
+-- served as application/x-ffxi-map and the browser decodes the DXT/bitmap
+-- payload. 404 = radar-only fallback.
 routes['GET /api/map/img'] = function(conn, req)
     local z = tonumber(req and req.query and req.query.z or '') or 0
     local m = tonumber(req and req.query and req.query.m or '') or 0
@@ -1530,6 +1544,12 @@ routes['GET /api/map/img'] = function(conn, req)
             local body = f:read('*a')
             f:close()
             return send_and_close(conn, 200, body, 'image/png')
+        end
+    end
+    if mapimg then
+        local ok_d, dat = pcall(mapimg.dat_bytes, z, m)
+        if ok_d and dat then
+            return send_and_close(conn, 200, dat, 'application/x-ffxi-map')
         end
     end
     send_and_close(conn, 404, 'no map image')

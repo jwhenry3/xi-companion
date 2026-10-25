@@ -263,6 +263,8 @@ export interface RecastState {
 // ---------- map / minimap ----------
 
 export interface MapEntity {
+  /** mob-array index — stable per entity, tiebreaks same-named rows */
+  i?: number;
   /** display name (empty for some NPCs) */
   n?: string;
   /** position in map pixels (0..ms) */

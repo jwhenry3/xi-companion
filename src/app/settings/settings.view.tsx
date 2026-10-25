@@ -5,9 +5,24 @@
 import { Component, View, inject, signal, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
-import { host, setTheme, shellGeom, theme, type Theme } from '../core/host';
+import { host, setTheme, shellGeom, theme, THEMES, getWinTheme, setWinTheme, type Theme } from '../core/host';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+
+// detachable windows — fab-layer panels first, then the app pages
+const WIN_THEME_ROUTES: [route: string, label: string][] = [
+  ['/tracker', 'quest tracker'],
+  ['/macrobar', 'macro bar'],
+  ['/cooldowns', 'cooldowns'],
+  ['/minimap', 'minimap'],
+  ['/', 'inventory'],
+  ['/chat', 'chat'],
+  ['/journal', 'journal'],
+  ['/map', 'map'],
+  ['/macros', 'macro editor'],
+  ['/profile', 'gearswap sets'],
+  ['/settings', 'settings'],
+];
 
 @Component()
 export class SettingsView extends View implements OnInit, OnDestroy {
@@ -21,12 +36,17 @@ export class SettingsView extends View implements OnInit, OnDestroy {
   private fullRect = signal({ x: '', y: '', w: '', h: '' });
   private winRects = signal<Record<string, { x: string; y: string; w: string; h: string }>>({});
   private disposeGeom?: () => void;
+  /** per-route theme picks — '' follows the global theme */
+  private winThemes = signal<Record<string, Theme | ''>>({});
 
   onInit() {
     this.api
       .settingsGet()
       .then((s) => (this.settings.value = s))
       .catch((e) => (this.err.value = String(e)));
+    const wt: Record<string, Theme | ''> = {};
+    for (const [route] of WIN_THEME_ROUTES) wt[route] = getWinTheme(route) ?? '';
+    this.winThemes.value = wt;
     if (host.inShell()) {
       this.disposeGeom = effect(() => {
         const g = shellGeom.value;
@@ -301,7 +321,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
               {this.section(
                 'Theme',
                 <div class="flex gap-2">
-                  {(['dark', 'light'] as Theme[]).map((t) => (
+                  {THEMES.map((t) => (
                     <button
                       class={cn(
                         'rounded border px-3 py-1 text-xs capitalize',
@@ -315,6 +335,43 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                     </button>
                   ))}
                 </div>,
+              )}
+              {this.section(
+                'Window themes',
+                <>
+                  {WIN_THEME_ROUTES.map(([route, label]) => (
+                    <div
+                      key={route}
+                      class="flex items-center gap-2 py-0.5 text-sm text-slate-300"
+                    >
+                      <span class="w-28 shrink-0">{label}</span>
+                      <select
+                        class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs capitalize text-slate-200"
+                        value={this.winThemes.value[route] ?? ''}
+                        onChange={(e) => {
+                          const v = (e.target as HTMLSelectElement)
+                            .value as Theme | '';
+                          setWinTheme(route, v || null);
+                          this.winThemes.value = {
+                            ...this.winThemes.value,
+                            [route]: v,
+                          };
+                        }}
+                      >
+                        <option value="">default</option>
+                        {THEMES.map((t) => (
+                          <option class="capitalize" value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                  <p class="pt-1 text-[10px] text-slate-500">
+                    per-window overrides — "default" follows the global
+                    theme; a live window picks the change up immediately
+                  </p>
+                </>,
               )}
             </>
           )}

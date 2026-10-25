@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { augmentText, cmdStr, equipCmdSlot, equipSlots } from '../core/item-utils';
 import type { BagItem, ItemMeta } from '../core/types';
+import { itemNameClass, flagDots } from '../core/item-flags';
 
 declare global {
   interface Window {
@@ -245,7 +246,9 @@ export class TooltipView extends View {
             class="ffxi-panel-title flex h-6 items-center gap-1 pl-2 pr-1"
             style={{ '--wails-draggable': 'drag' }}
           >
-            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-indigo-100">
+            <span
+              class={`min-w-0 flex-1 truncate text-[10px] font-medium ${itemNameClass(meta) || 'text-indigo-100'}`}
+            >
               {name}
             </span>
             <button
@@ -313,9 +316,10 @@ export class TooltipView extends View {
               <div>
                 <dt class="inline text-slate-500">Flags: </dt>
                 <dd class="inline">
-                  {[meta?.rare && 'Rare', meta?.ex && 'Ex']
-                    .filter(Boolean)
-                    .join(', ')}
+                  {meta?.rare && <span class="text-amber-300">Rare</span>}
+                  {meta?.rare && meta?.ex && ', '}
+                  {meta?.ex && <span class="text-emerald-300">Ex</span>}{' '}
+                  {flagDots(meta)}
                 </dd>
               </div>
             )}

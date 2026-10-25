@@ -20,7 +20,7 @@ import type {
 const API_BASE: string =
   (import.meta.env.VITE_GSUI_API as string | undefined) ?? '';
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+async function directReq<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);
   if (!res.ok) {
     throw new Error(`${res.status}: ${await res.text()}`);
@@ -42,6 +42,20 @@ export class AddonApi {
   private lastEventAt = 0;
   private resyncAt = 0;
 
+  // transport: proxied through the bridge SharedWorker when it attaches
+  // (one SSE + one request queue for ALL windows — Chromium's ~6
+  // connection-per-origin cap made per-window streams starve fetches);
+  // direct fetch/EventSource is the fallback
+  private req: typeof directReq = directReq;
+  private wport: MessagePort | null = null;
+  /** worker script failed at runtime — don't retry every reconnect */
+  private bridgeFailed = false;
+  private reqSeq = 0;
+  private pending = new Map<
+    number,
+    { resolve: (v: any) => void; reject: (e: any) => void }
+  >();
+
   constructor() {
     inject(DestroyRef).onDestroy(() => this.disconnect());
     this.connect();
@@ -62,71 +76,174 @@ export class AddonApi {
 
   private disconnect() {
     this.es?.close();
+    this.wport?.postMessage({ t: 'close' });
+    this.wport?.close();
     if (this.pollTimer != null) clearInterval(this.pollTimer);
     this.removeListeners?.();
   }
 
   private connect() {
+    if (this.attachBridge()) return;
+    // direct path — one EventSource for this window only. Reached when
+    // SharedWorker is unavailable (old WebView2 runtimes, tests).
+    this.req = directReq;
     const es = new EventSource(`${API_BASE}/api/events`);
     this.es = es;
     const bump = () => (this.lastEventAt = Date.now());
-    es.addEventListener('ping', bump);
-    es.addEventListener('state', (ev) => {
-      bump();
-      try {
-        this.state.value = JSON.parse((ev as MessageEvent).data);
-      } catch {
-        // malformed payload; ignore
-      }
-      this.connected.value = true;
-    });
-    es.addEventListener('chat', (ev) => {
-      bump();
-      try {
-        this.ingestChat(JSON.parse((ev as MessageEvent).data));
-      } catch {
-        // malformed payload; ignore
-      }
-    });
-    es.addEventListener('journal', (ev) => {
-      bump();
-      try {
-        this.journal.value = JSON.parse((ev as MessageEvent).data);
-      } catch {
-        // malformed payload; ignore
-      }
-    });
-    es.addEventListener('recasts', (ev) => {
-      bump();
-      try {
-        this.recasts.value = {
-          ...(JSON.parse((ev as MessageEvent).data) as RecastState),
-          at: Date.now(),
-        };
-      } catch {
-        // malformed payload; ignore
-      }
-    });
-    es.addEventListener('map', (ev) => {
-      bump();
-      try {
-        this.map.value = JSON.parse((ev as MessageEvent).data);
-      } catch {
-        // malformed payload; ignore
-      }
-    });
+    for (const e of ['ping', 'state', 'chat', 'journal', 'recasts', 'map']) {
+      es.addEventListener(e, (ev) => {
+        bump();
+        this.dispatchSse(e, (ev as MessageEvent).data);
+      });
+    }
     void this.refreshChat();
-    es.onopen = () => {
-      bump();
-      this.connected.value = true;
+    es.onopen = () => this.onConn(true);
+    es.onerror = () => this.onConn(false);
+  }
+
+  /** SharedWorker transport — attaches a port to the single bridge
+   *  worker that owns the one SSE stream + request queue shared by
+   *  every window (main, panels, tooltip, spawned tabs). New ports get
+   *  the cached snapshot events replayed so a just-spawned window
+   *  hydrates without extra fetches. */
+  private attachBridge(): boolean {
+    if (this.bridgeFailed || typeof SharedWorker !== 'function') return false;
+    try {
+      const w = new SharedWorker(
+        new URL('./bridge.worker.ts', import.meta.url),
+        { type: 'module' },
+      );
+      const port = w.port;
+      let alive = false;
+      const fail = () => {
+        if (alive || this.wport !== port) return;
+        // worker script errored or produced nothing — requests would
+        // hang on a dead port, so tear down and use the direct path
+        this.bridgeFailed = true;
+        this.dropBridge(port);
+        this.connect();
+      };
+      // a script-level failure surfaces here; a load that silently
+      // produces no messages is caught by the timeout — the worker
+      // always posts a `conn` as its first message on attach
+      w.onerror = fail;
+      setTimeout(fail, 3000);
+      port.onmessage = (m) => {
+        alive = true;
+        this.onBridgeMessage(m.data);
+      };
+      port.start();
+      this.wport = port;
+      this.req = this.workerReq;
+      return true;
+    } catch {
+      this.wport = null;
+      return false;
+    }
+  }
+
+  /** tear down a dead bridge port — pending calls reject rather than
+   *  hang, and the transport returns to direct fetch */
+  private dropBridge(port: MessagePort) {
+    if (this.wport === port) this.wport = null;
+    try {
+      port.close();
+    } catch {
+      // already dead
+    }
+    for (const [, p] of this.pending) p.reject(new Error('bridge lost'));
+    this.pending.clear();
+    this.req = directReq;
+  }
+
+  private workerReq: typeof directReq = <T>(
+    path: string,
+    init?: RequestInit,
+  ) =>
+    new Promise<T>((resolve, reject) => {
+      const port = this.wport;
+      if (!port) return reject(new Error('bridge disconnected'));
+      const id = ++this.reqSeq;
+      this.pending.set(id, { resolve, reject });
+      port.postMessage({
+        t: 'req',
+        id,
+        method: init?.method ?? 'GET',
+        path,
+        headers: init?.headers as Record<string, string> | undefined,
+        body: typeof init?.body === 'string' ? init.body : undefined,
+      });
+    });
+
+  private onBridgeMessage(msg: any) {
+    if (msg?.t === 'res') {
+      const p = this.pending.get(msg.id);
+      if (p) {
+        this.pending.delete(msg.id);
+        if (msg.ok) {
+          try {
+            p.resolve(JSON.parse(msg.body));
+          } catch {
+            p.resolve(msg.body);
+          }
+        } else {
+          p.reject(new Error(`${msg.status}: ${msg.body}`));
+        }
+      }
+      return;
+    }
+    if (msg?.t === 'sse') {
+      this.lastEventAt = Date.now();
+      this.dispatchSse(msg.e, msg.d);
+      return;
+    }
+    if (msg?.t === 'conn') this.onConn(msg.ok);
+  }
+
+  /** SSE event fan-in — the worker's `sse` messages and the fallback
+   *  EventSource both land here */
+  private dispatchSse(e: string, d: string) {
+    try {
+      switch (e) {
+        case 'state':
+          this.state.value = JSON.parse(d);
+          this.connected.value = true;
+          break;
+        case 'chat':
+          this.ingestChat(JSON.parse(d));
+          break;
+        case 'journal':
+          this.journal.value = JSON.parse(d);
+          break;
+        case 'recasts':
+          this.recasts.value = {
+            ...(JSON.parse(d) as RecastState),
+            at: Date.now(),
+          };
+          break;
+        case 'map':
+          this.map.value = JSON.parse(d);
+          break;
+        // 'ping' — just the lastEventAt bump handled by the caller
+      }
+    } catch {
+      // malformed payload; ignore
+    }
+  }
+
+  /** stream open/closed — the worker's `conn` messages and the
+   *  fallback's onopen/onerror both land here */
+  private onConn(ok: boolean) {
+    this.lastEventAt = Date.now();
+    this.connected.value = ok;
+    if (ok) {
       // fires on every (re)connect — resyncs after an addon reload even
       // when no chat arrived while we were away
       void this.refreshChat();
       void this.refreshJournal();
       void this.refreshRecasts();
       void this.refreshMap();
-    };
-    es.onerror = () => (this.connected.value = false);
+    }
   }
 
   /** interval driver — watchdog + resync so a dead-looking-but-open
@@ -135,8 +252,9 @@ export class AddonApi {
     const now = Date.now();
     if (this.connected.value) {
       // the addon emits `ping` every 25s; >75s of silence means the
-      // conn died without the browser noticing — rebuild it
-      if (now - this.lastEventAt > 75_000) {
+      // conn died without the browser noticing — rebuild it (the bridge
+      // worker runs this watchdog itself; only the direct path needs it)
+      if (!this.wport && now - this.lastEventAt > 75_000) {
         this.es?.close();
         this.connect();
         return;
@@ -158,8 +276,8 @@ export class AddonApi {
   private async resync(): Promise<boolean> {
     try {
       const [st, j] = await Promise.all([
-        req<InventoryState>('/api/state'),
-        req<JournalState>('/api/journal'),
+        this.req<InventoryState>('/api/state'),
+        this.req<JournalState>('/api/journal'),
       ]);
       this.state.value = st;
       const cur = this.journal.value;
@@ -177,7 +295,7 @@ export class AddonApi {
   async refreshFiles() {
     this.files.value = await queryClient.fetchQuery({
       queryKey: ['gearswap-files'],
-      queryFn: () => req<GearswapFileList>('/api/gearswap/files'),
+      queryFn: () => this.req<GearswapFileList>('/api/gearswap/files'),
     });
   }
 
@@ -185,7 +303,7 @@ export class AddonApi {
     return queryClient.fetchQuery({
       queryKey: ['gearswap-file', path],
       queryFn: () =>
-        req<GearswapFileContent>(
+        this.req<GearswapFileContent>(
           `/api/gearswap/file?path=${encodeURIComponent(path)}`,
         ),
       // profile lua can change under us (game-side edits) — dedupe
@@ -195,7 +313,7 @@ export class AddonApi {
   }
 
   async saveFile(path: string, content: string) {
-    await req<{ ok: boolean }>(
+    await this.req<{ ok: boolean }>(
       `/api/gearswap/file?path=${encodeURIComponent(path)}`,
       { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: content },
     );
@@ -206,12 +324,12 @@ export class AddonApi {
   }
 
   async reloadGearswap() {
-    await req<{ ok: boolean }>('/api/gearswap/reload', { method: 'POST' });
+    await this.req<{ ok: boolean }>('/api/gearswap/reload', { method: 'POST' });
   }
 
   /** run a windower command, e.g. `gs equip sets.idle` */
   async sendCommand(cmd: string) {
-    await req<{ ok: boolean }>('/api/command', {
+    await this.req<{ ok: boolean }>('/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd }),
@@ -229,7 +347,7 @@ export class AddonApi {
     /** unequip: windower slot name — 'main', 'l.ear', 'r.ring', … */
     slot?: string;
   }) {
-    await req<{ ok: boolean }>('/api/item', {
+    await this.req<{ ok: boolean }>('/api/item', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -245,7 +363,7 @@ export class AddonApi {
    *  nests fetchQuery on the same `['itemmeta', id]` key, and a queryFn that
    *  awaits its own in-flight query deadlocks (verified — never resolves). */
   fetchItemMeta(id: number): Promise<ItemMeta> {
-    return req<ItemMeta>(`/api/itemmeta?id=${id}`);
+    return this.req<ItemMeta>(`/api/itemmeta?id=${id}`);
   }
 
   /** full item meta incl. the client's description text (stats/passives
@@ -255,7 +373,7 @@ export class AddonApi {
     return queryClient
       .fetchQuery({
         queryKey: ['itemmeta', id],
-        queryFn: () => req<ItemMeta>(`/api/itemmeta?id=${id}`),
+        queryFn: () => this.req<ItemMeta>(`/api/itemmeta?id=${id}`),
         staleTime: Infinity,
         gcTime: Infinity,
       })
@@ -305,14 +423,14 @@ export class AddonApi {
 
   /** initial load + reconnect catch-up (SSE covers the live tail) */
   async refreshChat() {
-    let h = await req<ChatHistory>(`/api/chat?after=${this.chatSeq}`);
+    let h = await this.req<ChatHistory>(`/api/chat?after=${this.chatSeq}`);
     if (h.boot && h.boot !== this.chatBoot) {
       // addon reloaded — seqs restarted; reset and pull the fresh log
       this.chatBoot = h.boot;
       this.chatSeq = 0;
       this.chat.value = [];
       this.chatUnread.value = {};
-      h = await req<ChatHistory>('/api/chat?after=0');
+      h = await this.req<ChatHistory>('/api/chat?after=0');
     }
     for (const m of h.messages) this.ingestChat(m);
   }
@@ -326,7 +444,7 @@ export class AddonApi {
 
   /** send a chat message as if typed into the game's chat line */
   async sendChat(channel: string, text: string, to?: string) {
-    await req<{ ok: boolean }>('/api/chat', {
+    await this.req<{ ok: boolean }>('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel, text, to }),
@@ -343,7 +461,7 @@ export class AddonApi {
   journalNames(): Promise<JournalNames> {
     return queryClient.fetchQuery({
       queryKey: ['journal-names'],
-      queryFn: () => req<JournalNames>('/api/journal/names'),
+      queryFn: () => this.req<JournalNames>('/api/journal/names'),
       staleTime: Infinity,
     });
   }
@@ -351,7 +469,7 @@ export class AddonApi {
   async refreshJournal() {
     const j = await queryClient.fetchQuery({
       queryKey: ['journal'],
-      queryFn: () => req<JournalState>('/api/journal'),
+      queryFn: () => this.req<JournalState>('/api/journal'),
       // resync callers need the wire, not a warm cache
       staleTime: 0,
     });
@@ -366,7 +484,7 @@ export class AddonApi {
    *  (0x10C/0x10D); the server replies with a fresh 0x111 which lands
    *  back in `journal` via SSE. Must be logged in. */
   async roeAction(id: number, action: 'set' | 'clear') {
-    await req<{ ok: boolean }>('/api/journal/roe', {
+    await this.req<{ ok: boolean }>('/api/journal/roe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, action }),
@@ -382,7 +500,7 @@ export class AddonApi {
     id: number | undefined,
     tracked: boolean,
   ) {
-    await req<{ ok: boolean }>('/api/journal/track', {
+    await this.req<{ ok: boolean }>('/api/journal/track', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, key, id, tracked }),
@@ -398,7 +516,7 @@ export class AddonApi {
   async refreshRecasts() {
     const r = await queryClient.fetchQuery({
       queryKey: ['recasts'],
-      queryFn: () => req<RecastState>('/api/recasts'),
+      queryFn: () => this.req<RecastState>('/api/recasts'),
       staleTime: 0,
     });
     this.recasts.value = { ...r, at: Date.now() };
@@ -413,7 +531,7 @@ export class AddonApi {
   async refreshMap() {
     const r = await queryClient.fetchQuery({
       queryKey: ['map'],
-      queryFn: () => req<MapState>('/api/map'),
+      queryFn: () => this.req<MapState>('/api/map'),
       staleTime: 0,
     });
     this.map.value = r;
@@ -422,7 +540,7 @@ export class AddonApi {
   /** ask the server for a widescan refresh (same packet the map menu's
    *  Widescan option sends); results stream back via the `map` event */
   async mapScan() {
-    await req<{ ok: boolean }>('/api/map/scan', { method: 'POST' });
+    await this.req<{ ok: boolean }>('/api/map/scan', { method: 'POST' });
   }
 
   /** zone map image — data/maps/<z>_<m>.png on the addon side; 404s
@@ -433,11 +551,11 @@ export class AddonApi {
 
   /** persisted addon settings (data/settings.xml) — flat scalar keys */
   settingsGet(): Promise<Record<string, number | boolean>> {
-    return req<Record<string, number | boolean>>('/api/settings');
+    return this.req<Record<string, number | boolean>>('/api/settings');
   }
 
   async settingsSave(patch: Record<string, number | boolean>) {
-    await req<{ ok: boolean }>('/api/settings', {
+    await this.req<{ ok: boolean }>('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -450,7 +568,7 @@ export class AddonApi {
     return queryClient.fetchQuery({
       queryKey: ['chat-phrases'],
       queryFn: () =>
-        req<{ phrases: string[] }>('/api/chat/phrases').then(
+        this.req<{ phrases: string[] }>('/api/chat/phrases').then(
           (r) => r.phrases,
         ),
       staleTime: Infinity,
@@ -464,7 +582,7 @@ export class AddonApi {
   async refreshMacros() {
     this.macros.value = await queryClient.fetchQuery({
       queryKey: ['macros'],
-      queryFn: () => req<MacroState>('/api/macros'),
+      queryFn: () => this.req<MacroState>('/api/macros'),
     });
   }
 
@@ -478,7 +596,7 @@ export class AddonApi {
     macros: MacroEntry[],
     apply = false,
   ) {
-    const res = await req<{
+    const res = await this.req<{
       ok: boolean;
       file: string;
       applied?: boolean;
@@ -496,7 +614,7 @@ export class AddonApi {
   /** replay one macro cell's lines through the client input line —
    *  what clicking a bar button in the detached macro window does */
   async runMacro(char: string, index: number, cell: number) {
-    return req<{ ok: boolean; logged_in: boolean }>('/api/macros/run', {
+    return this.req<{ ok: boolean; logged_in: boolean }>('/api/macros/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ char, index, cell }),
@@ -505,7 +623,7 @@ export class AddonApi {
 
   /** rename a macro book title (book 1-40) */
   async saveMacroTitle(char: string, book: number, title: string) {
-    const res = await req<{ ok: boolean; logged_in: boolean }>(
+    const res = await this.req<{ ok: boolean; logged_in: boolean }>(
       '/api/macros/title',
       {
         method: 'PUT',

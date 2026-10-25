@@ -23,3 +23,7 @@ window.addEventListener(
 installWindowChrome();
 
 bootstrap(AppModule, document.getElementById('app')!);
+
+// the shell holds the initial SetURL retry loop open until this posts —
+// a mount failure means no hello, so a wedged first navigation self-heals
+host.loaded();

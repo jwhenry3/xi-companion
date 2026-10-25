@@ -46,8 +46,8 @@ import (
 const windowTitle = "XI Companion"
 
 const (
-	// the fab is a 2×2 cluster of four 48px buttons + gaps
-	fabW, fabH    = 112, 112
+	// the fab is a one-row menu bar: twelve 40px buttons + gaps/separators
+	fabW, fabH    = 540, 56
 	fullW, fullH  = 1100, 760
 	minW, minH    = 860, 520
 	fabEdgeMargin = 24
@@ -70,9 +70,9 @@ var (
 	pGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
 	pGetWindowLongPtr    = user32.NewProc("GetWindowLongPtrW")
 	pSetWindowLongPtr    = user32.NewProc("SetWindowLongPtrW")
-	pPostMessage         = user32.NewProc("PostMessageW")
-	pReleaseCapture      = user32.NewProc("ReleaseCapture")
 	pGetAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
+	pGetCursorPos        = user32.NewProc("GetCursorPos")
+	pGetWindowRect       = user32.NewProc("GetWindowRect")
 
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
@@ -94,29 +94,38 @@ const (
 	swpNoZOrder   = 0x0004
 	swpNoActivate = 0x0010
 	swpFrameChg   = 0x0020
-	swpShowWindow = 0x0040
+	swpShowWindow = 0x0040 //nolint:unused — kept with the SWP_* family
 
 	gwlExStyle      = ^uint32(19) // GWL_EXSTYLE (-20)
 	gwlpOwner       = ^uint32(7)  // GWLP_HWNDPARENT (-8)
+	gwHwndNext      = 2           //nolint:unused — kept with the GW_* family
 	wsExLayered     = 0x00080000
 	wsExNoActivate  = 0x08000000
 	wsExTransparent = 0x00000020
 
-	wmNcLButtonDown = 0x00A1
-	vkLButton       = 0x01
-	htCaption       = 2
+	vkLButton = 0x01
+
+	htCaption     = 2
+	htLeft        = 10
+	htRight       = 11
+	htTop         = 12
+	htTopLeft     = 13
+	htTopRight    = 14
+	htBottom      = 15
+	htBottomLeft  = 16
+	htBottomRight = 17
 )
 
-// edge hit-test codes for WM_NCLBUTTONDOWN (same map Wails uses internally)
+// edge hit-test codes (same values WM_NCHITTEST reports)
 var edgeHT = map[string]uintptr{
-	"n-resize":  12, // HTTOP
-	"ne-resize": 14, // HTTOPRIGHT
-	"e-resize":  11, // HTRIGHT
-	"se-resize": 17, // HTBOTTOMRIGHT
-	"s-resize":  15, // HTBOTTOM
-	"sw-resize": 16, // HTBOTTOMLEFT
-	"w-resize":  10, // HTLEFT
-	"nw-resize": 13, // HTTOPLEFT
+	"n-resize":  htTop,
+	"ne-resize": htTopRight,
+	"e-resize":  htRight,
+	"se-resize": htBottomRight,
+	"s-resize":  htBottom,
+	"sw-resize": htBottomLeft,
+	"w-resize":  htLeft,
+	"nw-resize": htTopLeft,
 }
 
 // hwnd of the overlay window once NativeWindow() reports it
@@ -212,13 +221,27 @@ func refocusGame() {
 	}
 	// attach to the FOREGROUND window's thread (not the game's) — that
 	// inherits its SetForegroundWindow rights for this call
+	r := setForeground(hwnd)
+	log.Printf("refocus: fg=%#x ffxi=%#x setfg=%v", fg, hwnd, r)
+}
+
+// setForeground performs the AttachThreadInput-assisted
+// SetForegroundWindow — attaching the calling thread to the current
+// foreground window's thread inherits its foreground-grant, which is
+// what makes the call work both directions (game ← overlay and
+// overlay ← game, e.g. expanding the NOACTIVATE fab).
+func setForeground(target uintptr) bool {
+	fg, _, _ := pGetForegroundWindow.Call()
+	if fg == target {
+		return true
+	}
 	cur, _, _ := pGetCurrentThreadId.Call()
 	var pid uint32
 	fgTid, _, _ := pGetWindowThreadProcessId.Call(fg, uintptr(unsafe.Pointer(&pid)))
 	pAttachThreadInput.Call(cur, fgTid, 1)
-	r, _, _ := pSetForegroundWindow.Call(hwnd)
+	r, _, _ := pSetForegroundWindow.Call(target)
 	pAttachThreadInput.Call(cur, fgTid, 0)
-	log.Printf("refocus: fg=%#x ffxi=%#x setfg=%v", fg, hwnd, r != 0)
+	return r != 0
 }
 
 // refocusAfterActivate covers window creation/activation — Windows hands
@@ -266,47 +289,109 @@ func openURL(raw string) {
 		uintptr(unsafe.Pointer(url)), 0, 0, 5 /* SW_SHOW */)
 }
 
-// startMoveLoop posts WM_NCLBUTTONDOWN to enter the native move/size
-// modal loop — the same thing Wails' wails:drag/resize handler does, but
-// gated on the physical button: the page posts on mousedown and a click
-// can release before this goroutine runs; posting the message with the
-// button already up parks the window in the modal loop holding global
-// mouse capture, which eats every click until Esc cancels it.
-//
-// The work must run on the UI thread via InvokeSync (same as Wails'
-// HandleMessage → InvokeSync → startDrag): ReleaseCapture only releases
-// capture owned by the *calling* thread, and the webview child's mouse
-// capture lives on the UI thread. Called off-thread it's a silent no-op —
-// the posted WM_NCLBUTTONDOWN then hits DefWindowProc while the child
-// still holds capture and the modal move loop never takes over.
-// RawMessageHandler is invoked on a goroutine, so InvokeSync from here
-// cannot deadlock.
+type wPoint struct{ x, y int32 }
+type wRect struct{ left, top, right, bottom int32 }
+
+// startMoveLoop runs the move/size drag entirely in Go — polling the
+// cursor and SetWindowPos at ~60Hz until the button releases. The old
+// approach posted WM_NCLBUTTONDOWN to enter the native modal loop; if
+// the post landed after the button was already up, the modal loop
+// parked holding GLOBAL mouse capture — every click and keystroke fed
+// a hidden drag until Esc happened to cancel it ("can only type in
+// chat"). Polling instead has no capture at all: the loop can never
+// outlive the button, and it doesn't care which thread it runs on.
+// Caller goroutines it — it blocks for the drag's lifetime.
 func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 	if hwnd == 0 || hitTest == 0 {
 		return
 	}
-	application.InvokeSync(func() {
-		v, _, _ := pGetAsyncKeyState.Call(vkLButton)
-		if v&0x8000 == 0 {
-			return // click, not a drag — nothing to track
+	// the page posts on mousedown; a click can release before this
+	// goroutine is scheduled — don't start a drag for a button up
+	if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
+		return
+	}
+	var p0 wPoint
+	pGetCursorPos.Call(uintptr(unsafe.Pointer(&p0)))
+	var r0 wRect
+	pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r0)))
+	x0, y0 := r0.left, r0.top
+	w0, h0 := r0.right-r0.left, r0.bottom-r0.top
+	lEdge := hitTest == htLeft || hitTest == htTopLeft || hitTest == htBottomLeft
+	rEdge := hitTest == htRight || hitTest == htTopRight || hitTest == htBottomRight
+	tEdge := hitTest == htTop || hitTest == htTopLeft || hitTest == htTopRight
+	bEdge := hitTest == htBottom || hitTest == htBottomLeft || hitTest == htBottomRight
+
+	for {
+		time.Sleep(15 * time.Millisecond)
+		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
+			break
 		}
-		pReleaseCapture.Call()
-		pPostMessage.Call(hwnd, wmNcLButtonDown, hitTest, 0)
-		go watchDragEnd()
-	})
+		var p wPoint
+		pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
+		dx, dy := p.x-p0.x, p.y-p0.y
+		l, t, r, b := x0, y0, x0+w0, y0+h0
+		if hitTest == htCaption {
+			l, t = x0+dx, y0+dy
+			r, b = l+w0, t+h0
+		} else {
+			if lEdge {
+				l = x0 + dx
+			}
+			if rEdge {
+				r = x0 + w0 + dx
+			}
+			if tEdge {
+				t = y0 + dy
+			}
+			if bEdge {
+				b = y0 + h0 + dy
+			}
+		}
+		// never collapse an edge past its opposite — pin whichever side
+		// isn't the dragged one
+		if r-l < 40 {
+			if lEdge {
+				l = r - 40
+			} else {
+				r = l + 40
+			}
+		}
+		if b-t < 40 {
+			if tEdge {
+				t = b - 40
+			} else {
+				b = t + 40
+			}
+		}
+		pSetWindowPos.Call(hwnd, 0,
+			uintptr(int64(l)), uintptr(int64(t)),
+			uintptr(int64(r-l)), uintptr(int64(b-t)),
+			swpNoActivate|swpNoZOrder)
+	}
+	refocusGame()
 }
 
-// watchDragEnd waits out the modal move/size loop — the button going up
-// is the loop's exit — then returns focus to the game. A DOM mouseup
-// never reaches the page during the modal loop, so this is the only
-// drag-end signal the shell can act on.
-func watchDragEnd() {
-	for i := 0; i < 2400; i++ { // ~2min cap so an odd state can't leak it
-		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
-			refocusGame()
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+// setStyleFlag flips a GWL_EXSTYLE bit and nudges the frame to apply.
+// WS_EX_NOACTIVATE lets a window receive clicks without ever taking
+// foreground — used on the fab and the fab-layer panels so interacting
+// with them (or accidentally clicking their transparent margins) can't
+// steal the game's keyboard.
+func setStyleFlag(hwnd, flag uintptr, on bool) {
+	if hwnd == 0 {
+		return
+	}
+	exIdx := uintptr(gwlExStyle)
+	cur, _, _ := pGetWindowLongPtr.Call(hwnd, exIdx)
+	var next uintptr
+	if on {
+		next = cur | flag
+	} else {
+		next = cur &^ flag
+	}
+	if next != cur {
+		pSetWindowLongPtr.Call(hwnd, exIdx, next)
+		pSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
+			swpNoMove|swpNoSize|swpNoActivate|swpNoZOrder|swpFrameChg)
 	}
 }
 
@@ -345,25 +430,19 @@ func isVisible(hwnd uintptr) bool {
 	return r != 0
 }
 
-func foreground() uintptr {
-	r, _, _ := pGetForegroundWindow.Call()
-	return r
-}
-
 func screenSize() (int, int) {
 	cx, _, _ := pGetSystemMetrics.Call(0) // SM_CXSCREEN
 	cy, _, _ := pGetSystemMetrics.Call(1) // SM_CYSCREEN
 	return int(cx), int(cy)
 }
 
-// keepPinned re-asserts topmost z-order and un-minimizes — frameless
-// tool windows get buried by the game asserting its own topmost, and
-// auto-minimized when the game takes focus. Skips re-pinning while our
-// window is foreground so window-level popups keep their activation.
-// store receives the hwnd (main window & tooltip need it for
-// SetForegroundWindow / exstyle flips); spawned windows pass nil.
-// Exits when the window is destroyed.
-func keepPinned(w *application.WebviewWindow, store *atomic.Uintptr) {
+// resolveHwnd waits for the window's native hwnd and stores it — the
+// caller's store feeds SetForegroundWindow / exstyle flips / tooltip
+// ownership (spawned windows pass nil; their hwnd is only needed for
+// one-shot style flips at spawn time). No periodic z-order asserts:
+// polling re-asserts caused visible flicker as windows popped to
+// band-top and back, so stacking is left to Windows + xic:raise.
+func resolveHwnd(w *application.WebviewWindow, store *atomic.Uintptr) {
 	var hwnd uintptr
 	for tries := 0; hwnd == 0; tries++ {
 		if p := w.NativeWindow(); p != nil {
@@ -376,25 +455,6 @@ func keepPinned(w *application.WebviewWindow, store *atomic.Uintptr) {
 	}
 	if store != nil {
 		store.Store(hwnd)
-	}
-
-	for {
-		if w.NativeWindow() == nil {
-			return // destroyed
-		}
-		time.Sleep(2 * time.Second)
-		if !isVisible(hwnd) {
-			continue
-		}
-		if isIconic(hwnd) {
-			pShowWindow.Call(hwnd, swRestore)
-			continue
-		}
-		if foreground() == hwnd {
-			continue
-		}
-		pSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0,
-			swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 	}
 }
 
@@ -546,6 +606,9 @@ func expand() {
 	setFabGeom(rect{X: x, Y: y, W: fabW, H: fabH})
 	fabMode = false
 
+	// back to the interactive UI — fab mode holds WS_EX_NOACTIVATE so bar
+	// clicks can't steal focus; the full window needs keyboard again
+	setStyleFlag(hwndOf(win), wsExNoActivate, false)
 	win.SetResizable(true)
 	if r := geomSnapshot().Full; r != nil && r.W >= minW && r.H >= minH {
 		win.SetSize(r.W, r.H)
@@ -557,6 +620,12 @@ func expand() {
 	win.SetMinSize(minW, minH)
 	win.Show()
 	win.Focus()
+	// the fab click couldn't activate (NOACTIVATE) so Focus() may lack
+	// a foreground grant — borrow the game's, same recipe as refocusGame
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		setForeground(hwndOf(win))
+	}()
 	saveGeometry()
 }
 
@@ -581,8 +650,10 @@ func collapse() {
 		win.SetPosition(x, y)
 	}
 	saveGeometry()
-	// collapse means "back to the game" — hand focus over so the next
+	// collapse means "back to the game" — NOACTIVATE keeps future fab
+	// clicks from re-stealing focus, then hand focus over so the next
 	// Esc/Enter goes to the client, not the shrunken fab
+	setStyleFlag(hwndOf(win), wsExNoActivate, true)
 	refocusGame()
 }
 
@@ -707,6 +778,78 @@ func spawnArg(args []string) (string, bool) {
 	return "", false
 }
 
+// navURL appends a per-navigation cache-bust — the UDF's HTTP cache can
+// serve a stale index.html when the addon restarts between the probe and
+// the navigation, loading a page bundle built for a different exe (the
+// "old fab page in a new-size window" breakage). A unique query never
+// matches a prior cache entry.
+func navURL(base string) string {
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%s_=%d", base, sep, time.Now().UnixNano())
+}
+
+// pageLoaded carries each window's "the app page booted" report — the
+// page posts xic:loaded at the end of bootstrap and RawMessageHandler
+// signals the channel keyed by the source window.
+var pageLoaded sync.Map // map[application.Window]chan struct{}
+
+// armLoadRetry re-issues SetURL until the page itself posts xic:loaded
+// (bounded at 8 tries). A NavigationCompleted alone can't confirm the
+// app landed: connection-refused error pages fire it too, which is how
+// a wedged first navigation still counted as "landed" and stranded the
+// window until a manual respawn. The initial grace lets a navigation
+// that JUST completed (URL passed at creation) finish booting and post
+// its hello instead of being pointlessly reloaded.
+func armLoadRetry(w *application.WebviewWindow, url func() string) {
+	loaded := make(chan struct{}, 1)
+	pageLoaded.Store(w, loaded)
+	go func() {
+		defer pageLoaded.Delete(w)
+		u := url()
+		select {
+		case <-loaded:
+			return
+		case <-time.After(1200 * time.Millisecond):
+		}
+		for i := 0; i < 8; i++ {
+			select {
+			case <-loaded:
+				return
+			default:
+			}
+			w.SetURL(u)
+			select {
+			case <-loaded:
+				return
+			case <-time.After(2500 * time.Millisecond):
+			}
+		}
+	}()
+}
+
+// navigateWhenReady waits for a splash-page window's WebView2 core to
+// come up before navigating — the fallback for spawns that happen
+// before the addon URL is known (SetURL in the hwnd-yes/core-not-yet
+// gap is dropped, which stranded windows on the dark splash). The
+// splash's own NavigationCompleted is the ready signal; a timer covers
+// the event never arriving. URL-at-creation spawns skip this entirely
+// and arm the retry loop directly.
+func navigateWhenReady(w *application.WebviewWindow, url func() string) {
+	var started atomic.Bool
+	start := func() {
+		if !started.CompareAndSwap(false, true) {
+			return
+		}
+		armLoadRetry(w, url)
+	}
+	w.OnWindowEvent(events.Windows.WebViewNavigationCompleted,
+		func(e *application.WindowEvent) { start() })
+	time.AfterFunc(3*time.Second, start)
+}
+
 func spawnWindow(route string) {
 	key := spawnKey(route)
 	spawnMu.Lock()
@@ -740,7 +883,6 @@ func spawnWindow(route string) {
 		AlwaysOnTop:      true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
-		HTML:             splashHTML,
 		Width:            560,
 		Height:           420,
 		MinWidth:         minSW,
@@ -749,6 +891,15 @@ func spawnWindow(route string) {
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
 		},
+	}
+	// URL at creation skips the splash hop entirely — Wails navigates the
+	// moment the webview core is up. Splash is only the fallback for the
+	// (rare) spawn before the addon URL is known.
+	spawnPath := strings.TrimPrefix(key, "/") + "?window=1"
+	if addonTarget != "" {
+		opts.URL = navURL(addonTarget + spawnPath)
+	} else {
+		opts.HTML = splashHTML
 	}
 	switch key {
 	case "/tracker":
@@ -777,44 +928,61 @@ func spawnWindow(route string) {
 	spawnMu.Lock()
 	spawned[key] = w
 	spawnMu.Unlock()
+	// async — ExecJS waits on the main window's dispatcher; a synchronous
+	// call here would stall the navigation goroutines below (window
+	// stuck on splash) if the dispatcher ever backs up
+	go windowsReport()
 
 	w.OnWindowEvent(events.Common.WindowMinimise, func(e *application.WindowEvent) {
 		w.Show()
 	})
 
-	go keepPinned(w, nil)
-	go func() {
-		for w.NativeWindow() == nil {
-			time.Sleep(150 * time.Millisecond)
-		}
-		target := addonTarget
-		if target == "" {
-			target = probeTarget()
-		}
-		// a fab-layer window (the tracker) is owned by the main window —
-		// owned windows always outrank their owner in z-order, so the
-		// keepPinned topmost re-asserts on the main window can never
-		// bounce it under the UI (same trick as the item tooltip). It
-		// also follows the owner's hide during the blackout.
-		if fabLayerSpawned(key) {
+	go resolveHwnd(w, nil)
+	if fabLayerSpawned(key) {
+		go func() {
+			// set as soon as the hwnd exists — activation can land well
+			// before the webview finishes initializing, and the flag is
+			// what keeps the panel (and its transparent margins) from
+			// ever stealing the game's keyboard
+			for i := 0; i < 60 && w.NativeWindow() == nil; i++ {
+				time.Sleep(50 * time.Millisecond)
+			}
+			if w.NativeWindow() == nil {
+				return
+			}
+			hwnd := uintptr(w.NativeWindow())
+			setStyleFlag(hwnd, wsExNoActivate, true)
+			// a fab-layer window (the tracker) is owned by the main
+			// window — owned windows always outrank their owner in
+			// z-order, so it can never slide under the UI (same trick as
+			// the item tooltip). It also follows the owner's hide during
+			// the blackout.
 			for i := 0; i < 40 && windowHwnd.Load() == 0; i++ {
 				time.Sleep(50 * time.Millisecond)
 			}
 			if owner := windowHwnd.Load(); owner != 0 {
-				pSetWindowLongPtr.Call(
-					uintptr(w.NativeWindow()), uintptr(gwlpOwner), owner)
+				pSetWindowLongPtr.Call(hwnd, uintptr(gwlpOwner), owner)
 			}
-		}
-		// navigate to the route itself (?window=1 flags detached chrome) so
-		// nested routes like /profile/sets resolve normally
-		path := strings.TrimPrefix(key, "/")
-		w.SetURL(target + path + "?window=1")
-		// a fab-layer window spawned mid-blackout starts hidden — the
-		// watchBackend poll restores it when the world comes back
-		if fabLayerSpawned(key) && backendHidden.Load() {
-			w.Hide()
-		}
-	}()
+		}()
+	}
+	if addonTarget != "" {
+		armLoadRetry(w, func() string { return opts.URL })
+	} else {
+		navigateWhenReady(w, func() string {
+			target := addonTarget
+			if target == "" {
+				target = probeTarget()
+			}
+			// navigate to the route itself (?window=1 flags detached
+			// chrome) so nested routes like /profile/sets resolve normally
+			return navURL(target + spawnPath)
+		})
+	}
+	// a fab-layer window spawned mid-blackout starts hidden — the
+	// watchBackend poll restores it when the world comes back
+	if fabLayerSpawned(key) && backendHidden.Load() {
+		w.Hide()
+	}
 	go trackSpawned(w, key)
 	log.Printf("spawned window %q", key)
 	// creation activated the window — hand focus back to the game once
@@ -859,10 +1027,47 @@ func trackSpawned(w *application.WebviewWindow, key string) {
 	spawnMu.Lock()
 	delete(spawned, key)
 	spawnMu.Unlock()
+	go windowsReport()
 	if dirty {
 		saveGeometry()
 	}
 	log.Printf("window %q closed", key)
+}
+
+// toggleWindow opens a detached window when its route isn't up and
+// closes it when it is — the fab's menu-bar buttons are toggles.
+func toggleWindow(route string) {
+	key := spawnKey(route)
+	spawnMu.Lock()
+	w, ok := spawned[key]
+	spawnMu.Unlock()
+	if ok {
+		w.Close() // trackSpawned's teardown drops it + reports
+		refocusGame()
+		return
+	}
+	spawnWindow(route)
+}
+
+// windowsReport pushes the list of open spawned routes to the main
+// window — the fab's menu bar marks the ones that are up. Called on
+// every spawn/close; the page also asks (xic:windows) on load.
+func windowsReport() {
+	if win == nil || win.NativeWindow() == nil {
+		return
+	}
+	spawnMu.Lock()
+	keys := make([]string, 0, len(spawned))
+	for k := range spawned {
+		keys = append(keys, k)
+	}
+	spawnMu.Unlock()
+	slices.Sort(keys)
+	b, err := json.Marshal(keys)
+	if err != nil {
+		return
+	}
+	win.ExecJS("window.__xicWindows && window.__xicWindows(" + string(b) + ")")
 }
 
 // geomReport pushes the persisted window bounds back to the requesting
@@ -1034,9 +1239,8 @@ type tooltipMsg struct {
 }
 
 // setTooltipOwner parents the tooltip to the window that summoned it.
-// An owned window ALWAYS sits above its owner in z-order — the periodic
-// keepPinned re-asserts of HWND_TOPMOST on the main window can't bounce
-// the tooltip underneath it, which is what caused the under/over flip.
+// An owned window ALWAYS sits above its owner in z-order — the tooltip
+// can't slide underneath the window that summoned it.
 // (Also dies with its owner, which is correct for a tooltip.)
 func setTooltipOwner(ownerHwnd uintptr) {
 	th := tooltipHwnd.Load()
@@ -1083,13 +1287,23 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 		AlwaysOnTop:      true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
-		HTML:             splashHTML,
 		Width:            320,
 		Height:           440,
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
 		},
+	}
+	// URL at creation skips the splash hop (see spawnWindow)
+	tipPath := fmt.Sprintf("?tooltip=1&bag=%d&slot=%d&id=%d&pinned=%d",
+		m.Bag, m.Slot, m.ID, btoi(m.Pinned))
+	if m.Name != "" {
+		tipPath += "&name=" + url.QueryEscape(m.Name)
+	}
+	if addonTarget != "" {
+		opts.URL = navURL(addonTarget + tipPath)
+	} else {
+		opts.HTML = splashHTML
 	}
 	w := app.Window.NewWithOptions(opts)
 	tooltipMu.Lock()
@@ -1100,31 +1314,32 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 		w.Show()
 	})
 
-	go keepPinned(w, &tooltipHwnd)
+	go resolveHwnd(w, &tooltipHwnd)
 	go func() {
 		for i := 0; i < 100 && w.NativeWindow() == nil; i++ {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if w.NativeWindow() == nil {
-			return // create failed — keepPinned exits on its own
+			return // create failed
 		}
 		for i := 0; i < 50 && tooltipHwnd.Load() == 0; i++ {
 			time.Sleep(50 * time.Millisecond)
 		}
 		setTooltipOwner(ownerHwnd)
 		setClickable(tooltipHwnd.Load(), m.Pinned)
-		target := addonTarget
-		if target == "" {
-			target = probeTarget()
-		}
-		q := fmt.Sprintf("?tooltip=1&bag=%d&slot=%d&id=%d&pinned=%d",
-			m.Bag, m.Slot, m.ID, btoi(m.Pinned))
-		if m.Name != "" {
-			q += "&name=" + url.QueryEscape(m.Name)
-		}
-		w.SetURL(target + q)
 		w.SetPosition(m.X, m.Y)
 	}()
+	if addonTarget != "" {
+		armLoadRetry(w, func() string { return opts.URL })
+	} else {
+		navigateWhenReady(w, func() string {
+			target := addonTarget
+			if target == "" {
+				target = probeTarget()
+			}
+			return navURL(target + tipPath)
+		})
+	}
 	log.Printf("tooltip window created")
 }
 
@@ -1295,12 +1510,32 @@ func main() {
 				go closeFor(w) // spawned window → destroy; main → collapse
 			case strings.HasPrefix(message, "xic:spawn:"):
 				go spawnWindow(strings.TrimPrefix(message, "xic:spawn:"))
+			case strings.HasPrefix(message, "xic:toggle:"):
+				go toggleWindow(strings.TrimPrefix(message, "xic:toggle:"))
+			case message == "xic:loaded":
+				// the page finished booting — releases the window's
+				// navigateWhenReady retry loop (no-op once it exits)
+				if ch, ok := pageLoaded.Load(w); ok {
+					select {
+					case ch.(chan struct{}) <- struct{}{}:
+					default:
+					}
+				}
+			case message == "xic:windows":
+				go windowsReport()
 			case strings.HasPrefix(message, "xic:main:"):
 				go showInMain(strings.TrimPrefix(message, "xic:main:"))
 			case message == "xic:geom":
 				go geomReport(w)
 			case strings.HasPrefix(message, "xic:geom-set:"):
 				go geomSet(strings.TrimPrefix(message, "xic:geom-set:"))
+			case message == "xic:raise":
+				// panels are NOACTIVATE — clicking can't raise them
+				// naturally, so the page asks on mousedown. Raising
+				// needs no activation: the user's stacking order is
+				// whichever window they touched last.
+				go pSetWindowPos.Call(hwndOf(w), hwndTopmost, 0, 0, 0, 0,
+					swpNoMove|swpNoSize|swpNoActivate)
 			case message == "xic:refocus":
 				// let the click finish dispatching first — the macro's
 				// send_command / the tooltip's pin go out on this gesture
@@ -1374,29 +1609,28 @@ func main() {
 		win.Show()
 	})
 
-	go keepPinned(win, &windowHwnd)
+	go resolveHwnd(win, &windowHwnd)
 	go trackGeometry()
-	go func() {
-		// SetURL is a no-op until app.Run creates the window impl —
-		// NativeWindow() reporting an hwnd means it's ready.
-		for win.NativeWindow() == nil {
-			time.Sleep(150 * time.Millisecond)
-		}
+	navigateWhenReady(win, func() string {
 		addonTarget = probeTarget()
-		win.SetURL(addonTarget)
 		// the addon auto-spawning the fab on (re)load steals foreground —
 		// hand it back once our hwnd is registered; a user-invoked
 		// //xic overlay (no --fab) keeps focus on purpose
 		if startFab {
+			setStyleFlag(hwndOf(win), wsExNoActivate, true)
 			refocusAfterActivate()
 		}
-		// cold start with --spawn (e.g. `//xic tracker` while the overlay
-		// wasn't running) — open the detached window once the app is up
-		if route, ok := spawnArg(os.Args[1:]); ok {
-			spawnWindow(route)
-		}
+		go func() {
+			// cold start with --spawn (e.g. `//xic tracker` while the
+			// overlay wasn't running) — open the detached window once
+			// the app is up
+			if route, ok := spawnArg(os.Args[1:]); ok {
+				spawnWindow(route)
+			}
+		}()
 		go watchBackend(addonTarget)
-	}()
+		return navURL(addonTarget)
+	})
 
 	if err := app.Run(); err != nil {
 		log.Printf("wails exited with error: %v", err)

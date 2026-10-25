@@ -2,7 +2,7 @@ import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc
 import { ExternalLink } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode } from './core/host';
+import { host, fabMode, detachedMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, theme, setTheme, THEMES, type Theme } from './core/host';
 import { Fab } from './fab';
 import { TooltipView } from './tooltip/tooltip.view';
 
@@ -15,6 +15,28 @@ const NAV = [
   { to: '/profile', match: '/profile', label: 'GearSwap' },
   { to: '/settings', match: '/settings', label: 'Settings' },
 ];
+
+// per-window theme picker for detached windows — the choice persists
+// under xic.wintheme.<route> so each spawned window keeps its own look
+function ThemePicker() {
+  return (
+    <select
+      class="h-5 cursor-pointer rounded border border-indigo-300/30 bg-transparent px-0.5 text-[10px] capitalize leading-none"
+      style="color: inherit"
+      title="theme for this window only"
+      value={theme.value}
+      onChange={(e) =>
+        setTheme((e.target as HTMLSelectElement).value as Theme)
+      }
+    >
+      {THEMES.map((t) => (
+        <option class="capitalize text-slate-800" value={t}>
+          {t}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 @Component()
 export class AppShell extends View {
@@ -66,12 +88,13 @@ export class AppShell extends View {
         path;
       return (
         <div class="ffxi-panel flex h-screen flex-col overflow-hidden text-slate-200">
-          <header class="ffxi-panel-title flex h-6 shrink-0 items-center gap-2 pl-2 pr-1">
-            <span class="min-w-0 flex-1 truncate text-[10px] font-medium text-indigo-100">
+          <header class="ffxi-panel-title flex h-7 shrink-0 cursor-grab items-center gap-2 pl-2 pr-1">
+            <span class="min-w-0 flex-1 truncate text-[10px] font-medium leading-7 text-indigo-100">
               {title}
             </span>
+            <ThemePicker />
             <button
-              class="flex h-5 w-5 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
+              class="flex h-6 w-6 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
               title="close (Esc does the same)"
               onClick={() => host.closeWindow()}
             >

@@ -7,8 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Detached windows fighting for always-on-top** — every periodic
+  re-assert scheme stole band-top per `SetWindowPos` call: per-window
+  asserts ping-ponged siblings, and the coordinated `zSweep` visibly
+  flickered whenever a foreign always-on-top window kept it running.
+  All polling z-order machinery removed; stacking is Windows-managed
+  plus `xic:raise` (posted on page mousedown — lifts the touched
+  window without activating it, needed since `WS_EX_NOACTIVATE`
+  panels can't raise themselves).
+
+
+- **Lost all keyboard input to the game ("can only type in chat")** —
+  two causes. Drag/resize posted `WM_NCLBUTTONDOWN` to enter the native
+  modal loop; a post landing after button-up parked the window holding
+  global mouse capture, eating every click and key until Esc. Move/size
+  is now a Go loop (poll cursor → `SetWindowPos`, ends on button-up) —
+  no capture anywhere. Second, panel windows' transparent margins
+  looked like the game but clicks landed on the WebView2 and stole
+  activation — the fab and fab-layer panels (tracker, macro bar,
+  cooldowns, minimap) now hold `WS_EX_NOACTIVATE` like the tooltip, so
+  they can never take the game's keyboard; expand clears it.
+- **Detached windows fighting for always-on-top** — every window's
+  `keepPinned` unconditionally re-asserted `HWND_TOPMOST` every 2s,
+  and each assert steals band-top, so siblings ping-ponged forever.
+  The re-assert now only fires when a foreign window (the game, other
+  apps) actually outranks ours — sibling stacking follows click order
+  and stays put.
+- **Detached windows stuck solid dark** — `SetURL` fired as soon as the
+  HWND existed, but the WebView2 core initializes later; navigations in
+  that gap were dropped and the window sat on the dark splash page
+  forever. `navigateWhenReady` now waits for the splash's own
+  `WebViewNavigationCompleted` (with a timed fallback) and re-issues
+  `SetURL` until the page itself posts `xic:loaded` after bootstrap —
+  NavigationCompleted fires for connection-refused error pages too, so
+  it can't confirm a mount. Applied to the main window, spawned
+  windows, and the item tooltip.
+
 ### Added
 
+- **Shared transport worker** — every window's addon traffic now goes
+  through one `SharedWorker` (`core/bridge.worker.ts`): a single SSE
+  stream + request queue replaces the per-window stream that starved
+  fetches under Chromium's ~6-connection-per-origin cap once several
+  detached panels were open. Snapshot events replay to newly attached
+  windows, identical GETs dedupe across windows, and static endpoints
+  (itemmeta, journal names, chat phrases) cache worker-side.
+- **Real zone map imagery** — the map page and minimap now render the
+  client's own map images with no setup. `mapdats.lua` (generated from
+  Windower ResourceExtractor's MapDats.json: 231 zones / 640 maps) maps
+  zone+map to a file id, `mapimg.lua` resolves it through `FTABLE.DAT`
+  to `ROM/<d>/<f>.DAT`, and `GET /api/map/img` serves the raw DAT bytes
+  as `application/x-ffxi-map` — the browser decodes the DXT3 /
+  8-bit-bitmap payload in-page (all 640 retail maps are 512×512),
+  keeping image decode entirely off the game frame. User-dropped
+  `data/maps/<zone>_<map>.png` files still take precedence; unresolved
+  zones fall back to the radar grid.
 - **Minimap window + Map page** — a detached fab-layer `/minimap`
   (square radar panel, click to cycle zoom) and a full `/map` nav page
   fed by a new `map.lua` module. Positions come from
@@ -26,10 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   radar — `GET /api/map/img` serves it, 404 falls back to the grid.
   `//xic minimap` toggles/spawns; `settings.minimap` auto-launches on
   login.
-- **Fab button cluster** — the floating button is now a 2×2 grid
-  (112px window): main UI, quest tracker, macro bar, and cooldowns each
-  get a one-tap button. Drag from any button or the gaps to reposition;
-  right-click still quits.
+- **Fab menu bar** — the floating button is now a one-row bar
+  (540×56px window): the XIC mark opens the main UI, then toggle
+  buttons for the four fab-layer panels (tracker, macro bar, cooldowns,
+  minimap) and every main-UI page (inventory, chat, journal, map, macro
+  editor, GearSwap, settings) as detached windows. Open windows get a
+  gold ring — the shell pushes the live list via `__xicWindows`.
+  Drag from any button or the gaps to reposition; right-click still
+  quits.
 - **Cooldowns window** — a detached fab-layer panel (`/cooldowns`) listing
   active ability/spell recasts: name, live countdown, and a bar that
   fills as the timer completes (amber = abilities, sky = spells). A new

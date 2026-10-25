@@ -14,6 +14,8 @@
 //   "xic:collapse"             → full → fab (Esc/× both collapse now)
 //   "xic:quit"                 → exit the overlay process
 //   "xic:spawn:<route>"        → open/focus a detached per-tab window
+//   "xic:toggle:<route>"       → spawn-or-close (the fab's menu bar)
+//   "xic:windows"              → ask for the open spawned-route list
 //   "xic:close"                → destroy a detached window (main collapses)
 //   "xic:refocus"              → hand keyboard focus back to the FFXI window
 import { signal } from '@preact/signals';
@@ -42,9 +44,10 @@ const tell = (msg: string) => window.chrome?.webview?.postMessage(msg);
 // __xicNavigate, __xicTooltipUnpinned). One post per window.
 if (inWebView()) tell('wails:runtime:ready');
 
-// A viewport this small means the shell is in fab mode — the app renders
-// just the button. Gated on inWebView so shrinking a dev browser tab
-// doesn't collapse the UI.
+// A window this short means the shell is in fab mode — the app renders
+// just the menu bar. Height only: the bar is ~540px wide. Detached and
+// tooltip windows are excluded — a min-size spawned window (280×180)
+// would otherwise read as the fab. inWebView gates dev browser tabs.
 const FAB_VIEWPORT = 200;
 export const fabMode = signal(false);
 
@@ -52,10 +55,10 @@ const updateFabMode = () => {
   fabMode.value =
     inWebView() &&
     !tooltipMode &&
-    window.innerWidth < FAB_VIEWPORT &&
+    !detachedMode &&
     window.innerHeight < FAB_VIEWPORT;
   // body paints the opaque app background — drop it in fab mode so the
-  // window's transparent backdrop shows through around the circle
+  // window's transparent backdrop shows through around the bar
   document.body.classList.toggle('fab-mode', fabMode.value);
 };
 
@@ -125,29 +128,91 @@ export interface ShellGeom {
   windows?: Record<string, WinRect>;
 }
 export const shellGeom = signal<ShellGeom | null>(null);
+
+/** route keys of the detached windows currently open — the shell pushes
+ *  the list via __xicWindows on every spawn/close; the fab's menu bar
+ *  reads it to mark which toggles are on. */
+export const openWindows = signal<string[]>([]);
+
 if (inWebView()) {
   (window as any).__xicGeom = (g: ShellGeom) => {
     shellGeom.value = g;
   };
+  (window as any).__xicWindows = (list: string[]) => {
+    openWindows.value = list ?? [];
+  };
+  // the shell only reports on change — ask once at load so a page that
+  // mounted after windows were already up starts with the right list
+  if (!detachedMode && !tooltipMode) tell('xic:windows');
 }
 
 // ---------- theme ----------
 // the app is styled exclusively in Tailwind's slate ramp, so light mode
-// flips the ramp (styles.css html.light) — no per-component work
+// flips the ramp (styles.css html.light) — no per-component work.
+// 'glass' is a translucent-black square-edged skin for detached panels.
+// Each detached window can pick its own theme — the per-route key
+// shadows the global one for that window only.
 
-export type Theme = 'dark' | 'light';
+export type Theme = 'dark' | 'light' | 'glass' | 'bare';
+export const THEMES: Theme[] = ['dark', 'light', 'glass', 'bare'];
 const THEME_KEY = 'xic.theme';
+const WTHEME_KEY = `xic.wintheme.${window.location.pathname}`;
+const storedTheme = (detachedMode
+  ? localStorage.getItem(WTHEME_KEY)
+  : null) as Theme | null;
 export const theme = signal<Theme>(
-  (localStorage.getItem(THEME_KEY) as Theme) || 'dark',
+  storedTheme || (localStorage.getItem(THEME_KEY) as Theme) || 'dark',
 );
-const applyTheme = (t: Theme) =>
-  document.documentElement.classList.toggle('light', t === 'light');
+const applyTheme = (t: Theme) => {
+  const cl = document.documentElement.classList;
+  cl.toggle('light', t === 'light');
+  cl.toggle('glass', t === 'glass');
+  cl.toggle('bare', t === 'bare');
+};
 applyTheme(theme.value);
 export function setTheme(t: Theme) {
   theme.value = t;
-  localStorage.setItem(THEME_KEY, t);
+  localStorage.setItem(detachedMode ? WTHEME_KEY : THEME_KEY, t);
   applyTheme(t);
 }
+const winKey = (path: string) => `xic.wintheme.${path}`;
+/** a detached route's stored pick (null = follows the global theme) */
+export function getWinTheme(path: string): Theme | null {
+  return localStorage.getItem(winKey(path)) as Theme | null;
+}
+export function setWinTheme(path: string, t: Theme | null) {
+  if (t) localStorage.setItem(winKey(path), t);
+  else localStorage.removeItem(winKey(path));
+  // storage events don't reach the originating window — if the change
+  // targets this window, apply it directly (null = back to global)
+  if (detachedMode && path === window.location.pathname) {
+    const v = t ?? (localStorage.getItem(THEME_KEY) as Theme) ?? 'dark';
+    theme.value = v;
+    applyTheme(v);
+  }
+}
+// every window shares the UDF's localStorage — changes made in one
+// window surface live in the others; a detached window without its own
+// pick follows the global theme
+window.addEventListener('storage', (e) => {
+  const mine = detachedMode ? WTHEME_KEY : THEME_KEY;
+  if (e.key === mine) {
+    // null newValue = key removed → fall back to the global
+    const v =
+      (e.newValue as Theme) ??
+      (localStorage.getItem(THEME_KEY) as Theme) ??
+      'dark';
+    theme.value = v;
+    applyTheme(v);
+  } else if (
+    detachedMode &&
+    e.key === THEME_KEY &&
+    !localStorage.getItem(WTHEME_KEY)
+  ) {
+    theme.value = (e.newValue as Theme) || 'dark';
+    applyTheme(theme.value);
+  }
+});
 
 let lastTip: TooltipRef | null = null;
 
@@ -224,6 +289,13 @@ export const host = {
   /** true when running inside a native WebView2 shell */
   inShell: inWebView,
 
+  /** report that this window's app page finished booting — the shell
+   *  retries the initial SetURL until it hears this, since a failed
+   *  navigation fires NavigationCompleted just like a good one */
+  loaded() {
+    tell('xic:loaded');
+  },
+
   /** start the native caption-move loop (fab drag, fallback for header) */
   drag() {
     tell('xic:drag');
@@ -232,6 +304,12 @@ export const host = {
   /** pop the current route out into its own small window */
   spawnWindow(path: string) {
     tell(`xic:spawn:${path}`);
+  },
+
+  /** spawn-or-close a detached window — the fab's menu-bar buttons
+   *  toggle rather than always opening */
+  toggleWindow(path: string) {
+    tell(`xic:toggle:${path}`);
   },
 
   /** close this window (a spawned tab). On the main window Esc/× use
@@ -330,12 +408,30 @@ function edgeAt(x: number, y: number): string | null {
   return null;
 }
 
+// climbs ancestors for --wails-draggable — 'drag' = caption move,
+// 'no-drag' = interactive element (edge zones must not resize-grab it)
+function dragRegionOf(t: HTMLElement | null): 'drag' | 'no-drag' | null {
+  let el = t;
+  // e.target can be Document — getComputedStyle throws on non-Elements
+  while (el instanceof HTMLElement && el !== document.body) {
+    const v = getComputedStyle(el).getPropertyValue('--wails-draggable').trim();
+    if (v === 'no-drag') return 'no-drag';
+    if (v === 'drag') return 'drag';
+    el = el.parentElement;
+  }
+  return null;
+}
+
 // Wires the frameless chrome affordances for the wails shell (full mode
 // only — the fab handles its own drag/click):
-//  - edges: mousemove shows the resize cursor; mousedown starts a native
-//    size loop via "wails:resize:<cursor>"
+//  - drag regions win over the resize border — the title bar's top 8px
+//    would otherwise be an n-resize sliver that makes the bar nearly
+//    ungrabbable, and the × button inside the corner zone would resize
+//    instead of clicking
+//  - edges: mousemove shows the resize cursor; mousedown starts the
+//    Go-driven size loop via "xic:resize:<cursor>"
 //  - drag: mousedown on a --wails-draggable:drag element (honoring
-//    no-drag) starts a native caption move via "wails:drag"
+//    no-drag) starts the Go-driven caption move via "xic:drag"
 export function installWindowChrome() {
   if (!inWebView()) return;
   updateFabMode();
@@ -343,7 +439,10 @@ export function installWindowChrome() {
 
   document.addEventListener('mousemove', (e) => {
     if (e.buttons !== 0 || fabMode.value || tooltipMode) return; // no churn mid-drag / no edges on fab/tooltip
-    const cursor = edgeAt(e.clientX, e.clientY) ?? '';
+    const cursor =
+      dragRegionOf(e.target as HTMLElement) !== null
+        ? ''
+        : edgeAt(e.clientX, e.clientY) ?? '';
     if (document.documentElement.style.cursor !== cursor) {
       document.documentElement.style.cursor = cursor;
     }
@@ -352,25 +451,24 @@ export function installWindowChrome() {
   document.addEventListener(
     'mousedown',
     (e) => {
+      // NOACTIVATE windows can't raise themselves — the shell lifts the
+      // touched window to band-top on our behalf (z-order, not focus)
+      if (e.button === 0) tell('xic:raise');
       if (e.button !== 0 || fabMode.value) return;
+      switch (dragRegionOf(e.target as HTMLElement)) {
+        case 'no-drag':
+          return;
+        case 'drag':
+          e.preventDefault(); // no text selection while dragging
+          e.stopPropagation();
+          tell('xic:drag');
+          return;
+      }
       const edge = tooltipMode ? null : edgeAt(e.clientX, e.clientY);
       if (edge) {
         e.preventDefault();
         e.stopPropagation();
         tell(`xic:resize:${edge}`);
-        return;
-      }
-      let el = e.target as HTMLElement | null;
-      while (el && el !== document.body) {
-        const v = getComputedStyle(el).getPropertyValue('--wails-draggable').trim();
-        if (v === 'no-drag') return;
-        if (v === 'drag') {
-          e.preventDefault(); // no text selection while dragging
-          e.stopPropagation();
-          tell('xic:drag');
-          return;
-        }
-        el = el.parentElement;
       }
     },
     true,

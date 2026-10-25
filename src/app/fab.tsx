@@ -1,9 +1,22 @@
-// Floating action cluster — what the overlay renders while the shell is in
-// fab mode (112px window): a 2×2 grid of buttons — main UI, quest tracker,
-// macro bar, cooldowns. Click opens/focuses the target, drag repositions,
+// Menu bar — what the overlay renders while the shell is in fab mode
+// (540×56 window): one row of buttons covering every detached-able
+// window. A click toggles the window (open ↔ close); the XIC mark opens
+// the main UI. Open windows glow. Drag anywhere to reposition,
 // right-click quits the overlay process.
-import { host } from './core/host';
-import { ScrollText, Keyboard, Timer } from 'lucide-preact';
+import { host, openWindows } from './core/host';
+import {
+  ScrollText,
+  Keyboard,
+  Timer,
+  Radar,
+  Package,
+  MessageSquare,
+  BookOpen,
+  Map as MapIcon,
+  NotebookPen,
+  Shirt,
+  Settings,
+} from 'lucide-preact';
 
 const DRAG_THRESHOLD = 4; // px of movement before a press becomes a drag
 
@@ -58,7 +71,7 @@ function pressDrag(onPress: () => void) {
         dragging = true;
         window.removeEventListener('mousemove', onMove, true);
         window.removeEventListener('mouseup', onUp, true);
-        host.drag(); // → wails:drag
+        host.drag(); // → xic:drag
       }
     };
     const onUp = () => {
@@ -75,12 +88,35 @@ function pressDrag(onPress: () => void) {
 }
 
 const BTN =
-  'ffxi-fab grid h-11 w-11 cursor-pointer place-items-center rounded-full transition';
+  'ffxi-fab grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full transition';
+
+// always-on fab layer first (tracker-style overlay panels), then the
+// main UI's pages — both groups toggle their own detached window
+const PANELS = [
+  { path: '/tracker', label: 'quest tracker', Icon: ScrollText },
+  { path: '/macrobar', label: 'macro bar', Icon: Keyboard },
+  { path: '/cooldowns', label: 'cooldowns', Icon: Timer },
+  { path: '/minimap', label: 'minimap', Icon: Radar },
+];
+const PAGES = [
+  { path: '/', label: 'inventory', Icon: Package },
+  { path: '/chat', label: 'chat', Icon: MessageSquare },
+  { path: '/journal', label: 'journal', Icon: BookOpen },
+  { path: '/map', label: 'map', Icon: MapIcon },
+  { path: '/macros', label: 'macro editor', Icon: NotebookPen },
+  { path: '/profile', label: 'gearswap sets', Icon: Shirt },
+  { path: '/settings', label: 'settings', Icon: Settings },
+];
+
+function Sep() {
+  return <span class="h-6 w-px shrink-0 bg-indigo-200/30" />;
+}
 
 export function Fab() {
-  // drag from the gap between buttons too — the container doubles as a
-  // handle so there's no dead space in the cluster
+  // drag from the gaps between buttons too — the container doubles as a
+  // handle so there's no dead space in the bar
   const gap = pressDrag(() => {});
+  const open = openWindows.value;
 
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
@@ -89,42 +125,38 @@ export function Fab() {
 
   return (
     <div
-      class="grid h-screen w-screen cursor-default place-items-center bg-transparent"
-      title="XI Companion — click a button · drag to move · right-click to quit"
+      class="flex h-screen w-screen cursor-default items-center justify-center bg-transparent"
+      title="XI Companion — click toggles a window · drag to move · right-click to quit"
       onContextMenu={onContextMenu}
     >
-      <div
-        class="grid grid-cols-2 gap-1.5"
-        onMouseDown={gap.onMouseDown}
-      >
+      <div class="flex items-center gap-1" onMouseDown={gap.onMouseDown}>
         <button
           class={BTN}
           title="main window"
           {...pressDrag(() => host.expand())}
         >
-          <XicLogo size={30} />
+          <XicLogo size={26} />
         </button>
-        <button
-          class={BTN}
-          title="quest tracker"
-          {...pressDrag(() => host.spawnWindow('/tracker'))}
-        >
-          <ScrollText size={18} />
-        </button>
-        <button
-          class={BTN}
-          title="macro bar"
-          {...pressDrag(() => host.spawnWindow('/macrobar'))}
-        >
-          <Keyboard size={18} />
-        </button>
-        <button
-          class={BTN}
-          title="cooldowns"
-          {...pressDrag(() => host.spawnWindow('/cooldowns'))}
-        >
-          <Timer size={18} />
-        </button>
+        <Sep />
+        {PANELS.map(({ path, label, Icon }) => (
+          <button
+            class={`${BTN}${open.includes(path) ? ' on' : ''}`}
+            title={label}
+            {...pressDrag(() => host.toggleWindow(path))}
+          >
+            <Icon size={18} />
+          </button>
+        ))}
+        <Sep />
+        {PAGES.map(({ path, label, Icon }) => (
+          <button
+            class={`${BTN}${open.includes(path) ? ' on' : ''}`}
+            title={label}
+            {...pressDrag(() => host.toggleWindow(path))}
+          >
+            <Icon size={18} />
+          </button>
+        ))}
       </div>
     </div>
   );

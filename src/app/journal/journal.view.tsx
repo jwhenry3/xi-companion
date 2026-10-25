@@ -250,8 +250,9 @@ export class JournalView extends View implements OnInit, OnDestroy {
           e.entry?.d?.toLowerCase().includes(q),
       );
     } else if (!this.showAll.value) {
-      // hide untouched entries unless searching or "show all" is on
-      list = list.filter((e) => e.status !== 'open');
+      // default view is in-progress only — "show all" (or a search)
+      // reveals untouched and completed entries
+      list = list.filter((e) => e.status === 'current');
     }
     return list;
   });

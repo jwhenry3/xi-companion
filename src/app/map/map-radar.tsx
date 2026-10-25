@@ -106,15 +106,19 @@ export function MapRadar(props: {
           key={`e${i}`}
           cx={e.x}
           cy={e.y}
-          r={dot}
+          r={dot * 0.55}
           fill={entColor(e)}
           fill-opacity={e.hp === 0 ? 0.35 : 0.95}
+          stroke="#000"
+          stroke-width={unit * 0.8}
         >
-          <title>{`${e.n ?? '—'}${e.d ? `  ${e.d.toFixed(1)}y` : ''}`}</title>
+          <title>{e.n ?? '—'}</title>
         </circle>
       ))}
 
-      {/* player arrow — triangle pointing up, rotated by facing */}
+      {/* player arrow — triangle pointing up, rotated by facing;
+          scale(0.65) keeps it readable without covering the dots it
+          sits on top of */}
       <path
         d={`M 0 ${-dot * 1.7} L ${dot * 1.3} ${dot * 1.3} L 0 ${
           dot * 0.6
@@ -122,7 +126,7 @@ export function MapRadar(props: {
         fill={C.me}
         stroke="#1e293b"
         stroke-width={unit * 0.8}
-        transform={`translate(${me.x} ${me.y}) rotate(${deg})`}
+        transform={`translate(${me.x} ${me.y}) rotate(${deg}) scale(0.65)`}
       />
     </svg>
   );

@@ -6,6 +6,7 @@ import { Component, View, inject, signal } from '@preact-mvc/core';
 import type { OnInit } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { MapRadar } from './map-radar';
+import { resolveMapImage } from './map-image';
 
 // zoom steps in map-px half-extent; 0 = fit the whole zone map
 const ZOOMS = [48, 96, 192, 0];
@@ -27,15 +28,9 @@ export class MinimapView extends View implements OnInit {
     const key = s?.z != null && s.m != null ? `${s.z}_${s.m}` : '';
     if (!s || !key || key === this.imgFor) return;
     this.imgFor = key;
-    const url = this.api.mapImgUrl(s.z!, s.m!);
-    const probe = new Image();
-    probe.onload = () => {
+    void resolveMapImage(this.api.mapImgUrl(s.z!, s.m!), key).then((url) => {
       if (this.imgFor === key) this.mapImg.value = url;
-    };
-    probe.onerror = () => {
-      if (this.imgFor === key) this.mapImg.value = null;
-    };
-    probe.src = url;
+    });
   }
 
   render() {

@@ -3,7 +3,7 @@
 // incoming-packet interceptor (SSE 'chat' events); sends go through
 // `input /<cmd>` — the same path as the game's chat line.
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
-import type { OnInit } from '@preact-mvc/core';
+import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { useLayoutEffect, useRef } from 'preact/hooks';
 import type { JSX } from 'preact';
 import { AddonApi } from '../core/addon-api.service';
@@ -172,7 +172,7 @@ function MessageList({ messages }: { messages: ChatMessage[] }) {
 }
 
 @Component()
-export class ChatView extends View implements OnInit {
+export class ChatView extends View implements OnInit, OnDestroy {
   private api = inject(AddonApi);
 
   private draft = signal('');
@@ -188,7 +188,26 @@ export class ChatView extends View implements OnInit {
   onInit() {
     void this.api.refreshChat();
     void this.ensurePhrases();
+    // another window (e.g. the map's player → tell action) hands us a
+    // thread through localStorage — consume it on boot and on change
+    const pending = localStorage.getItem('xic.chat.thread');
+    if (pending) {
+      localStorage.removeItem('xic.chat.thread');
+      this.open(pending);
+    }
+    window.addEventListener('storage', this.onStorage);
   }
+
+  onDestroy() {
+    window.removeEventListener('storage', this.onStorage);
+  }
+
+  private onStorage = (e: StorageEvent) => {
+    if (e.key === 'xic.chat.thread' && e.newValue) {
+      localStorage.removeItem('xic.chat.thread');
+      this.open(e.newValue);
+    }
+  };
 
   private async ensurePhrases() {
     if (this.phrases.value) return;

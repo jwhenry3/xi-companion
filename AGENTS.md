@@ -83,6 +83,16 @@ prefers the bundled exe and falls back to the Electron dev launcher.
 - `regime_names.lua` — GENERATED (do not edit): FoV/GoV zone →
   page → {desc, needs, level range} tables. Regenerate with `python
   scripts/extract-regimes.py` (scrapes bg-wiki).
+- `mapimg.lua` + `mapdats.lua` — zone map image resolution.
+  `mapdats.lua` is GENERATED (do not edit): zone → map# → file-id table
+  built from Windower ResourceExtractor's MapDats.json (vendored at
+  `scripts/mapdats.json`). `mapimg.lua` resolves file ids via
+  `FTABLE.DAT` (u16 @ id*2 → `ROM/<f/128>/<f%128>.DAT` under
+  `windower.ffxi_path`) and `GET /api/map/img` serves the raw DAT bytes
+  as `application/x-ffxi-map`; the browser decodes the DXT3/8-bit-bitmap
+  payload (`src/app/map/map-image.ts`, header @0x41, DXT texels @0x75)
+  so image decode never touches the game frame. User PNGs in
+  `data/maps/<zone>_<map>.png` still take precedence.
 - `icon_extractor.lua` — decodes FFXI DAT item icons to BMP.
 - `ui/` — vite build output; deploy copies `addon/xic/` to
   `windower/addons/xic/` (keep in sync; `data/` there is live state).
@@ -144,6 +154,16 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   every message forever.
 - `core/addon-api.service.ts` — same-origin API client (state SSE, files,
   `sendCommand`, `iconUrl`, `reloadGearswap`); `VITE_GSUI_API` for dev.
+  All traffic rides `core/bridge.worker.ts` when `SharedWorker` exists —
+  a single shared worker owns the ONE `/api/events` SSE stream + request
+  proxy for every window (Chromium caps ~6 conns/origin; each held SSE
+  stream starved fetches once several detached panels were open). New
+  ports get the cached snapshot events (state/journal/recasts/map)
+  replayed; `chat` stays pull-based per window (per-window seq/unread).
+  GETs dedupe in-flight across windows and `/api/itemmeta`,
+  `/api/journal/names`, `/api/chat/phrases` cache worker-side (the
+  ~1MB names pull happens once, not per window). `dispatchSse`/`onConn`
+  unify the worker messages and the direct-EventSource fallback.
   Data fetches go through TanStack Query (`core/query.ts`): `fetchQuery`
   for imperative reads (files, itemmeta, journal-names, chat-phrases,
   macros — static resources use `staleTime: Infinity`), writes call
@@ -157,8 +177,13 @@ prefers the bundled exe and falls back to the Electron dev launcher.
 - `core/host.ts` — shell shim over `chrome.webview.postMessage`: `wails:drag`,
   `wails:resize:<cursor>` (edge zones detected in-page, 8px border),
   `xic:expand`/`collapse`/`quit` for the fab↔full state machine, and
-  `xic:spawn:<route>`/`xic:close` for detached per-tab windows. `fabMode`
-  signal (viewport < 200px) picks button-vs-app render; `detachedMode`
+  `xic:spawn:<route>`/`xic:close` for detached per-tab windows plus
+  `xic:toggle:<route>` (spawn-or-close, the fab's menu bar) and
+  `xic:windows` (`__xicWindows` pushes the open-route list →
+  `openWindows` signal). `fabMode`
+  signal (viewport height < 200px, width unconstrained — the bar is
+  ~540px wide; detached/tooltip excluded) picks button-vs-app render;
+  `detachedMode`
   (`?window` param) swaps full nav for a slim title bar — the shell
   navigates spawned windows to `/<route>?window=1`, and `/?window=<path>`
   from older exes is rewritten up front. The page also posts
@@ -174,9 +199,9 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `pinned=false` still toggles click-through `WS_EX_TRANSPARENT` but the
   page only ever sends pinned payloads; content updates via `ExecJS
   __xicTooltip`). The shell owns the tooltip to the summoning window
-  (`GWLP_HWNDPARENT` on each `xic:tooltip:`) — otherwise competing
-  `keepPinned` `HWND_TOPMOST` re-asserts bounce it under/over the main
-  UI. `tipAnchor(el)` maps a
+  (`GWLP_HWNDPARENT` on each `xic:tooltip:`) — owned windows always
+  outrank their owner, so it can't slide under the summoning
+  window. `tipAnchor(el)` maps a
   hovered element to screen coords; `showInMain(url)` (`xic:main:`) lets
   detached windows navigate the main one via `__xicNavigate`.
   Esc-hide/close is wired in `main.tsx` (capture phase; skips while a
@@ -191,19 +216,37 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   production`): probes `127.0.0.1:17890-17899` for `/api/status`
   (`$GSUI_PORT` overrides), then `SetURL` navigates the frameless +
   AlwaysOnTop window to the addon page once `app.Run` has created the
-  window impl (`SetURL` is a no-op while `NativeWindow()` is nil).
+  window impl (`SetURL` is a no-op while `NativeWindow()` is nil — and
+  even with an HWND it's dropped while the WebView2 core is still
+  coming up, which stranded windows on the dark splash; every window
+  navigates via `navigateWhenReady`, which waits for the splash's own
+  `WebViewNavigationCompleted` — timed fallback included — then
+  re-issues `SetURL` until the page itself posts `xic:loaded` at the
+  end of bootstrap; NavigationCompleted alone can't be trusted since
+  connection-refused error pages fire it too).
   `SingleInstanceOptions` surfaces the first window on re-launch;
   `Windows.HiddenOnTaskbar` keeps it out of the taskbar/alt-tab.
-  `keepPinned` goroutine re-asserts `HWND_TOPMOST` every 2s (skipped while
-  focused, same as Electron), and `WindowMinimise` → `Show()` undoes the
-  frameless auto-minimize quirk. The window has two modes: a 112px
+  **No periodic z-order machinery** — every polling re-assert scheme
+  (per-window `HWND_TOPMOST`, then the coordinated `zSweep`) caused
+  visible flicker: each `SetWindowPos` pops a window to band-top, and
+  any foreign always-on-top window made the sweep re-run every cycle.
+  Stacking is now left to Windows + `xic:raise` (posted on page
+  mousedown — lifts the touched window without activating it, needed
+  since panels carry `WS_EX_NOACTIVATE` and can't raise themselves).
+  `resolveHwnd` only waits for the hwnd to exist (feeds the focus /
+  exstyle / tooltip-ownership stores); `WindowMinimise` → `Show()`
+  still undoes the frameless auto-minimize quirk. The window has two modes: a 540×56px
   transparent **fab** (`--fab` arg; the addon auto-spawns it on **login**
   — or on `load` while already logged in — `settings.fab`,
   `//xic fab on|off`; the addon taskkills the process on **logout**)
-  and the full UI. The fab is a 2×2 button cluster (`src/app/fab.tsx`):
-  main UI (`xic:expand`), plus one-tap spawns for the `/tracker`,
-  `/macrobar`, and `/cooldowns` panels; drag from any button or the
-  grid gaps, right-click quits.
+  and the full UI. The fab is a one-row menu bar (`src/app/fab.tsx`):
+  the XIC mark expands the main UI (`xic:expand`), then toggle buttons
+  (`xic:toggle:<route>`) for the fab-layer panels (`/tracker`,
+  `/macrobar`, `/cooldowns`, `/minimap`) and every app page (`/`,
+  `/chat`, `/journal`, `/map`, `/macros`, `/profile`, `/settings`) —
+  open routes get a gold ring driven by `openWindows`/`__xicWindows`,
+  pushed by `windowsReport()` on every spawn/close. Drag from any button
+  or the gaps, right-click quits.
   `expand()`/`collapse()` swap min-size/resizable/bounds; both geometries
   persist in `%LOCALAPPDATA%/xic/window.json`. `trackGeometry`
   snapshots live bounds every 300ms and saves once settled — the native
@@ -227,12 +270,18 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   Drag region: `--wails-draggable` in `src/styles.css`; edge-resize
   cursors/zones are detected in-page (8px border, fab mode excluded)
   since `WM_NCHITTEST` never reaches the webview child window.
+  `xic:drag`/`xic:resize:<cursor>` run a **Go-driven** move/size loop
+  (poll `GetCursorPos` + `SetWindowPos` until button-up) — never post
+  `WM_NCLBUTTONDOWN`: a modal loop entered with the button already up
+  parks holding global mouse capture and eats all input. The fab and
+  fab-layer panels carry `WS_EX_NOACTIVATE` (like the tooltip) so their
+  clicks — including transparent margins — can't steal game focus.
   `xic:spawn:<route>` from the page's pop-out header button creates a
   detached per-tab window via `WindowManager.NewWithOptions` (frameless,
   always-on-top, 280×180 min, same message bridge): one window per route
   key, re-spawn focuses instead of duplicating, geometry persists per
-  route under `windows` in window.json, `keepPinned(w, false)` re-asserts
-  topmost, and `xic:close` on a spawned window destroys it (on the main
+  route under `windows` in window.json, `resolveHwnd` registers its
+  hwnd, and `xic:close` on a spawned window destroys it (on the main
   window it collapses to the fab). `watchBackend`'s zoning/cutscene hide
   applies to the fab and "fab-layer" spawned windows (`/tracker`, the
   quest tracker; `/macrobar`, the clickable macro bar; `/cooldowns`,
