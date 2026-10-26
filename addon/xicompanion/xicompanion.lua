@@ -75,6 +75,14 @@ local defaults = {
     chat_history = 200,
     -- distinct tell-peer threads remembered (LRU beyond this)
     chat_tell_threads = 64,
+    -- player-defined filter channels: { { name, channels = {...} } }
+    chat_custom_channels = {},
+    -- opt-in: steal a key combo to open/focus our chat window while one
+    -- is open — our composer opens instead of the client's chat line.
+    -- Format: [modifier+]*keyname — modifiers shift/ctrl/alt, key names
+    -- a-z 0-9 f1-f12 space enter tab slash comma period etc.
+    chat_space_focus = false,
+    chat_focus_hotkey = 'shift+space',
     swapui = {
         -- headless set scanner: custom[] holds sets added via `//xicompanion swap add`
         custom = {},
@@ -179,6 +187,122 @@ do
     end
 
     json = { encode = encode }
+end
+
+-- minimal JSON decoder for structured route bodies (our own UI's output
+-- — byte-walked like everything else, never pattern machinery). `null`
+-- decodes to false, which the validators reject as a wrong type anyway.
+local function json_decode(s)
+    if type(s) ~= 'string' then return nil end
+    local i, n = 1, #s
+    local parse_value
+    local function ws()
+        while i <= n do
+            local b = s:byte(i)
+            if b ~= 32 and b ~= 9 and b ~= 10 and b ~= 13 then break end
+            i = i + 1
+        end
+    end
+    local function parse_str()
+        i = i + 1 -- opening quote
+        local out = {}
+        while i <= n do
+            local b = s:byte(i)
+            if b == 34 then
+                i = i + 1
+                return table.concat(out)
+            elseif b == 92 then
+                local c = s:byte(i + 1)
+                if c == 110 then out[#out + 1] = '\n'
+                elseif c == 116 then out[#out + 1] = '\t'
+                elseif c == 114 then out[#out + 1] = '\r'
+                elseif c == 117 then
+                    -- \uXXXX → utf8 (bmp only)
+                    local code = tonumber(s:sub(i + 2, i + 5), 16) or 63
+                    if code < 128 then
+                        out[#out + 1] = string.char(code)
+                    elseif code < 2048 then
+                        out[#out + 1] = string.char(192 + math.floor(code / 64), 128 + code % 64)
+                    else
+                        out[#out + 1] = string.char(224 + math.floor(code / 4096), 128 + math.floor(code / 64) % 64, 128 + code % 64)
+                    end
+                    i = i + 4
+                else
+                    out[#out + 1] = string.char(c or 0)
+                end
+                i = i + 2
+            else
+                out[#out + 1] = string.char(b)
+                i = i + 1
+            end
+        end
+        return nil -- unterminated
+    end
+    local function parse_arr()
+        i = i + 1 -- [
+        local t = {}
+        ws()
+        if s:byte(i) == 93 then i = i + 1; return t end
+        while true do
+            local v = parse_value()
+            if v == nil then return nil end
+            t[#t + 1] = v
+            ws()
+            local b = s:byte(i)
+            if b == 44 then i = i + 1
+            elseif b == 93 then i = i + 1; return t
+            else return nil end
+        end
+    end
+    local function parse_obj()
+        i = i + 1 -- {
+        local t = {}
+        ws()
+        if s:byte(i) == 125 then i = i + 1; return t end
+        while true do
+            ws()
+            if s:byte(i) ~= 34 then return nil end
+            local k = parse_str()
+            if not k then return nil end
+            ws()
+            if s:byte(i) ~= 58 then return nil end
+            i = i + 1
+            local v = parse_value()
+            if v == nil then return nil end
+            t[k] = v
+            ws()
+            local b = s:byte(i)
+            if b == 44 then i = i + 1
+            elseif b == 125 then i = i + 1; return t
+            else return nil end
+        end
+    end
+    function parse_value()
+        ws()
+        local b = s:byte(i)
+        if not b then return nil
+        elseif b == 34 then return parse_str()
+        elseif b == 91 then return parse_arr()
+        elseif b == 123 then return parse_obj()
+        elseif s:sub(i, i + 3) == 'true' then i = i + 4; return true
+        elseif s:sub(i, i + 4) == 'false' then i = i + 5; return false
+        elseif s:sub(i, i + 3) == 'null' then i = i + 4; return false
+        else
+            local j = i
+            while j <= n do
+                local c = s:byte(j)
+                if c == 44 or c == 93 or c == 125 or c == 32
+                    or c == 9 or c == 10 or c == 13 then
+                    break
+                end
+                j = j + 1
+            end
+            local num = tonumber(s:sub(i, j - 1))
+            i = j
+            return num
+        end
+    end
+    return parse_value()
 end
 
 local function json_array(t)
@@ -695,19 +819,32 @@ local chat_seq = 0
 -- 'tell:<peer>' for DMs) so a busy channel can't evict a quiet one's
 -- history while the UI is closed
 local chat_threads = {}
+local chat_focus_windows = 0 -- chat views mounted; spacebar steal gates on >0
+local chat_log_dirty = {}     -- thread keys changed → debounced writes
+local chat_log_save_at = 0
+-- rendered-line dedupe: texts the 0x017 parse pushed in the last ~3s —
+-- 'incoming text' skips a packet-mode line only when the packet really
+-- delivered it; client-rendered lines at those modes (assist notices,
+-- add_to_chat) get captured rather than falling through both paths
+local recent_packet_text = {}
 local tell_thread_order = {} -- FIFO of tell-peer keys for LRU eviction
 -- per-load marker so clients can detect a reload and resync their seq
 local chat_boot = math.random(0x7fffffff)
 
--- mode byte -> channel key (res/chat.lua); only the social channels the
--- app surfaces are captured — say/shout/yell/emote/unity/assist and
--- system modes are skipped
+-- mode byte -> channel key (res/chat.lua). Anything outside the named
+-- set still lands in 'system' — 0x017 is always chat-log text, so an
+-- unmapped mode is better surfaced there than dropped
 local CHAT_CHANNELS = {
-    [3] = 'tell', [4] = 'party', [5] = 'linkshell', [27] = 'linkshell2',
+    [0] = 'say', [1] = 'shout', [3] = 'tell', [4] = 'party',
+    [5] = 'linkshell', [6] = 'system', [7] = 'system', [8] = 'emote',
+    [12] = 'system', [26] = 'yell', [27] = 'linkshell2', [33] = 'unity',
+    [34] = 'assistj', [35] = 'assiste',
 }
--- channel -> chat-line command for sending
+-- channel -> chat-line command for sending (system/assist are read-only)
 local CHAT_SEND = {
+    say = '/say', shout = '/shout', yell = '/yell', emote = '/emote',
     party = '/party', linkshell = '/linkshell', linkshell2 = '/linkshell2',
+    unity = '/unity',
 }
 
 local function chat_thread_key(m)
@@ -717,11 +854,11 @@ local function chat_thread_key(m)
     return m.channel
 end
 
-local function push_chat(m)
+local function push_chat(m, quiet)
     chat_seq = chat_seq + 1
     m.seq = chat_seq
     m.boot = chat_boot
-    m.ts = os.time()
+    m.ts = m.ts or os.time() -- restored messages keep their original stamp
     local key = chat_thread_key(m)
     local t = chat_threads[key]
     if not t then
@@ -737,14 +874,157 @@ local function push_chat(m)
         end
     end
     t[#t + 1] = m
+    if not m.restored then chat_log_dirty[key] = true end
     local max_msgs = tonumber(settings.chat_history) or 200
     if #t > max_msgs then
         table.remove(t, 1)
     end
-    sse_broadcast('chat', json.encode(m))
+    if not quiet then
+        sse_broadcast('chat', json.encode(m))
+    end
 end
 
-local function player_name()
+-- Chat persistence: every thread survives sessions — each writes its
+-- own flat row list under data/chat/<char>/<thread>.lua (per-character,
+-- per-thread, like data/journal/), capped at CHAT_LOG_MAX lines per
+-- file and written debounced from pump() — the dirty set marks which
+-- threads changed so quiet threads' files aren't rewritten. Clears map
+-- straight to file deletes. Restored messages keep their timestamps
+-- and carry restored=true so clients can tell them apart from live
+-- traffic (no unread badges on history).
+local CHAT_LOG_MAX = 1000
+local player_name -- forward-decl: defined below, used by the path helper
+
+local function chat_log_dir()
+    return join(join(join(plat.addon_path, 'data'), 'chat'),
+                player_name() or 'me')
+end
+
+-- thread key -> file: ':' can't sit in a filename, so 'tell:<peer>'
+-- writes tell_<peer>.lua; channel names are already path-safe
+local function thread_file(key)
+    return join(chat_log_dir(), (key:gsub(':', '_')) .. '.lua')
+end
+
+-- legacy read-only fallbacks: the global log and the DM-only file
+local CHAT_LOG_PATH = join(join(plat.addon_path, 'data'), 'chat_log.lua')
+local CHAT_DMS_PATH = join(join(plat.addon_path, 'data'), 'chat_dms.lua')
+
+local function write_chat_log(key)
+    local msgs = chat_threads[key]
+    if not msgs then return end
+    local n = #msgs
+    local out = { 'return {' }
+    for i = math.max(1, n - CHAT_LOG_MAX + 1), n do
+        local m = msgs[i]
+        out[#out + 1] = string.format(
+            '  {ts=%d,channel=%q,sender=%q,peer=%q,self=%s,text=%q,kind=%q,mode=%d,zone=%q},',
+            m.ts or 0, m.channel or '', m.sender or '', m.peer or '',
+            m.self and 'true' or 'false', m.text or '',
+            m.kind or '', m.mode or 0, m.zone or '')
+    end
+    out[#out + 1] = '}'
+    if plat.create_dir then
+        local d = join(plat.addon_path, 'data')
+        pcall(plat.create_dir, d)
+        pcall(plat.create_dir, join(d, 'chat'))
+        pcall(plat.create_dir, chat_log_dir())
+    end
+    local path = thread_file(key)
+    local f = io.open(path, 'w')
+    if not f then
+        log_err('chat log: cannot write ' .. path)
+        return
+    end
+    f:write(table.concat(out, '\n'))
+    f:close()
+end
+
+local function remove_chat_logs(key)
+    -- '*' = every thread file in the char's dir
+    if key == '*' then
+        local ok, names = pcall(plat.get_dir, chat_log_dir())
+        if ok and type(names) == 'table' then
+            for _, name in ipairs(names) do
+                if type(name) == 'string' and name:match('%.lua$') then
+                    os.remove(join(chat_log_dir(), name))
+                end
+            end
+        end
+        chat_log_dirty = {}
+        return
+    end
+    chat_log_dirty[key] = nil
+    os.remove(thread_file(key))
+end
+
+-- push one persisted row; restores keep original ts and don't badge
+local function restore_chat_msg(m, peer_fallback)
+    if type(m) ~= 'table' or type(m.text) ~= 'string' then return nil end
+    local r = {
+        channel = type(m.channel) == 'string' and m.channel ~= ''
+            and m.channel or 'system',
+        sender = (type(m.sender) == 'string' and m.sender ~= '')
+            and m.sender or nil,
+        peer = (type(m.peer) == 'string' and m.peer ~= '')
+            and m.peer or peer_fallback,
+        self = m.self or nil,
+        kind = (type(m.kind) == 'string' and m.kind ~= '') and m.kind or nil,
+        mode = tonumber(m.mode) or nil,
+        zone = (type(m.zone) == 'string' and m.zone ~= '') and m.zone or nil,
+        text = m.text,
+        ts = tonumber(m.ts) or nil,
+        restored = true,
+    }
+    push_chat(r, true) -- quiet: history loads en masse, one tail broadcast suffices
+    return r
+end
+
+local function load_chat_log()
+    -- per-char per-thread files first; the legacy globals are a
+    -- one-time migration source for installs that predate them
+    local files = {}
+    local okd, names = pcall(plat.get_dir, chat_log_dir())
+    if okd and type(names) == 'table' then
+        for _, name in ipairs(names) do
+            if type(name) == 'string' and name:match('%.lua$') then
+                files[#files + 1] = join(chat_log_dir(), name)
+            end
+        end
+    end
+    if #files == 0 then
+        files = { CHAT_LOG_PATH, CHAT_DMS_PATH }
+    end
+    local tail
+    for _, path in ipairs(files) do
+        local ok, t = pcall(dofile, path)
+        if ok and type(t) == 'table' then
+            if t[1] ~= nil then
+                -- flat seq-ordered rows — ipairs keeps recorded order
+                for _, m in ipairs(t) do
+                    tail = restore_chat_msg(m) or tail
+                end
+            else
+                for key, msgs in pairs(t) do
+                    -- legacy chat_dms.lua shape: 'tell:<peer>' -> msgs
+                    if type(key) == 'string' and key:sub(1, 5) == 'tell:'
+                        and type(msgs) == 'table' then
+                        for _, m in ipairs(msgs) do
+                            tail = restore_chat_msg(m, key:sub(6)) or tail
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- broadcast the last restored row: a real seq + the fresh boot
+    -- marker makes connected windows reset and refetch the full log
+    if tail then
+        sse_broadcast('chat', json.encode(tail))
+    end
+end
+
+player_name = function()
     local ok, p = pcall(plat.ffxi.get_player)
     return (ok and type(p) == 'table' and p.name) or 'me'
 end
@@ -951,14 +1231,41 @@ end
 -- DOES arrive inside the window is dropped as a duplicate.
 local pending_self = {}
 
+-- sender names come out of the same binary packet as message text —
+-- keep to a byte walk (no gsub, see sanitize_chat) so junk can't trip
+-- the wrapped string library
+local function sanitize_name(s)
+    local out = {}
+    for i = 1, #s do
+        local b = s:byte(i)
+        if b >= 0x20 and b < 0x7F then out[#out + 1] = string.char(b) end
+    end
+    return table.concat(out)
+end
+
 local function handle_chat_packet(data)
     if type(data) ~= 'string' or #data < 0x17 then return end
-    local channel = CHAT_CHANNELS[data:byte(5)]
-    if not channel then return end
-    local sender = read_cstr(data, 9, 23) -- char[0xF], may lack a terminator
+    local channel = CHAT_CHANNELS[data:byte(5)] or 'system'
+    local sender = sanitize_name(read_cstr(data, 9, 23)) -- char[0xF], may lack a terminator
+    if sender == '' then sender = nil end
     local text = sanitize_chat(read_cstr(data, 24))
     if text == '' then return end
-    local m = { channel = channel, sender = sender, text = text }
+    -- machine hex dumps injected as chat (comma-separated hex runs —
+    -- e.g. '0a,00c7,00000004,...' showing under unity) aren't
+    -- conversation; drop them at the packet edge
+    if text:match('^%x+,%x+,%x+') then return end
+    local m = { channel = channel, sender = sender, text = text,
+                mode = data:byte(5) }
+    if channel == 'yell' and #data >= 8 then
+        -- Zone u16 @0x06 is only meaningful on yells — resolve it so
+        -- the row can show where the shouter is
+        local zid = data:byte(7) + data:byte(8) * 256
+        local okz, zn = pcall(function()
+            local z = res.zones[zid]
+            return z and z.en or nil
+        end)
+        if okz and zn then m.zone = zn end
+    end
     if sender == player_name() then
         -- our own send coming back (typed in-game or UI echo): style it
         -- as self, and if it matches a message we already appended
@@ -973,6 +1280,7 @@ local function handle_chat_packet(data)
     end
     if channel == 'tell' then m.peer = sender end
     push_chat(m)
+    recent_packet_text[text] = os.time()
 end
 
 plat.on('incoming chunk', function(id, data)
@@ -980,6 +1288,141 @@ plat.on('incoming chunk', function(id, data)
     -- never let a malformed packet kill the routing path — log and move on
     local ok, err = pcall(handle_chat_packet, data)
     if not ok then log_err('chat: ' .. tostring(err)) end
+end)
+
+-- 'incoming text' — the client's rendered log-line stream: packet chat,
+-- combat text, system lines, and every addon/plugin add_to_chat all
+-- funnel through here (with the client's filters already applied). The
+-- 0x017 packet parse stays for the social channels — sender metadata
+-- powers grouping and tell threads — so lines at a packet-covered
+-- display mode are skipped; the rest classify into 'battle' (combat
+-- colors), 'system' (basic system color), or 'echo'.
+local PACKET_TEXT_MODES = {
+    -- res/chat.lua incoming ∪ outgoing columns — rendered packet chat
+    [1]=true,[2]=true,[3]=true,[4]=true,[5]=true,[6]=true,[7]=true,
+    [9]=true,[10]=true,[11]=true,[12]=true,[13]=true,[14]=true,[15]=true,
+    [200]=true,[211]=true,[212]=true,[213]=true,[214]=true,
+    [219]=true,[220]=true,[221]=true,[222]=true,
+}
+
+-- combat colors: the Font-Colors battle ids (self/other hurt/heal/
+-- evade/buff/resist + calls-for-help + standard battle) plus every
+-- numeric action_messages color — rendered 0x029 text is combat too
+local BATTLE_MODES = {
+    [8]=true,[20]=true,[21]=true,[22]=true,[28]=true,[29]=true,[30]=true,
+    [50]=true,[56]=true,[57]=true,[59]=true,[60]=true,[61]=true,[63]=true,
+}
+do
+    local ok, am = pcall(function() return res.action_messages end)
+    if ok and type(am) == 'table' then
+        for _, m in pairs(am) do
+            if type(m) == 'table' and type(m.color) == 'number' then
+                BATTLE_MODES[m.color] = true
+            end
+        end
+    end
+end
+BATTLE_MODES[121] = nil -- basic-system color routes to 'system', not battle
+local SYSTEM_TEXT_MODE = 121
+
+-- display-mode → channel: a rendered line at a packet-chat color that
+-- did NOT come from a 0x017 packet (NPC dialog rendered at unity's
+-- color, addon output mimicking a channel) still belongs to the channel
+-- its mode says it is — the map is built from res/chat.lua's
+-- incoming/outgoing columns so it tracks the client's mode table
+local DISPLAY_CHANNEL = {}
+do
+    local NAME_TO_CHANNEL = {
+        say = 'say', shout = 'shout', tell = 'tell', party = 'party',
+        linkshell = 'linkshell', linkshell2 = 'linkshell2',
+        emote = 'emote', yell = 'yell', unity = 'unity',
+        assistj = 'assist', assiste = 'assist',
+        ['system message'] = 'system',
+    }
+    local ok, chat = pcall(function() return res.chat end)
+    if ok and type(chat) == 'table' then
+        for _, e in pairs(chat) do
+            local ch = type(e) == 'table' and NAME_TO_CHANNEL[e.en] or nil
+            if ch then
+                for _, col in ipairs({ 'incoming', 'outgoing' }) do
+                    local m = tonumber(e[col])
+                    if m then DISPLAY_CHANNEL[m] = ch end
+                end
+            end
+        end
+    end
+end
+-- informational text modes (readable.lua's set + NPC conversations
+-- 142): game-rendered announcements — conquest results, signet/besieged
+-- notices, NPC dialog — are 'system', not 'echo'
+for _, m in ipairs({ 121, 142, 148, 150, 151, 152, 190, 210 }) do
+    DISPLAY_CHANNEL[m] = 'system'
+end
+
+-- rendered log lines carry FFXI color controls (0x1E/0x1F + param byte);
+-- strip those, then run the same byte-walker as packet text (decodes FD
+-- auto-translate runs, drops the rest of the control range)
+local function sanitize_log_text(text)
+    local out, i, n = {}, 1, #text
+    while i <= n do
+        local b = text:byte(i)
+        if b == 0x1E or b == 0x1F then
+            i = i + 2
+        else
+            out[#out + 1] = string.char(b)
+            i = i + 1
+        end
+    end
+    return sanitize_chat(table.concat(out))
+end
+
+local OWN_CHAT_PREFIX = '[xicompanion]'
+
+local function packet_recent(text)
+    -- suffix match: rendered lines prepend sender metadata the packet
+    -- doesn't carry ('Fczjsgdl[BastokMine]: msg' vs 'msg') — the packet
+    -- text is always the rendered line's tail
+    local now = os.time()
+    for ptext, t in pairs(recent_packet_text) do
+        if now - t > 10 then
+            recent_packet_text[ptext] = nil
+        elseif #text >= #ptext and text:sub(-#ptext) == ptext then
+            return true
+        end
+    end
+    return false
+end
+
+plat.on('incoming text', function(original, modified, original_mode, modified_mode, blocked)
+    if blocked then return end -- another addon hid the line — it's invisible
+    local mode = modified_mode or original_mode or 0
+    local text = sanitize_log_text(modified or original or '')
+    if text == '' then return end
+    -- packet-mode lines are only skipped when the 0x017 handler actually
+    -- pushed this text — otherwise it's a client-rendered line (assist
+    -- notice, add_to_chat at a shared mode) and it's ours to capture
+    if PACKET_TEXT_MODES[mode] and packet_recent(text) then return end
+    -- same packet-edge filter for machine hex dumps rendered as lines
+    if text:match('^%x+,%x+,%x+') then return end
+    local own = text:sub(1, #OWN_CHAT_PREFIX) == OWN_CHAT_PREFIX
+    local channel
+    if own then
+        channel = 'echo' -- our own log() lines — surface, don't drop
+    elseif DISPLAY_CHANNEL[mode] then
+        channel = DISPLAY_CHANNEL[mode]
+    elseif BATTLE_MODES[mode] then
+        channel = 'battle'
+    else
+        channel = 'echo'
+    end
+    local m = { channel = channel, text = text, self = own or nil,
+                mode = mode }
+    -- learn notices flag for the ★ badge — mode 81/91 colors are shared
+    -- with unrelated lines, so it's a text match not a mode check
+    if text:lower():find('learn', 1, true) then
+        m.kind = 'learn'
+    end
+    push_chat(m)
 end)
 
 ----------------------------------------------------------------------
@@ -1946,6 +2389,7 @@ local SETTABLE = {
     cooldowns = 'boolean', skillchain = 'boolean',
     poll_interval = 'number',
     chat_history = 'number', chat_tell_threads = 'number',
+    chat_space_focus = 'boolean', chat_focus_hotkey = 'string',
 }
 routes['GET /api/settings'] = function(conn)
     local out = {}
@@ -1960,6 +2404,12 @@ routes['POST /api/settings'] = function(conn, req)
             local v = body:match('"' .. key .. '"%s*:%s*(%a+)')
             if v == 'true' or v == 'false' then
                 settings[key] = (v == 'true')
+                changed[#changed + 1] = key
+            end
+        elseif kind == 'string' then
+            local v = body:match('"' .. key .. '"%s*:%s*"([^"]*)"')
+            if v then
+                settings[key] = v
                 changed[#changed + 1] = key
             end
         else
@@ -2044,6 +2494,99 @@ routes['POST /api/chat'] = function(conn, req)
     pend[display] = os.time()
     push_chat({ channel = channel, sender = player_name(), self = true, text = display })
     send_json(conn, 200, { ok = true })
+end
+
+-- Clear chat history: {thread} is a channel key, 'tell:<peer>', or '*'
+-- for everything. Drops the bucket(s) (tell threads leave the order
+-- list too) and deletes the matching per-thread file(s) under
+-- data/chat/<char>/, then broadcasts a real-seqd control row so every
+-- connected window clears the same thread — the seq bump keeps it out
+-- of client dedupe.
+routes['POST /api/chat/clear'] = function(conn, req)
+    local body = json_decode(req.body or '')
+    local key = type(body) == 'table' and body.thread or nil
+    if type(key) ~= 'string' or key == '' then
+        return send_json(conn, 400, { error = 'missing thread' })
+    end
+    if key == '*' then
+        chat_threads = {}
+        tell_thread_order = {}
+    elseif chat_threads[key] ~= nil then
+        chat_threads[key] = nil
+        for i, k in ipairs(tell_thread_order) do
+            if k == key then
+                table.remove(tell_thread_order, i)
+                break
+            end
+        end
+    end
+    remove_chat_logs(key)
+    chat_seq = chat_seq + 1
+    sse_broadcast('chat', json.encode({ cleared = key, seq = chat_seq, boot = chat_boot }))
+    send_json(conn, 200, { ok = true })
+end
+
+-- Player-defined filter channels: a named set of source channels the UI
+-- merges into one view. Pure metadata — messages keep their real
+-- channel; membership is resolved client-side.
+local CUSTOM_CHANNELS_VALID = {
+    say = true, shout = true, yell = true, emote = true, party = true,
+    linkshell = true, linkshell2 = true, unity = true, tell = true,
+    battle = true, system = true, echo = true, assistj = true, assiste = true,
+}
+
+routes['GET /api/chat/channels'] = function(conn)
+    local out = {}
+    for _, c in ipairs(settings.chat_custom_channels or {}) do
+        if type(c) == 'table' and type(c.name) == 'string' then
+            out[#out + 1] = {
+                name = c.name,
+                channels = json_array(type(c.channels) == 'table' and c.channels or {}),
+            }
+        end
+    end
+    send_json(conn, 200, { channels = json_array(out) })
+end
+
+routes['PUT /api/chat/channels'] = function(conn, req)
+    local body = json_decode(req.body or '')
+    local list = type(body) == 'table' and (body.channels or body) or nil
+    if type(list) ~= 'table' then
+        return send_json(conn, 400, { error = 'expected {channels:[{name,channels[]}]}' })
+    end
+    local out, seen = {}, {}
+    for _, c in ipairs(list) do
+        if type(c) == 'table' and type(c.name) == 'string' and c.name ~= ''
+            and not seen[c.name] and #out < 32 then
+            local chans, cseen = {}, {}
+            if type(c.channels) == 'table' then
+                for _, ch in ipairs(c.channels) do
+                    if type(ch) == 'string' and CUSTOM_CHANNELS_VALID[ch] and not cseen[ch] then
+                        cseen[ch] = true
+                        chans[#chans + 1] = ch
+                    end
+                end
+            end
+            if #chans > 0 then
+                seen[c.name] = true
+                out[#out + 1] = { name = c.name:sub(1, 24), channels = chans }
+            end
+        end
+    end
+    settings.chat_custom_channels = out
+    config.save(settings)
+    send_json(conn, 200, { ok = true, channels = json_array(out) })
+end
+
+-- a mounted chat view registers/deregisters here — the spacebar steal
+-- only intercepts while at least one chat window is actually open
+routes['POST /api/chatfocus'] = function(conn, req)
+    local open = (req.body or ''):match('"open"%s*:%s*(%a+)')
+    if open ~= 'true' and open ~= 'false' then
+        return send_json(conn, 400, { error = 'missing open' })
+    end
+    chat_focus_windows = math.max(0, chat_focus_windows + (open == 'true' and 1 or -1))
+    send_json(conn, 200, { ok = true, count = chat_focus_windows })
 end
 
 local function parse_request(conn)
@@ -2260,6 +2803,14 @@ local function pump()
             log_err('journal flush: ' .. tostring(err3))
         end
     end
+    if os.time() >= chat_log_save_at and next(chat_log_dirty) then
+        local dirty = chat_log_dirty
+        chat_log_dirty = {}
+        chat_log_save_at = os.time() + 3
+        for key in pairs(dirty) do
+            pcall(write_chat_log, key)
+        end
+    end
     if recasts then
         local ok4, err4 = pcall(recasts.poll)
         if not ok4 then
@@ -2297,6 +2848,62 @@ end
 plat.on('prerender', pump)
 plat.on('time change', pump)
 plat.on('incoming chunk', pump)
+
+-- opt-in hotkey → chat focus: when chat_space_focus is set and a chat
+-- window is open, eat the configured combo before the client sees it
+-- and push 'chatfocus' — the UI raises our window + composer.
+-- default shift+space — plain space still opens the native chat line.
+local DIK_KEYS = {
+    a=0x1E,b=0x30,c=0x2E,d=0x20,e=0x12,f=0x21,g=0x22,h=0x23,i=0x17,
+    j=0x24,k=0x25,l=0x26,m=0x32,n=0x31,o=0x18,p=0x19,q=0x10,r=0x13,
+    s=0x1F,t=0x14,u=0x16,v=0x2F,w=0x11,x=0x2D,y=0x15,z=0x2C,
+    ['0']=0x0B,['1']=0x02,['2']=0x03,['3']=0x04,['4']=0x05,['5']=0x06,
+    ['6']=0x07,['7']=0x08,['8']=0x09,['9']=0x0A,
+    f1=0x3B,f2=0x3C,f3=0x3D,f4=0x3E,f5=0x3F,f6=0x40,f7=0x41,f8=0x42,
+    f9=0x43,f10=0x44,f11=0x57,f12=0x58,
+    space=0x39,enter=0x1C,tab=0x0F,backspace=0x0E,escape=0x01,
+    minus=0x0C,equals=0x0D,lbracket=0x1A,rbracket=0x1B,backslash=0x2B,
+    semicolon=0x27,apostrophe=0x28,grave=0x29,comma=0x33,period=0x34,
+    slash=0x35,
+}
+local DIK_MODS = {
+    shift = { [0x2A]=true, [0x36]=true },  -- lshift / rshift
+    ctrl  = { [0x1D]=true, [0x9D]=true },  -- lctrl / rctrl
+    alt   = { [0x38]=true, [0xB8]=true },  -- lmenu / rmenu
+}
+local focus_mods = { shift = false, ctrl = false, alt = false }
+local function parse_hotkey(str)
+    local mods, key = { shift = false, ctrl = false, alt = false }, nil
+    for part in string.gmatch(str or '', '[^+]+') do
+        local p = part:match('^%s*(.-)%s*$'):lower()
+        if DIK_MODS[p] then
+            mods[p] = true
+        else
+            key = DIK_KEYS[p]
+        end
+    end
+    return mods, key
+end
+if plat.on_key then
+    plat.on_key(function(dik, down, _flags, _blocked)
+        if DIK_MODS.shift[dik] then focus_mods.shift = down; return end
+        if DIK_MODS.ctrl[dik] then focus_mods.ctrl = down; return end
+        if DIK_MODS.alt[dik] then focus_mods.alt = down; return end
+        if not down then return end -- presses only
+        if not settings.chat_space_focus or chat_focus_windows <= 0 then
+            return
+        end
+        local mods, key = parse_hotkey(settings.chat_focus_hotkey)
+        if not key or dik ~= key then return end
+        if mods.shift ~= focus_mods.shift or
+           mods.ctrl ~= focus_mods.ctrl or
+           mods.alt ~= focus_mods.alt then
+            return
+        end
+        sse_broadcast('chatfocus', '{}')
+        return true -- the client never sees it — its chat line stays closed
+    end)
+end
 
 -- spawn the overlay shell. fab=true launches the collapsed floating
 -- button (bundled exe only — no Electron fallback, it's too heavy to
@@ -2574,6 +3181,7 @@ local function session_start()
         start_server()
     end
     reset_state()
+    pcall(load_chat_log) -- restore the persisted log for this session
 end
 
 -- the fab only exists while a character is in the world — spawn it on

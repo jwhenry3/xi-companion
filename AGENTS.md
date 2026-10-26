@@ -57,12 +57,30 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `Cache-Control: no-cache` on HTML. `//xicompanion` commands: `open`, `overlay`,
   `fab`, `start`, `stop`, `status`, `port`, `refresh`, `swap` (scanner commands),
   `equip <set>`. **Chat**: an `incoming chunk` handler parses chat packets
-  0x017 (mode @0x04 → channel via the res/chat.lua ids, sender char[0xF]
-  @0x08, message @0x17) into a 500-msg ring buffer streamed as SSE `chat`
-  events. `GET /api/chat?after=<seq>` = history; `POST /api/chat`
-  `{channel,text,to?}` sends via `input /<cmd>` — most channels echo back
+  0x017 (mode @0x04 → channel via the res/chat.lua ids — say/shout/tell/
+  party/linkshell/emote/yell/linkshell2/unity/assistj/assiste + system for
+  modes 6/7/12 — with unmapped modes falling back to `system` since 0x017
+  is always chat-log text; sender char[0xF] @0x08, message @0x17) into
+  per-thread buffers streamed as SSE `chat`
+  events. A second capture is **`incoming text`** — the client's rendered
+  log-line stream, which covers everything the log shows including
+  combat text, system lines, and every addon/plugin `add_to_chat`:
+  rendered packet modes (res/chat.lua incoming∪outgoing columns) are
+  skipped as already-captured, `blocked` lines and our own
+  `[xicompanion]` prefix are skipped, battle color ids (the Font-Colors
+  combat set + every numeric `res.action_messages` `color`) → `battle`,
+  mode 121 → `system`, everything else → `echo`. Lines containing
+  'learn' get `kind='learn'` for the ★ flag. `GET /api/chat?after=<seq>`
+  = history; `POST /api/chat`
+  `{channel,text,to?}` sends via `input /<cmd>` (`/say`, `/shout`,
+  `/yell`, `/emote`, `/party`, `/linkshell`, `/linkshell2`, `/unity`,
+  `/tell`) — most channels echo back
   as packets (no optimistic append), sent tells get a local `self` echo
-  since they don't echo. Assist channels (modes 34/35) are read-only.
+  since they don't echo. System/battle/echo/assist channels are
+  read-only. `GET|PUT /api/chat/channels` persists player-defined
+  filter channels (`settings.chat_custom_channels` — `{name,channels[]}`
+  merged-view metadata; membership resolved client-side). `json_decode`
+  is a byte-walk JSON parser for structured route bodies.
 - `swapui.lua` — headless GearSwap profile scanner powering `//xicompanion equip`,
   `swap list/add/remove/scan`. No UI.
 - `macros.lua` — FFXI macro file r/w under `<ffxi>/USER/<content id>/`:
@@ -169,11 +187,28 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   done/current/not-started, live RoE progress bars, and a detail pane
   with the DAT descriptions and mission stage names. Untouched entries
   are hidden unless "show all" or a search is active.
-- `chat/chat.view.tsx` — Discord-style chat: channel sidebar (say, shout,
-  yell, party, linkshell×2, unity, emote, read-only assist), tell `peer`
-  threads as DMs under DIRECT MESSAGES, grouped message list with
+- `chat/chat.view.tsx` — Discord-style chat: pinned `≡ all` row (every
+  channel + DM, view-only unread-wise), sidebar grouped ACTIVE
+  (channels with messages, or the selected one) / OTHER
+  (empty channels, collapsed behind an expandable header) / CUSTOM
+  (player-defined filter channels, `custom:<name>` thread keys — create/
+  edit via the `+` dialog, persisted addon-side through
+  `/api/chat/channels`) / tell `peer` threads as DIRECT MESSAGES.
+  Channels: say, shout, yell, emote, party, linkshell×2, unity, battle
+  (combat text incl. rendered 0x028/0x029 lines), system, echo
+  (other addons/plugins/`add_to_chat` output), assist jp/en —
+  system/battle/echo/assist are read-only (no composer). In
+  `all`/`custom:` views the composer gets a send-to `<select>` of the
+  sendable channels. `kind='learn'` messages render highlighted and
+  badge their channel row with ★ via `chatAlerts`; unread+alerts count
+  toward every thread a message feeds (`chatThreadsFor` — own thread +
+  matching custom channels). Header search filters the pane — the
+  channel/all toggle switches between the current thread and every
+  channel+DM, with `<mark>` hit highlighting and per-row channel chips
+  that jump to the source thread. Grouped message list with
   per-sender hues + autoscroll-on-stick, composer posts via
-  `POST /api/chat`. `AddonApi` holds `chat`/`activeChat`/`chatUnread`
+  `POST /api/chat`. `AddonApi` holds `chat`/`activeChat`/`chatUnread`/
+  `chatAlerts`/`chatCustom`
   signals (unread badges in the sidebar and on the Chat nav link).
   Incoming 0x017 packets are parsed by a pcall'd `incoming chunk`
   handler; packet text goes through a **byte-walker** (`sanitize_chat`)

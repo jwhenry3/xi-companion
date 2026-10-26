@@ -115,7 +115,8 @@ export interface ChatMessage {
   seq: number;
   /** per-addon-load marker — changes on reload so clients resync */
   boot?: number;
-  /** channel key: say|shout|yell|party|linkshell|linkshell2|unity|emote|assist|tell */
+  /** channel key: say|shout|yell|emote|party|linkshell|linkshell2|unity|
+   *  battle|system|echo|assistj|assiste|tell */
   channel: string;
   /** sender name (for inbound tells this is the peer) */
   sender?: string;
@@ -126,12 +127,35 @@ export interface ChatMessage {
   ts?: number;
   /** sent via this UI (server-side local echo — tells only) */
   self?: boolean;
+  /** flagged classification, e.g. 'learn' for spell/ability learning
+   *  notices — renders highlighted and badges the channel row */
+  kind?: string;
+  /** capture mode the line arrived at — packet mode for 0x017 traffic,
+   *  display-mode (color id) for incoming-text lines; surfaced on
+   *  timestamp hover for classification debugging */
+  mode?: number;
+  /** replayed from the persisted on-disk log (data/chat_log.lua) —
+   *  historical content: no unread badges */
+  restored?: boolean;
+  /** sender's zone — populated on yells (0x017 Zone field), where it
+   *  answers "where is this person?" */
+  zone?: string;
+  /** control row, not a message: a thread was cleared — drop its
+   *  messages client-side */
+  cleared?: string;
 }
 
 export interface ChatHistory {
   seq: number;
   boot?: number;
   messages: ChatMessage[];
+}
+
+/** player-defined filter channel — a named set of source channels
+ *  merged into one view; persisted addon-side via /api/chat/channels */
+export interface ChatCustomChannel {
+  name: string;
+  channels: string[];
 }
 
 // ---------- journal (quests / missions / records of eminence) ----------

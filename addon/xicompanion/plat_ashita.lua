@@ -449,6 +449,8 @@ function P.on(name, fn)
         ev = 'packet_out'
     elseif name == 'addon command' then
         ev = 'command'
+    elseif name == 'incoming text' then
+        ev = 'text_in'
     elseif name == 'prerender' or name == 'time change' then
         ev = 'd3d_present'
     else
@@ -468,6 +470,10 @@ function P.on(name, fn)
                 e.blocked = true
                 fn(w[2], unpack(w, 3))
             end
+        elseif ev == 'text_in' then
+            -- normalize to Windower's (original, modified, original_mode,
+            -- modified_mode, blocked) — ashita has no separate modified slot
+            fn(e.message, e.message, e.mode, e.mode, e.blocked)
         else
             fn(e)
         end
@@ -790,5 +796,9 @@ package.preload['resources'] = function()
 
     return res
 end
+
+-- no keyboard hook yet — Ashita's 'key' event isn't
+-- signature-normalized onto Windower's (dik, down, flags, blocked)
+function P.on_key(_fn) return nil end
 
 return P

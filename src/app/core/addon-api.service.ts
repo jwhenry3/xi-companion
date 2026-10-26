@@ -8,6 +8,7 @@ import type {
   MacroEntry,
   ChatMessage,
   ChatHistory,
+  ChatCustomChannel,
   JournalState,
   JournalNames,
   ItemMeta,
@@ -235,6 +236,9 @@ export class AddonApi {
         case 'macrosel':
           this.macroSel.value = JSON.parse(d);
           break;
+        case 'chatfocus':
+          this.chatFocus.value = this.chatFocus.value + 1;
+          break;
         // 'ping' — just the lastEventAt bump handled by the caller
       }
     } catch {
@@ -251,6 +255,7 @@ export class AddonApi {
       // fires on every (re)connect — resyncs after an addon reload even
       // when no chat arrived while we were away
       void this.refreshChat();
+      void this.refreshChatChannels();
       void this.refreshJournal();
       void this.refreshRecasts();
       void this.refreshMap();
@@ -415,6 +420,10 @@ export class AddonApi {
   readonly activeChat = signal('party');
   /** unread counts per thread key */
   readonly chatUnread = signal<Record<string, number>>({});
+  /** unread flagged (kind) messages per thread — the sidebar ★ badge */
+  readonly chatAlerts = signal<Record<string, number>>({});
+  /** player-defined filter channels (custom:<name> thread keys) */
+  readonly chatCustom = signal<ChatCustomChannel[]>([]);
 
   private chatSeq = 0;
   private chatBoot = 0;
@@ -422,6 +431,35 @@ export class AddonApi {
   /** thread a message belongs to — tells are DMs keyed by peer */
   chatThread(m: ChatMessage): string {
     return m.channel === 'tell' ? `tell:${m.peer ?? m.sender ?? ''}` : m.channel;
+  }
+
+  /** every thread a message feeds: its own channel/DM plus any custom
+   *  channel listing that channel. ('all' is view-only, never badges) */
+  chatThreadsFor(m: ChatMessage): string[] {
+    const out = [this.chatThread(m)];
+    for (const c of this.chatCustom.value) {
+      if (c.channels.includes(m.channel)) out.push(`custom:${c.name}`);
+    }
+    return out;
+  }
+
+  private localSeq = 0;
+
+  /** append a local-only line (composer '//echo' — windower console
+   *  output never enters the game log). Negative seq keeps it clear of
+   *  the server's seq ordering and the ingest dedupe. */
+  injectLocal(channel: string, text: string) {
+    const m: ChatMessage = {
+      seq: --this.localSeq,
+      boot: this.chatBoot,
+      channel,
+      text,
+      self: true,
+      ts: Math.floor(Date.now() / 1000),
+    };
+    const log = [...this.chat.value, m];
+    if (log.length > 800) log.splice(0, log.length - 800);
+    this.chat.value = log;
   }
 
   private ingestChat(m: ChatMessage) {
@@ -433,18 +471,41 @@ export class AddonApi {
       this.chatSeq = 0;
       this.chat.value = [];
       this.chatUnread.value = {};
+      this.chatAlerts.value = {};
     }
     if (m.seq <= this.chatSeq) return; // SSE + catch-up fetch can race
     this.chatSeq = m.seq;
+    if (m.cleared) {
+      if (m.cleared === '*') {
+        this.chat.value = [];
+        this.chatUnread.value = {};
+        this.chatAlerts.value = {};
+      } else {
+        this.dropChatThread(m.cleared);
+      }
+      return;
+    }
     const log = [...this.chat.value, m];
     if (log.length > 800) log.splice(0, log.length - 800);
     this.chat.value = log;
-    const thread = this.chatThread(m);
-    if (!m.self && thread !== this.activeChat.value) {
-      this.chatUnread.value = {
-        ...this.chatUnread.value,
-        [thread]: (this.chatUnread.value[thread] ?? 0) + 1,
-      };
+    // persisted history replays quietly — badges belong to live traffic
+    if (m.restored) return;
+    for (const thread of this.chatThreadsFor(m)) {
+      if (thread === this.activeChat.value) continue;
+      if (!m.self) {
+        this.chatUnread.value = {
+          ...this.chatUnread.value,
+          [thread]: (this.chatUnread.value[thread] ?? 0) + 1,
+        };
+      }
+      // flagged messages badge even when `self` — your own blue-magic
+      // learn notice is exactly what the alert is for
+      if (m.kind) {
+        this.chatAlerts.value = {
+          ...this.chatAlerts.value,
+          [thread]: (this.chatAlerts.value[thread] ?? 0) + 1,
+        };
+      }
     }
   }
 
@@ -457,16 +518,36 @@ export class AddonApi {
       this.chatSeq = 0;
       this.chat.value = [];
       this.chatUnread.value = {};
+      this.chatAlerts.value = {};
       h = await this.req<ChatHistory>('/api/chat?after=0');
     }
     for (const m of h.messages) this.ingestChat(m);
   }
 
-  /** clear the unread badge for a thread */
+  /** clear the unread + alert badges for a thread */
   markChatRead(thread: string) {
-    if (!this.chatUnread.value[thread]) return;
-    const { [thread]: _, ...rest } = this.chatUnread.value;
-    this.chatUnread.value = rest;
+    const { [thread]: _u, ...restUnread } = this.chatUnread.value;
+    this.chatUnread.value = restUnread;
+    const { [thread]: _a, ...restAlerts } = this.chatAlerts.value;
+    this.chatAlerts.value = restAlerts;
+  }
+
+  /** wipe a thread's messages + badges locally (driven by the
+   *  `cleared` control row so every window stays in sync) */
+  private dropChatThread(thread: string) {
+    this.chat.value = this.chat.value.filter(
+      (m) => this.chatThread(m) !== thread,
+    );
+    this.markChatRead(thread);
+  }
+
+  /** clear a channel/DM's history — addon-side and in every window */
+  async clearChat(thread: string) {
+    await this.req<{ ok: boolean }>('/api/chat/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread }),
+    });
   }
 
   /** send a chat message as if typed into the game's chat line */
@@ -477,6 +558,42 @@ export class AddonApi {
       body: JSON.stringify({ channel, text, to }),
     });
   }
+
+  /** pull the player's custom filter channels (addon-persisted) */
+  async refreshChatChannels() {
+    const r = await this.req<{ channels?: ChatCustomChannel[] }>(
+      '/api/chat/channels',
+    );
+    this.chatCustom.value = r.channels ?? [];
+  }
+
+  /** replace the whole custom-channel set (create/edit/delete all
+   *  funnel through one write) */
+  async saveChatChannels(list: ChatCustomChannel[]) {
+    const r = await this.req<{ channels?: ChatCustomChannel[] }>(
+      '/api/chat/channels',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channels: list }),
+      },
+    );
+    this.chatCustom.value = r.channels ?? list;
+  }
+
+  /** mount count for the spacebar→chat-focus steal — the addon only
+   *  intercepts the key while at least one chat view is mounted */
+  async chatFocusWindow(open: boolean) {
+    await this.req<{ ok: boolean }>('/api/chatfocus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ open }),
+    });
+  }
+
+  /** bumped by the addon's 'chatfocus' SSE event (spacebar steal) —
+   *  chat views watch it to raise + focus the composer */
+  readonly chatFocus = signal(0);
 
   // ---------- journal (quests / missions / RoE) ----------
 
@@ -614,11 +731,11 @@ export class AddonApi {
   }
 
   /** persisted addon settings (data/settings.xml) — flat scalar keys */
-  settingsGet(): Promise<Record<string, number | boolean>> {
-    return this.req<Record<string, number | boolean>>('/api/settings');
+  settingsGet(): Promise<Record<string, number | boolean | string>> {
+    return this.req<Record<string, number | boolean | string>>('/api/settings');
   }
 
-  async settingsSave(patch: Record<string, number | boolean>) {
+  async settingsSave(patch: Record<string, number | boolean | string>) {
     await this.req<{ ok: boolean }>('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

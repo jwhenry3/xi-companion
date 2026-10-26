@@ -208,6 +208,15 @@ html.light {
 ::-webkit-scrollbar-thumb:hover {
   background: #64748b;
 }
+
+/* interactive elements read as clickable — buttons don't get the
+   pointer cursor by default */
+button, [role='button'], select, input[type='checkbox'],
+input[type='radio'], summary, a {
+  cursor: pointer;
+}
+button:disabled { cursor: not-allowed; }
+
 html.light {
   scrollbar-color: #94a3b8 transparent;
 }

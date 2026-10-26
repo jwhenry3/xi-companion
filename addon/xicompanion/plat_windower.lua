@@ -52,4 +52,8 @@ P.add_to_chat  = windower.add_to_chat
 
 P.on = windower.register_event
 
+-- keyboard hook — fn(dik, down, flags, blocked); return true to
+-- block the key before the client sees it
+P.on_key = function(fn) return P.on('keyboard', fn) end
+
 return P

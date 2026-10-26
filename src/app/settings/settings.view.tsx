@@ -31,7 +31,7 @@ const WIN_THEME_ROUTES: [route: string, label: string][] = [
 @Component()
 export class SettingsView extends View implements OnInit, OnDestroy {
   private api = inject(AddonApi);
-  private settings = signal<Record<string, number | boolean> | null>(null);
+  private settings = signal<Record<string, number | boolean | string> | null>(null);
   private err = signal<string | null>(null);
   private saved = signal('');
   // position editors — filled once when the shell's geom snapshot lands
@@ -93,7 +93,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
     }, 1600);
   }
 
-  private async save(patch: Record<string, number | boolean>) {
+  private async save(patch: Record<string, number | boolean | string>) {
     try {
       await this.api.settingsSave(patch);
       this.settings.value = { ...(this.settings.value ?? {}), ...patch };
@@ -113,6 +113,23 @@ export class SettingsView extends View implements OnInit, OnDestroy {
           onChange={(e) => void this.save({ [key]: e.currentTarget.checked })}
         />
         {label}
+        {hint && <span class="text-[10px] text-slate-500">{hint}</span>}
+      </label>
+    );
+  }
+
+  private strRow(key: string, label: string, hint?: string) {
+    const s = this.settings.value ?? {};
+    return (
+      <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
+        <span class="w-44 shrink-0">{label}</span>
+        <Input
+          class="h-6 w-32 px-2 font-mono text-xs"
+          value={String(s[key] ?? '')}
+          onChange={(e) =>
+            void this.save({ [key]: e.currentTarget.value })
+          }
+        />
         {hint && <span class="text-[10px] text-slate-500">{hint}</span>}
       </label>
     );
@@ -255,6 +272,16 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                   {this.numRow('poll_interval', 'poll interval (s)')}
                   {this.numRow('chat_history', 'chat history per thread')}
                   {this.numRow('chat_tell_threads', 'tell threads kept')}
+                  {this.boolRow(
+                    'chat_space_focus',
+                    'hotkey opens chat',
+                    'steals the combo while a chat window is open',
+                  )}
+                  {this.strRow(
+                    'chat_focus_hotkey',
+                    'chat hotkey',
+                    'e.g. shift+space — mods: shift/ctrl/alt',
+                  )}
                 </>,
               )}
               {host.inShell() &&

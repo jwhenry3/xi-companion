@@ -119,6 +119,7 @@ const (
 	swShowNA      = 8 // show without activating — restores must not steal fg
 	swRestore     = 9
 	hwndTopmost   = ^uintptr(0) // (HWND)-1
+	hwndNoTopmost = ^uintptr(1) // (HWND)-2
 	swpNoSize     = 0x0001
 	swpNoMove     = 0x0002
 	swpNoZOrder   = 0x0004
@@ -252,6 +253,78 @@ func ourHwnd(hwnd uintptr) bool {
 		}
 	}
 	return false
+}
+
+// focus-topmost: the windows hold always-on-top only while the game (or
+// one of our own windows — interacting with the overlay counts) is
+// foreground; a foreign app getting focus drops every window back to
+// normal z-order so it can't float over other apps. A ~300ms poll flips
+// each tracked hwnd's TOPMOST bit to match — spawned windows pick the
+// current state up within a tick of being born.
+var ffxiHwnd atomic.Uintptr
+
+// isFFXIProcess: hwnd thuộc pol.exe? — so bằng process image thay vì hwnd
+// tuyệt đối: FFXiClass có thể resolve sang top-level window khác của pol
+// (boot frame vs game frame) khiến `fg == ffxi` trật dù game đang focus.
+func isFFXIProcess(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	var pid uint32
+	pGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return false
+	}
+	h, _, _ := pOpenProcess.Call(0x1000 /* QUERY_LIMITED_INFORMATION */, 0, uintptr(pid))
+	if h == 0 {
+		return false
+	}
+	defer pCloseHandle.Call(h)
+	var buf [260]uint16
+	n := uint32(len(buf))
+	if r, _, _ := pQueryFullProcessImageName.Call(h, 0,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n))); r == 0 {
+		return false
+	}
+	return strings.EqualFold(filepath.Base(syscall.UTF16ToString(buf[:n])), "pol.exe")
+}
+
+func applyFocusTopmost(hwnd uintptr, want bool) {
+	if hwnd == 0 {
+		return
+	}
+	cur, _, _ := pGetWindowLongPtr.Call(hwnd, uintptr(gwlExStyle))
+	if (cur&wsExTopmost != 0) == want {
+		return // already in the desired state
+	}
+	pos := hwndNoTopmost
+	if want {
+		pos = hwndTopmost
+	}
+	pSetWindowPos.Call(hwnd, pos, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoActivate)
+}
+
+func focusTopmostLoop() {
+	for range time.Tick(300 * time.Millisecond) {
+		fg, _, _ := pGetForegroundWindow.Call()
+		ffxi := ffxiHwnd.Load()
+		if r, _, _ := pIsWindow.Call(ffxi); ffxi == 0 || r == 0 {
+			ffxi = findFFXIWindow()
+			ffxiHwnd.Store(ffxi)
+		}
+		want := fg != 0 && (fg == ffxi || ourHwnd(fg) || isFFXIProcess(fg))
+		applyFocusTopmost(windowHwnd.Load(), want)
+		applyFocusTopmost(tooltipHwnd.Load(), want)
+		applyFocusTopmost(fabMenuHwnd.Load(), want)
+		spawnMu.Lock()
+		for _, sw := range spawned {
+			if sw.NativeWindow() != nil {
+				applyFocusTopmost(hwndOf(sw), want)
+			}
+		}
+		spawnMu.Unlock()
+	}
 }
 
 // refocusGame hands keyboard focus back to FFXI after an overlay
@@ -2358,6 +2431,7 @@ func main() {
 
 	go resolveHwnd(win, &windowHwnd)
 	go trackGeometry()
+	go focusTopmostLoop()
 	navigateWhenReady(win, func() string {
 		addonTarget = probeTarget()
 		// restore windows the user left open — same persistence path as
