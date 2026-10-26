@@ -175,6 +175,13 @@ export class TooltipView extends View {
     }
   }
 
+  private copy(cmd: string) {
+    navigator.clipboard
+      .writeText(cmd)
+      .then(() => this.note(`copied ${cmd}`))
+      .catch(() => this.note('copy failed'));
+  }
+
   /** blue-text stat line → dim label + brighter, spaced-out value tokens
    *  (matches the Type/Level dl styling); prose lines render plain */
   private descLine(line: string) {
@@ -223,6 +230,19 @@ export class TooltipView extends View {
     const canUnequip = !!it?.equipped && !!it?.equip_slot;
     const canUse = meta?.category === 'Usable';
     const canDrop = it != null && cur?.bag.id === 0 && !it.equipped && !meta?.ex;
+    // macro-ready lines — the same strings the equip/use buttons fire,
+    // one per valid slot so multi-slot items (ear/ring/main+sub) each
+    // get their own line; click copies (pinned windows only — peek is
+    // click-through)
+    const itemName = meta?.name ?? p.name;
+    const macroCmds: string[] = itemName
+      ? [
+          ...equipOpts.map(
+            (s) => `/equip ${equipCmdSlot(s)} ${cmdStr(itemName)}`,
+          ),
+          ...(canUse ? [`/item ${cmdStr(itemName)} <me>`] : []),
+        ]
+      : [];
     const elsewhere =
       it && cur
         ? (this.api.state.value?.bags ?? []).flatMap((b) =>
@@ -396,6 +416,20 @@ export class TooltipView extends View {
                   drop
                 </Button>
               )}
+            </div>
+          )}
+          {macroCmds.length > 0 && (
+            <div class="mt-2 space-y-0.5 border-t border-slate-800 pt-1.5">
+              {macroCmds.map((cmd) => (
+                <button
+                  key={cmd}
+                  class="block w-full truncate rounded px-1 py-0.5 text-left font-mono text-[10px] text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                  title={pinned ? 'click to copy' : cmd}
+                  onClick={() => this.copy(cmd)}
+                >
+                  {cmd}
+                </button>
+              ))}
             </div>
           )}
           {this.flash.value && (

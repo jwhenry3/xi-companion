@@ -224,15 +224,40 @@ icon_extractor.ffxi_path = ffxi_path
 -- A mix of 32 bit color uncompressed and *color palette-indexed bitmaps
 -- Offsets defined specifically for status icons
 -- * some maps use this format as well, but at 512 x 512
+-- resources/strings.lua wraps gsub + byte/char-aware helpers — a
+-- binary '(...)\x80' pattern silently matched nothing, and char()
+-- emits multi-byte sequences for high bytes. Only sub() (proven
+-- byte-safe) and literal bytes are used here. Returns the data plus
+-- a hit count so callers can verify the walk ran.
+local function bump_alpha(data)
+    local parts = {}
+    local hits = 0
+    for i = 1, #data, 4 do
+        local a = sub(data, i + 3, i + 3)
+        parts[#parts + 1] = sub(data, i, i + 2)
+        if a == '\x80' then
+            parts[#parts + 1] = '\xFF'
+            hits = hits + 1
+        else
+            parts[#parts + 1] = a
+        end
+    end
+    return table.concat(parts), hits
+end
+
 function convert_buff_icon_to_bmp(data)
     local length = byte(data, 0x282) -- The length is technically sub(0x281, 0x284), but only 0x282 is unique
 
     if length == 16 then -- uncompressed
-        data = sub(data, 0x2BE, 0x12BD)
-        data = string.gsub(data, '(...)\x80', '%1\xFF') -- All of the alpha bytes are currently 0 or 0x80.
+        local hits
+        data, hits = bump_alpha(sub(data, 0x2BE, 0x12BD))
+        -- reserved bytes @7 in the BMP file header mark that the alpha
+        -- walk ran (and how many pixels it touched) for live debugging
+        if hits and hits > 0 then
+            _G.__xic_alpha_hits = hits
+        end
     elseif length == 08 then -- color table
-        local color_palette = sub(data, 0x2BE, 0x6BD)
-        color_palette = string.gsub(color_palette, '(...)\x80', '%1\xFF')
+        local color_palette = (bump_alpha(sub(data, 0x2BE, 0x6BD)))
     
         local n = 0x0
         for i = 1, 0x400, 0x4 do
@@ -242,7 +267,7 @@ function convert_buff_icon_to_bmp(data)
     
         data = string.gsub(sub(data, 0x6BE, 0xABD), '(.)', function(i) return color_lookup[i] end)
     elseif length == 04 then -- XIVIEW
-        data = sub(data, 0x2BE, 0x12BD)
+        data = bump_alpha(sub(data, 0x2BE, 0x12BD))
     end
     
     return header .. data

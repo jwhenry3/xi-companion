@@ -7,7 +7,7 @@ import type { JournalNames, JournalState } from '../core/types';
 
 export type Status = 'done' | 'current' | 'open';
 
-export type TrackKind = 'mission' | 'quest' | 'roe' | 'valor';
+export type TrackKind = 'mission' | 'quest' | 'roe';
 
 /** identity of a journal entry for tracker visibility — matches the
  *  'kind:key:id' strings the addon keeps in state.untracked */
@@ -101,10 +101,6 @@ export function hasActivity(
   kind: TrackKind,
   key: string,
 ): boolean {
-  if (kind === 'valor') {
-    // an active (or finished-but-still-registered) regime counts
-    return j?.valor != null;
-  }
   if (kind === 'roe') {
     const done = new Set(j?.roe?.done ?? []);
     return (j?.roe?.active ?? []).some((a) => !done.has(a.id));

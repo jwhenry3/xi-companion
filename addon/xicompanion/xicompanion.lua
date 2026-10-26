@@ -63,6 +63,12 @@ local defaults = {
     cooldowns = true,
     -- auto-launch the detached minimap panel; //xicompanion minimap off
     minimap = true,
+    -- auto-launch the party vitals panel; //xicompanion party off
+    party = true,
+    -- auto-launch the target HP/cast bar; //xicompanion target off
+    target = true,
+    -- auto-launch the skillchain/burst tracker; //xicompanion skillchain off
+    skillchain = true,
     poll_interval = 1.5,
     -- messages kept per chat thread (each channel + each tell peer);
     -- served on reconnect so a reopened UI still has history
@@ -995,11 +1001,6 @@ do
             player_name = player_name,
             log = log,
             log_err = log_err,
-            zones = res.zones,
-            mob_name = function(index)
-                local ok, mob = pcall(plat.ffxi.get_mob_by_index, index)
-                return ok and mob and mob.name or nil
-            end,
         })
     else
         log_err('journal.lua failed to load: ' .. tostring(mod))
@@ -1009,24 +1010,15 @@ end
 -- forward-declared so the packet handlers below close over it; the
 -- module itself loads later (after logged_in exists) in the recasts do
 local map = nil
+local party = nil
 
 plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not journal then return end
-    if id == 0x056 or id == 0x111 or id == 0x112
-        or id == 0x05C or id == 0x032 or id == 0x033 or id == 0x034
-        or id == 0x029 or id == 0x02D or id == 0x113 then
+    if id == 0x056 or id == 0x111 or id == 0x112 then
         -- same rule as chat: a bad packet must never kill the pump
         local ok, err = pcall(journal.handle_packet, id, data)
         if not ok then log_err('journal: ' .. tostring(err)) end
     end
-end)
-
--- outgoing dialogue choices (0x05B) carry the manual/tome page selection
--- that marks a training regime active
-plat.on('outgoing chunk', function(id, data, modified, injected, blocked)
-    if injected or blocked or not journal or id ~= 0x05B then return end
-    local ok, err = pcall(journal.handle_outgoing, id, data)
-    if not ok then log_err('journal-out: ' .. tostring(err)) end
 end)
 
 -- widescan traffic: 0x0F4 entries, 0x0F5 track updates, 0x0F6 scan marks;
@@ -1041,9 +1033,33 @@ end)
 
 -- outgoing 0x0F5 records which widescan target the player tracks
 plat.on('outgoing chunk', function(id, data, modified, injected, blocked)
-    if injected or blocked or not map or id ~= 0x0F5 then return end
-    local ok, err = pcall(map.handle_outgoing, id, data)
-    if not ok then log_err('map-out: ' .. tostring(err)) end
+    if injected or blocked then
+        -- GearSwap fires injected 0x01As for /ma — they're still OUR
+        -- casts; only the arm needs to see them
+        if party and id == 0x01A then
+            local ok3, err3 = pcall(party.handle_outgoing, id, data)
+            if not ok3 then log_err('party-out: ' .. tostring(err3)) end
+        end
+        return
+    end
+    if map and id == 0x0F5 then
+        local ok, err = pcall(map.handle_outgoing, id, data)
+        if not ok then log_err('map-out: ' .. tostring(err)) end
+    end
+    if party and id == 0x01A then
+        local ok2, err2 = pcall(party.handle_outgoing, id, data)
+        if not ok2 then log_err('party-out: ' .. tostring(err2)) end
+    end
+end)
+
+-- party buffs (0x076), action packets (0x028) for the cast bar, and
+-- entity updates (0x00D/0x00E) that teach the wire-id → index map
+plat.on('incoming chunk', function(id, data, modified, injected, blocked)
+    if injected or blocked or not party then return end
+    if id == 0x076 or id == 0x028 or id == 0x00E or id == 0x00D then
+        local ok, err = pcall(party.handle_incoming, id, data)
+        if not ok then log_err('party: ' .. tostring(err)) end
+    end
 end)
 
 local function serve_static(conn, url_path)
@@ -1304,6 +1320,43 @@ do
     end
 end
 
+-- Party: member vitals/buffs + target + casting tracker for the /party
+-- and /target detached windows. `party` was forward-declared above the
+-- packet handlers — this assigns it.
+do
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'party.lua'))
+    if ok and type(mod) == 'table' then
+        party = mod
+        party.setup({
+            json = json,
+            json_array = json_array,
+            sse_broadcast = sse_broadcast,
+            logged_in = logged_in,
+            res = res,
+            join = join,
+            data_dir = join(plat.addon_path, 'data'),
+        })
+    else
+        log_err('party.lua failed to load: ' .. tostring(mod))
+    end
+end
+
+-- Ability/spell book for the /abilities page — obtainable-vs-learned
+-- lists for the current job plus the command lines to trigger them.
+local abilities = nil
+do
+    local ok, mod = pcall(dofile, join(plat.addon_path, 'abilities.lua'))
+    if ok and type(mod) == 'table' then
+        abilities = mod
+        abilities.setup({
+            res = res,
+            json_array = json_array,
+        })
+    else
+        log_err('abilities.lua failed to load: ' .. tostring(mod))
+    end
+end
+
 -- Map image DATs: zone+map -> client DAT bytes (browser decodes them).
 local mapimg
 do
@@ -1323,6 +1376,53 @@ local function macro_char_dir(char_id)
     end
     local dir = join(join(plat.ffxi_path, 'USER'), char_id)
     return plat.dir_exists(dir) and dir or nil
+end
+
+-- Active-palette tracking: the client writes mcrN.dat when you LEAVE a
+-- palette page (single write on every page flip and book switch), so
+-- the newest-changed file index is the palette just departed — the only
+-- live signal for in-game book/page changes (mcr.sys only updates at
+-- login). macro_watch holds the last-seen stamp per file so each poll
+-- diffs rather than re-stating.
+local macro_sel = {}
+local macro_watch = {}
+
+local function poll_macro_sel()
+    if not logged_in() or not plat.file_mtimes or not macrofs then return end
+    for _, d in ipairs(macrofs.find_char_dirs(plat.ffxi_path)) do
+        local cur = plat.file_mtimes(d.path, 'mcr*.dat')
+        if cur then
+            local prev = macro_watch[d.id]
+            macro_watch[d.id] = cur
+            if prev then
+                local newest
+                for fname, stamp in pairs(cur) do
+                    if prev[fname] ~= stamp then
+                        local idx = fname == 'mcr.dat' and 0
+                            or tonumber(fname:match('^mcr(%d+)%.dat$'))
+                        if idx and (not newest or idx > newest) then
+                            newest = idx
+                        end
+                    end
+                end
+                if newest then
+                    local v = {
+                        b = math.floor(newest / 10) + 1,
+                        p = newest % 10 + 1,
+                    }
+                    local was = macro_sel[d.id]
+                    if not was or was.b ~= v.b or was.p ~= v.p then
+                        macro_sel[d.id] = v
+                        sse_broadcast('macrosel', json.encode(macro_sel))
+                    end
+                end
+            end
+        end
+    end
+end
+
+routes['GET /api/macrosel'] = function(conn)
+    send_json(conn, 200, macro_sel)
 end
 
 routes['GET /api/macros'] = function(conn)
@@ -1355,6 +1455,7 @@ end
 -- client's own minimum delay.
 local MACRO_SWITCH_DELAY = 1.5
 local macro_schedule = coroutine.schedule or function(f) f() end
+local macro_sel_n = 0
 
 -- body: {"char":"<content id>","index":<0-399>,
 --        "macros":[{"name":"x","lines":["/a",...x6]}, ... x20]}
@@ -1514,23 +1615,28 @@ routes['POST /api/macros/run'] = function(conn, req)
     send_json(conn, 200, { ok = true, logged_in = logged_in() })
 end
 
--- Item icons: serve extracted .bmp files; decode the DAT on first request.
--- item_by_id() coroutine.yield()s mid-write, so we drive it in a coroutine.
-routes['GET /api/icon'] = function(conn, req)
+-- Item icons + status icons share the extract-then-serve pipeline:
+-- cached .bmp under data/<subdir>/, decoded from the DAT on first
+-- request. *_by_id() coroutine.yield()s mid-write, so we drive it.
+local function serve_icon(conn, req, subdir, fn_name)
     local id = tonumber(req.query.id)
     if not id or id <= 0 then
         return send_json(conn, 400, { error = 'bad id' })
     end
-    local dir = join(join(plat.addon_path, 'data'), 'icons')
+    local dir = join(join(plat.addon_path, 'data'), subdir)
     local path = dir .. '\\' .. tostring(id) .. '.bmp'
     if not plat.file_exists(path) then
-        local ok_x, icon_extractor = pcall(require, 'icon_extractor')
-        if ok_x and icon_extractor and icon_extractor.item_by_id then
+        -- dofile by path, not require — 'icon_extractor' also exists in
+        -- other addons (equipviewer) and require may resolve theirs,
+        -- which lacks the alpha fixup
+        local ok_x, icon_extractor = pcall(
+            dofile, plat.addon_path .. 'icon_extractor.lua')
+        if ok_x and icon_extractor and icon_extractor[fn_name] then
             if not plat.dir_exists(dir) then
                 pcall(plat.create_dir, dir)
             end
             local co = coroutine.create(function()
-                icon_extractor.item_by_id(id, path)
+                icon_extractor[fn_name](id, path)
             end)
             local ok, err = true, nil
             repeat
@@ -1549,6 +1655,80 @@ routes['GET /api/icon'] = function(conn, req)
     local bmp = f:read('*a')
     f:close()
     send_and_close(conn, 200, bmp, 'image/bmp')
+end
+
+routes['GET /api/icon'] = function(conn, req)
+    serve_icon(conn, req, 'icons', 'item_by_id')
+end
+
+-- menu spell/JA icons — pre-extracted from ROM/280/15.DAT + 324/95.DAT
+-- into data/menuicons/<idx>.bmp by scripts/extract-menuicons.py;
+-- menu_icon_names.lua maps index → "group/name" (e.g. "white/cure").
+routes['GET /api/menuicon'] = function(conn, req)
+    -- ws=<tile> serves one 32x32 tile out of the misc/ws weapon sheet;
+    -- id=<n> a whole menuicon chunk (≥330 = tile in a spabi sheet).
+    -- Decoded lazily from ROM/280/15 + 324/95 by menu_extractor and
+    -- cached under data/menuicons/ — no pre-extracted assets ship.
+    local ws = req.query.ws
+    local id = tonumber(req.query.id)
+    if not ws and not id then
+        return send_json(conn, 400, { error = 'bad id' })
+    end
+    local dir = join(join(plat.addon_path, 'data'), 'menuicons')
+    local path = dir .. '\\' .. (ws and ('ws_' .. ws) or id) .. '.bmp'
+    if not plat.file_exists(path) then
+        local ok_x, menu_extractor = pcall(require, 'menu_extractor')
+        if ok_x and menu_extractor then
+            local ok, err = pcall(function()
+                return ws and menu_extractor.ws(ws, path)
+                    or menu_extractor.by_id(id, path)
+            end)
+            if not ok then
+                return send_json(conn, 500, { error = tostring(err) })
+            end
+            if not err then
+                return send_json(conn, 404, { error = 'no icon' })
+            end
+        end
+    end
+    if not plat.file_exists(path) then
+        return send_json(conn, 404, { error = 'no icon' })
+    end
+    local f = io.open(path, 'rb')
+    if not f then return send_json(conn, 404, { error = 'no icon' }) end
+    local bmp = f:read('*a')
+    f:close()
+    send_and_close(conn, 200, bmp, 'image/bmp')
+end
+
+-- status-effect icons (buffs/debuffs) — ROM/119/57.DAT via buff_by_id.
+-- Ids ≥640 live in the second store (ROM/324/95: Trust faces, SP
+-- abilities, mounts, emotes) — pre-extracted by name under
+-- data/statusicons2/ with statusicons2_map.lua as the id→name map.
+local statusicons2_map
+routes['GET /api/statusicon'] = function(conn, req)
+    local id = tonumber(req.query.id)
+    if id and id >= 640 then
+        if statusicons2_map == nil then
+            local ok, t = pcall(dofile, plat.addon_path .. 'statusicons2_map.lua')
+            statusicons2_map = (ok and type(t) == 'table') and t or {}
+        end
+        local name = statusicons2_map[id]
+        if name then
+            local p = join(join(plat.addon_path, 'data'), 'statusicons2')
+                .. '\\' .. name .. '.bmp'
+            if plat.file_exists(p) then
+                local f = io.open(p, 'rb')
+                if f then
+                    local bmp = f:read('*a')
+                    f:close()
+                    return send_and_close(conn, 200, bmp, 'image/bmp')
+                end
+            end
+        end
+        return send_json(conn, 404, { error = 'no icon' })
+    end
+    serve_icon(conn, req, 'statusicons', 'buff_by_id')
 end
 
 -- full item meta + the client's blue-text description (stats/passives
@@ -1591,6 +1771,10 @@ routes['GET /api/events'] = function(conn)
     if map then
         send_all(conn.sock, 'event: map\ndata: ' .. map.snapshot_json() .. '\n\n')
     end
+    if party then
+        send_all(conn.sock, 'event: party\ndata: ' .. party.snapshot_json() .. '\n\n')
+    end
+    send_all(conn.sock, 'event: macrosel\ndata: ' .. json.encode(macro_sel) .. '\n\n')
 end
 
 -- Chat history: ?after=<seq> returns newer messages across all threads
@@ -1600,6 +1784,16 @@ routes['GET /api/journal'] = function(conn)
         return send_json(conn, 200, { char = nil })
     end
     send_and_close(conn, 200, journal.snapshot_json(), 'application/json; charset=utf-8')
+end
+
+-- force a journal rebroadcast: the tracker pokes this on mount so a
+-- diff-gated flush that fired while its SSE link was down gets re-sent
+routes['POST /api/journal/refresh'] = function(conn)
+    if journal then
+        sse_broadcast('journal', journal.snapshot_json())
+        return send_and_close(conn, 200, journal.snapshot_json(), 'application/json; charset=utf-8')
+    end
+    send_json(conn, 200, { char = nil })
 end
 
 -- Recast timers for the detached cooldowns window — snapshot for new
@@ -1614,6 +1808,36 @@ end
 routes['GET /api/map'] = function(conn)
     local body = map and map.snapshot_json() or '{"on":0}'
     send_and_close(conn, 200, body, 'application/json; charset=utf-8')
+end
+
+-- Party vitals + target/cast for the /party + /target windows — snapshot
+-- for new clients; live updates ride the `party` SSE event.
+routes['GET /api/party'] = function(conn)
+    local body = party and party.snapshot_json() or '{"on":0}'
+    send_and_close(conn, 200, body, 'application/json; charset=utf-8')
+end
+
+-- cast-tracker diagnostics: action packets the handler has seen +
+-- the current cast — for chasing "mob cast bar never shows"
+routes['GET /api/party/dbg'] = function(conn)
+    local body = party and party.dbg_json() or '{"ac":0}'
+    send_and_close(conn, 200, body, 'application/json; charset=utf-8')
+end
+
+-- Skill/spell book for /abilities — recomputed per call (job changes
+-- invalidate everything anyway); a logged-out/nil read reports {on:0}.
+routes['GET /api/abilities'] = function(conn)
+    if not abilities or not logged_in() then
+        return send_and_close(conn, 200, '{"on":0}',
+            'application/json; charset=utf-8')
+    end
+    local ok, list = pcall(abilities.read)
+    if not ok or not list then
+        return send_and_close(conn, 200, '{"on":0}',
+            'application/json; charset=utf-8')
+    end
+    send_and_close(conn, 200, json.encode(list),
+        'application/json; charset=utf-8')
 end
 
 -- Zone map image. User-dropped PNGs take precedence: data/maps/
@@ -1719,7 +1943,7 @@ end
 local SETTABLE = {
     port = 'number', autostart = 'boolean',
     fab = 'boolean', tracker = 'boolean', macrobar = 'boolean',
-    cooldowns = 'boolean',
+    cooldowns = 'boolean', skillchain = 'boolean',
     poll_interval = 'number',
     chat_history = 'number', chat_tell_threads = 'number',
 }
@@ -2048,6 +2272,21 @@ local function pump()
             log_err('map poll: ' .. tostring(err5))
         end
     end
+    if party then
+        local ok6, err6 = pcall(party.poll)
+        if not ok6 then
+            log_err('party poll: ' .. tostring(err6))
+        end
+    end
+    if macrofs then
+        macro_sel_n = macro_sel_n + 1
+        if macro_sel_n % 30 == 0 then -- ~2Hz: the file is 28 bytes
+            local ok7, err7 = pcall(poll_macro_sel)
+            if not ok7 then
+                log_err('macrosel poll: ' .. tostring(err7))
+            end
+        end
+    end
     heartbeat()
 end
 
@@ -2087,7 +2326,7 @@ plat.on('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | start | stop | status | port <n> | refresh | swap | equip <set>')
+        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | start | stop | status | port <n> | refresh | swap | equip <set>')
     elseif cmd == 'open' then
         if server or start_server() then
             plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -2172,6 +2411,54 @@ plat.on('addon command', function(cmd, ...)
         else
             log_err('no overlay found (build with npm run build:overlay)')
         end
+    elseif cmd == 'party' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.party = (sub == 'on')
+            config.save(settings)
+            log('auto-party ' .. (settings.party and 'enabled' or 'disabled'))
+            if settings.party and server and logged_in() then
+                launch_overlay(true, '--spawn /party')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /party') then
+            log('party window launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'target' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.target = (sub == 'on')
+            config.save(settings)
+            log('auto-target ' .. (settings.target and 'enabled' or 'disabled'))
+            if settings.target and server and logged_in() then
+                launch_overlay(true, '--spawn /target')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /target') then
+            log('target window launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'skillchain' or cmd == 'sc' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.skillchain = (sub == 'on')
+            config.save(settings)
+            log('auto-skillchain ' .. (settings.skillchain and 'enabled' or 'disabled'))
+            if settings.skillchain and server and logged_in() then
+                launch_overlay(true, '--spawn /skillchain')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /skillchain') then
+            log('skillchain tracker launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
     elseif cmd == 'start' then
         start_server()
     elseif cmd == 'stop' then
@@ -2250,9 +2537,10 @@ plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked then return end
     if id == 0x00B then
         zoning = true
-        -- zone-out: last zone's widescan list and entity positions are
-        -- stale now, clear them before the new zone's data lands
+        -- zone-out: last zone's widescan list, entity positions, and
+        -- in-flight cast are stale now — clear before new data lands
         if map then pcall(map.reset) end
+        if party then pcall(party.reset) end
     elseif id == 0x00A then
         zoning = false
     end
@@ -2271,6 +2559,7 @@ local function reset_state()
     if journal then pcall(journal.reset) end
     if recasts then pcall(recasts.reset) end
     if map then pcall(map.reset) end
+    if party then pcall(party.reset) end
     if swapui then pcall(swapui.rescan) end
 end
 
@@ -2312,6 +2601,15 @@ local function spawn_fab()
     end
     if settings.minimap then
         launch_overlay(true, '--spawn /minimap')
+    end
+    if settings.party then
+        launch_overlay(true, '--spawn /party')
+    end
+    if settings.target then
+        launch_overlay(true, '--spawn /target')
+    end
+    if settings.skillchain then
+        launch_overlay(true, '--spawn /skillchain')
     end
 end
 

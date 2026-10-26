@@ -5,6 +5,7 @@
 import { Component, View, inject, signal, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
+import { Dropdown } from '../core/dropdown';
 import { host, setTheme, shellGeom, theme, THEMES, getWinTheme, setWinTheme, type Theme } from '../core/host';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -15,6 +16,9 @@ const WIN_THEME_ROUTES: [route: string, label: string][] = [
   ['/macrobar', 'macro bar'],
   ['/cooldowns', 'cooldowns'],
   ['/minimap', 'minimap'],
+  ['/party', 'party'],
+  ['/target', 'target'],
+  ['/skillchain', 'skillchains'],
   ['/', 'inventory'],
   ['/chat', 'chat'],
   ['/journal', 'journal'],
@@ -239,6 +243,8 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                     'minimap',
                     'auto-launch on login',
                   )}
+                  {this.boolRow('party', 'party list', 'auto-launch on login')}
+                  {this.boolRow('target', 'target bar', 'auto-launch on login')}
                 </>,
               )}
               {this.section(
@@ -345,26 +351,23 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                       class="flex items-center gap-2 py-0.5 text-sm text-slate-300"
                     >
                       <span class="w-28 shrink-0">{label}</span>
-                      <select
+                      <Dropdown
                         class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs capitalize text-slate-200"
                         value={this.winThemes.value[route] ?? ''}
-                        onChange={(e) => {
-                          const v = (e.target as HTMLSelectElement)
-                            .value as Theme | '';
-                          setWinTheme(route, v || null);
+                        formatValue={(v) => v || 'default'}
+                        options={[
+                          { value: '', label: 'default' },
+                          ...THEMES,
+                        ]}
+                        onChange={(v) => {
+                          const t = v as Theme | '';
+                          setWinTheme(route, t || null);
                           this.winThemes.value = {
                             ...this.winThemes.value,
-                            [route]: v,
+                            [route]: t,
                           };
                         }}
-                      >
-                        <option value="">default</option>
-                        {THEMES.map((t) => (
-                          <option class="capitalize" value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   ))}
                   <p class="pt-1 text-[10px] text-slate-500">

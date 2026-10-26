@@ -43,15 +43,22 @@ export const GROUP_OPTIONS = [
   },
   {
     section: 'Midcast',
+    // res skill names — GearSwap matches midcast[spell.skill] directly
     values: [
       'midcast',
-      'midcast.Healing',
-      'midcast.Elemental',
-      'midcast.Enfeebling',
-      'midcast.Enhancing',
-      'midcast.Dark',
-      'midcast.Divine',
-      'midcast.BlueMagic',
+      'midcast.Healing Magic',
+      'midcast.Elemental Magic',
+      'midcast.Enfeebling Magic',
+      'midcast.Enhancing Magic',
+      'midcast.Dark Magic',
+      'midcast.Divine Magic',
+      'midcast.Blue Magic',
+      'midcast.Ninjutsu',
+      'midcast.Singing',
+      'midcast.Geomancy',
+      'midcast.Summoning Magic',
+      'midcast.Trust',
+      'midcast.WS',
     ],
   },
   { section: 'Action', values: ['magicburst', 'buff'] },
@@ -170,13 +177,34 @@ export function genSetsBlock(fs: FileSets): string {
   lines.push('    if type(precast) ~= \'function\' then');
   lines.push('        precast = function(spell)');
   lines.push('            local p = sets.precast');
-  lines.push('            if p then equip(p[spell.english] or p) end');
+  lines.push('            if not p then return end');
+  lines.push('            -- WS/JA bind under precast.WS / precast.JA (or by name);');
+  lines.push('            -- everything else falls through to precast[spell name]');
+  lines.push('            if spell.type == \'WeaponSkill\' and p.WS then');
+  lines.push('                equip(p.WS[spell.english] or p.WS)');
+  lines.push('            elseif spell.action_type == \'Ability\' and p.JA then');
+  lines.push('                equip(p.JA[spell.english] or p.JA)');
+  lines.push('            else');
+  lines.push('                equip(p[spell.english] or p)');
+  lines.push('            end');
   lines.push('        end');
   lines.push('    end');
   lines.push('    if type(midcast) ~= \'function\' then');
   lines.push('        midcast = function(spell)');
   lines.push('            local m = sets.midcast');
-  lines.push('            if m then equip(m[spell.english] or m[spell.skill] or m) end');
+  lines.push('            if not m then return end');
+  lines.push('            -- GearSwap fires midcast for weapon skills too — the');
+  lines.push('            -- generic set must not re-equip mid-chain; WS binds are');
+  lines.push('            -- opt-in under midcast.WS / midcast.WS.<name>');
+  lines.push('            if spell.type == \'WeaponSkill\' then');
+  lines.push('                if m.WS then equip(m.WS[spell.english] or m.WS) end');
+  lines.push('                return');
+  lines.push('            end');
+  lines.push('            if spell.action_type ~= \'Magic\' then return end');
+  lines.push('            -- skill lookups accept both res names (\'Healing Magic\')');
+  lines.push('            -- and the short picker paths (\'Healing\', \'BlueMagic\')');
+  lines.push('            local sk = spell.skill and spell.skill:gsub(\' Magic\', \'\'):gsub(\' \', \'\')');
+  lines.push('            equip(m[spell.english] or m[spell.skill] or (sk and m[sk]) or m[spell.type] or m)');
   lines.push('        end');
   lines.push('    end');
   lines.push('    if type(aftercast) ~= \'function\' then');

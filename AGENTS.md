@@ -86,12 +86,6 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   from `pump()` via `journal.flush()`). COP/SOA/ROV/TVR + the add-on
   scenarios have no completion bitfield — `inferred_done` flags let the
   UI treat every record before the current pointer as finished.
-  Training regimes (FoV/GoV) are captured from outgoing `0x05B` dialogue
-  choices at manual/tome NPCs (option `16n+2` = page n, low word; bit 31
-  of the u32 = repeat — read the high word, `0x80000000` is signed in
-  some luas), `0x029`/`0x02D` messages `558/559/643` drive
-  progress/completion/renewal, `0x05C` menu params enrich needs/levels,
-  and `0x113` supplies tabs.
 - `recasts.lua` — ability/spell cooldowns for the detached `/cooldowns`
   panel: polls `windower.ffxi.get_ability_recasts()`/
   `get_spell_recasts()` each `pump()`, rounds remaining to 0.1s so the
@@ -109,9 +103,33 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   tables for all quest areas, mission storylines, and RoE
   objectives/categories. Regenerate with `python
   scripts/extract-journal.py` (reads the local FFXI DATs).
-- `regime_names.lua` — GENERATED (do not edit): FoV/GoV zone →
-  page → {desc, needs, level range} tables. Regenerate with `python
-  scripts/extract-regimes.py` (scrapes bg-wiki).
+- `nm_names.lua` — GENERATED (do not edit): lowercased NM name set for
+  map flagging — the client never reports notorious status (no entity
+  flag, nothing in widescan), so `map.lua` name-matches entities (f&16)
+  and widescan entries (`nm`) against it. Regenerate with `python
+  scripts/extract-nms.py` (bg-wiki Category:Notorious_Monster API).
+- `abilities.lua` + `ja_levels.lua` — the /abilities skill+spell book:
+  learned sets from `get_abilities()`/`get_spells()`, obtainable spells
+  from `res.spells[].levels` (subjob reqs ×2 to main level), JA job/level
+  from `ja_levels.lua` — GENERATED (do not edit) by
+  `scripts/extract-ja-levels.py` (bg-wiki Category:Job_Ability infoboxes:
+  job/level/type/cmd, keyed by lowercased name). `GET /api/abilities`
+  recomputes per call; the view refetches on job change. The view
+  follows the journal layout (SPELLS/ABILITIES sidebar sections,
+  header search + learned-only + target chips, right-hand detail
+  pane): click a row to open its detail — canonical macro line, copy
+  button, use-with-<target> action — or hit ▶ on a learned row to
+  fire `input <prefix> "name" <t|st|stpc|stnpc|me>` directly. Row
+  icons (`ic`, served by `/api/statusicon` from `ROM/119/57.DAT`)
+  mirror the native menus: JAs keep `res.job_abilities[].icon_id`,
+  spells use the element-colored `el*` tiles (`589+element`, avatar
+  faces `s_*` for summons by name), WSs the element-colored `k*`
+  swords (`300+element`, `kht` when elementless) — `icon_id` in res
+  is the *macro palette* icon, not the menu one (and ≥640 ids —
+  storm II ~648 — have no `sts_icon` store anyway). Trust icon_ids
+  cluster by role → `TRUST_ITEM_ICON` maps them to real item icons
+  via `/api/icon` (`iic` field: shield/sword/bow/wand/club/flute),
+  specials keep the sts sphere.
 - `mapimg.lua` + `mapdats.lua` — zone map image resolution.
   `mapdats.lua` is GENERATED (do not edit): zone → map# → file-id table
   built from Windower ResourceExtractor's MapDats.json (vendored at

@@ -13,3 +13,7 @@ overlay.log
 
 # stray overlay builds — shipped exe lives in addon/xicompanion/overlay/
 overlay/wails/*.exe
+nul
+icon_dump/
+# packet/debug dumps
+cast-poll.jsonl

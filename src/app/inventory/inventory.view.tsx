@@ -1,11 +1,12 @@
-import { Component, View, inject, signal, computed } from '@preact-mvc/core';
+import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
+import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { Sparkles } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
 import {
   host,
   detachedMode,
-  tipAnchor,
+  tipAnchorOutside,
   tooltipPinned,
   TooltipRef,
 } from '../core/host';
@@ -23,8 +24,10 @@ function isGear(meta?: ItemMeta) {
   return !!meta && (EQUIP_CATEGORIES.has(meta.category ?? '') || (meta.slots?.length ?? 0) > 0);
 }
 
+const FILTER_KEY = 'xicompanion.inv.filters';
+
 @Component()
-export class InventoryView extends View {
+export class InventoryView extends View implements OnInit, OnDestroy {
   private api = inject(AddonApi);
 
   private q = signal('');
@@ -37,6 +40,47 @@ export class InventoryView extends View {
   private sortKey = signal<'name' | 'level' | 'ilvl' | 'category' | 'subtype'>('name');
   private sortDir = signal<1 | -1>(1);
   private selected = signal<SelectedItem | null>(null);
+  private disposeFx?: () => void;
+
+  onInit() {
+    try {
+      const f = JSON.parse(localStorage.getItem(FILTER_KEY) ?? 'null');
+      if (f) {
+        if (typeof f.q === 'string') this.q.value = f.q;
+        this.gearOnly.value = !!f.gearOnly;
+        this.equippedOnly.value = !!f.equippedOnly;
+        this.augOnly.value = !!f.augOnly;
+        if (typeof f.slotFilter === 'string') this.slotFilter.value = f.slotFilter;
+        if (typeof f.catFilter === 'string') this.catFilter.value = f.catFilter;
+        if (typeof f.bagFilter === 'string') this.bagFilter.value = f.bagFilter;
+        if (typeof f.sortKey === 'string')
+          this.sortKey.value = f.sortKey as typeof this.sortKey.value;
+        this.sortDir.value = f.sortDir === -1 ? -1 : 1;
+      }
+    } catch {
+      // fresh state
+    }
+    this.disposeFx = effect(() => {
+      localStorage.setItem(
+        FILTER_KEY,
+        JSON.stringify({
+          q: this.q.value,
+          gearOnly: this.gearOnly.value,
+          equippedOnly: this.equippedOnly.value,
+          augOnly: this.augOnly.value,
+          slotFilter: this.slotFilter.value,
+          catFilter: this.catFilter.value,
+          bagFilter: this.bagFilter.value,
+          sortKey: this.sortKey.value,
+          sortDir: this.sortDir.value,
+        }),
+      );
+    });
+  }
+
+  onDestroy() {
+    this.disposeFx?.();
+  }
 
   private catalog = computed(() => this.api.state.value?.catalog ?? {});
   private bags = computed(() => this.api.state.value?.bags ?? []);
@@ -176,7 +220,7 @@ export class InventoryView extends View {
       bag: bag.id,
       slot: item.slot,
       id: item.id,
-      ...tipAnchor(el),
+      ...tipAnchorOutside(el),
     });
     return (
       <tr

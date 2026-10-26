@@ -10,6 +10,7 @@ const C = {
   party: '#38bdf8', // sky-400
   ally: '#22d3ee', // cyan-400
   ls: '#fb923c', // orange-400
+  nm: '#fde047', // yellow-300
   mob: '#fb7185', // rose-400
   npc: '#34d399', // emerald-400
   pc: '#a78bfa', // violet-400
@@ -22,21 +23,43 @@ function entColor(e: MapEntity): string {
   if (e.f & 1) return C.party; // social rings first — always friendly
   if (e.f & 2) return C.ally;
   if (e.f & 8) return C.ls;
+  if (e.f & 16) return C.nm;
   if (e.st === 16) return C.mob;
   if (e.f & 4 || e.st === 2) return C.npc;
   if (e.st === 1) return C.pc;
   return C.other;
 }
 
-/** widescan x/y are map-px offsets from the player's map pos; tracked
- *  targets get absolute wx/wy from 0x0F5 updates instead */
+/** widescan blips render at absolute wx/wy — map.lua projects every
+ *  0x0F4 entry (and 0x0F5 track update) through the client's world->map
+ *  transform. x/y are the raw world-yalm deltas and only act as a
+ *  fallback when the Lua-side projection was unavailable */
 const wsX = (w: MapWsEntry, me: { x: number }) => w.wx ?? me.x + w.x;
 const wsY = (w: MapWsEntry, me: { y: number }) => w.wy ?? me.y + w.y;
 
+// height delta (yalms) past which a marker earns an elevation chevron —
+// same-floor slope jitter stays under this
+export const ELEV_DELTA = 3;
+
+/** triangle path centered on the origin in `dot` units: dir -1 points
+ *  up (entity is above the player, apex above `base`), +1 points down */
+const chev = (dir: -1 | 1, base: number, dot: number) =>
+  `M 0 ${dir * (base + 1.15) * dot} L ${0.85 * dot} ${dir * base * dot} L ${
+    -0.85 * dot
+  } ${dir * base * dot} Z`;
+
+/** signed elevation for tooltips: "+12" / "-8" when past the band */
+const elText = (el?: number) =>
+  el != null && Math.abs(el) >= ELEV_DELTA
+    ? `  ${el > 0 ? '+' : ''}${el}y`
+    : '';
+
 export function MapRadar(props: {
   s: MapState | null;
-  /** map-px half-extent centered on the player; omit to fit the map */
+  /** map-px half-extent of the view; omit to fit the whole map */
   radius?: number;
+  /** view center in map px when radius is set (default: the player) */
+  center?: { x: number; y: number };
   /** resolved zone image URL, or null for the grid fallback */
   img?: string | null;
   class?: string;
@@ -56,13 +79,16 @@ export function MapRadar(props: {
   const ms = s.ms ?? 512;
   const me = s.me;
   const r = props.radius;
+  const cx = props.center?.x ?? me.x;
+  const cy = props.center?.y ?? me.y;
   const vb = r
-    ? `${me.x - r} ${me.y - r} ${r * 2} ${r * 2}`
+    ? `${cx - r} ${cy - r} ${r * 2} ${r * 2}`
     : `0 0 ${ms} ${ms}`;
-  // dot/line sizes live in viewBox units so they read consistently at
-  // any zoom — a whole-map fit shows ~512 units, a close radar ~100
+  // dot/line sizes live in viewBox units — proportional to the visible
+  // extent so the rendered pixel size stays constant at every zoom. A
+  // floor in map units (the old Math.max) read oversized when zoomed in
   const unit = (r ? r * 2 : ms) / 220;
-  const dot = Math.max(1.8, unit * 3);
+  const dot = unit * 3;
   // facing: radians, 0 = east, increasing clockwise (same handedness as
   // the y-down map space) — the arrow shape points up, so +90 aligns it
   const deg = ((me.f ?? 0) * 180) / Math.PI + 90;
@@ -98,27 +124,71 @@ export function MapRadar(props: {
             height={dot * 2.2}
             transform={`rotate(45 ${wsX(w, me)} ${wsY(w, me)})`}
             fill="none"
-            stroke={w.tr ? C.me : C.ws}
+            stroke={w.tr ? C.me : w.nm ? C.nm : C.ws}
             stroke-width={unit * 1.2}
           />
-          {w.n && <title>{`${w.n}${w.l > 1 ? `  lv${w.l}` : ''}`}</title>}
+          {/* elevation chevron — only tracked targets (0x0F5) carry el */}
+          {w.el != null && w.el >= ELEV_DELTA && (
+            <path
+              d={chev(-1, 1.75, dot)}
+              transform={`translate(${wsX(w, me)} ${wsY(w, me)})`}
+              fill={w.tr ? C.me : w.nm ? C.nm : C.ws}
+              stroke="#000"
+              stroke-width={unit * 0.5}
+            />
+          )}
+          {w.el != null && w.el <= -ELEV_DELTA && (
+            <path
+              d={chev(1, 1.75, dot)}
+              transform={`translate(${wsX(w, me)} ${wsY(w, me)})`}
+              fill={w.tr ? C.me : w.nm ? C.nm : C.ws}
+              stroke="#000"
+              stroke-width={unit * 0.5}
+            />
+          )}
+          {w.n && (
+            <title>{`${w.n}${w.l > 1 ? `  lv${w.l}` : ''}${elText(w.el)}`}</title>
+          )}
         </g>
       ))}
 
-      {(s.e ?? []).map((e, i) => (
-        <circle
-          key={`e${i}`}
-          cx={e.x}
-          cy={e.y}
-          r={dot * 0.55}
-          fill={entColor(e)}
-          fill-opacity={e.hp === 0 ? 0.35 : 0.95}
-          stroke="#000"
-          stroke-width={unit * 0.8}
-        >
-          <title>{e.n ?? '—'}</title>
-        </circle>
-      ))}
+      {(s.e ?? []).map((e, i) => {
+        const col = entColor(e);
+        return (
+          <g key={`e${i}`}>
+            <circle
+              cx={e.x}
+              cy={e.y}
+              r={dot * 0.55}
+              fill={col}
+              fill-opacity={e.hp === 0 ? 0.35 : 0.95}
+              stroke="#000"
+              stroke-width={unit * 0.8}
+            />
+            {/* ▲ above / ▼ below when the height delta clears the
+                same-floor noise band */}
+            {(e.el ?? 0) >= ELEV_DELTA && (
+              <path
+                d={chev(-1, 0.75, dot)}
+                transform={`translate(${e.x} ${e.y})`}
+                fill={col}
+                stroke="#000"
+                stroke-width={unit * 0.5}
+              />
+            )}
+            {(e.el ?? 0) <= -ELEV_DELTA && (
+              <path
+                d={chev(1, 0.75, dot)}
+                transform={`translate(${e.x} ${e.y})`}
+                fill={col}
+                stroke="#000"
+                stroke-width={unit * 0.5}
+              />
+            )}
+            <title>{`${e.n ?? '—'}${elText(e.el)}`}</title>
+          </g>
+        );
+      })}
 
       {/* player arrow — triangle pointing up, rotated by facing;
           scale(0.65) keeps it readable without covering the dots it

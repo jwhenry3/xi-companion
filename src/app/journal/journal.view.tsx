@@ -9,11 +9,7 @@ import { ChevronDown, ChevronRight, ExternalLink, ListTodo } from 'lucide-preact
 import { AddonApi } from '../core/addon-api.service';
 import { host } from '../core/host';
 import { wikiLink, wikiSearchUrl, type WikiLink } from './wiki';
-import type {
-  JournalNames,
-  JournalNameEntry,
-  JournalValor,
-} from '../core/types';
+import type { JournalNames, JournalNameEntry } from '../core/types';
 import {
   MISSION_ORDER,
   QUEST_ORDER,
@@ -28,7 +24,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
-type Section = { kind: 'mission' | 'quest' | 'roe' | 'valor'; key: string };
+type Section = { kind: 'mission' | 'quest' | 'roe'; key: string };
 
 interface Entry {
   id: number;
@@ -77,6 +73,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
   private roeError = signal<string | null>(null);
   private disposeDeepLink?: () => void;
   private disposeWiki?: () => void;
+  private disposeConn?: () => void;
   private wiki = signal<{ state: 'idle' | 'loading' | 'ok' | 'none'; page?: WikiLink }>({
     state: 'idle',
   });
@@ -84,19 +81,16 @@ export class JournalView extends View implements OnInit, OnDestroy {
   private activeOnly = signal(true);
 
   onInit() {
-    void Promise.all([this.api.refreshJournal(), this.api.journalNames()]).then(
-      ([, n]) => {
-        this.names.value = n;
-        // default the view to the player's own nation storyline (skipped
-        // when a deep link already picked a group)
-        const nation = this.api.journal.value?.nation;
-        const line =
-          nation != null ? ['sandoria', 'bastok', 'windurst'][nation] : null;
-        if (line && n.mission_lines?.[line] && !this.applyDeepLink()) {
-          this.sel.value = { kind: 'mission', key: line };
-        }
-      },
-    );
+    void this.api.refreshJournal();
+    void this.loadNames();
+    // a names fetch that raced the addon's startup used to stick as
+    // "Objective #N" forever — refetch on every (re)connect
+    this.disposeConn = effect(() => {
+      if (this.api.connected.value) {
+        void this.loadNames();
+        this.api.pokeJournal();
+      }
+    });
     // the tracker deep-links in via /journal?g=<kind>&s=<key>&id=<n>. The
     // view stays mounted across query-only navigations (router.navigate
     // from the main window's __xicNavigate), so watch the url signal —
@@ -115,6 +109,30 @@ export class JournalView extends View implements OnInit, OnDestroy {
   onDestroy() {
     this.disposeDeepLink?.();
     this.disposeWiki?.();
+    this.disposeConn?.();
+  }
+
+  private async loadNames() {
+    try {
+      const n = await this.api.journalNames();
+      const first = this.names.value == null;
+      this.names.value = n;
+      // default the view to the player's own nation storyline (skipped
+      // when a deep link already picked a group)
+      const nation = this.api.journal.value?.nation;
+      const line =
+        nation != null ? ['sandoria', 'bastok', 'windurst'][nation] : null;
+      if (
+        first &&
+        line &&
+        n.mission_lines?.[line] &&
+        !this.applyDeepLink()
+      ) {
+        this.sel.value = { kind: 'mission', key: line };
+      }
+    } catch {
+      // retried on the next reconnect
+    }
   }
 
   private async loadWiki(e: Entry) {
@@ -137,10 +155,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
     const key = q.get('s');
     const id = q.get('id');
     if (
-      (kind !== 'mission' &&
-        kind !== 'quest' &&
-        kind !== 'roe' &&
-        kind !== 'valor') ||
+      (kind !== 'mission' && kind !== 'quest' && kind !== 'roe') ||
       !key
     ) {
       return false;
@@ -167,8 +182,6 @@ export class JournalView extends View implements OnInit, OnDestroy {
     const names = this.names.value;
     const j = this.api.journal.value;
     const out: Entry[] = [];
-
-    if (sel.kind === 'valor') return out; // regime pane renders directly
 
     if (sel.kind === 'roe') {
       const doneSet = new Set(j?.roe?.done ?? []);
@@ -673,133 +686,6 @@ export class JournalView extends View implements OnInit, OnDestroy {
     );
   }
 
-  // ---------- training regime (FoV / GoV) ----------
-
-  private valorHint(): string {
-    const v = this.api.journal.value?.valor;
-    if (!v) return '';
-    const kind = v.kind === 'fov' ? 'FoV' : 'GoV';
-    const total = (v.needs ?? []).reduce((a, b) => a + b, 0);
-    const killed = (v.killed ?? []).reduce((a, b) => a + b, 0);
-    const prog = total ? ` ${killed}/${total}` : '';
-    return `${v.done ? '✓' : '▶'} ${kind} ${v.zone_name ?? `zone ${v.zone}`} p${v.page}${prog}`;
-  }
-
-  private valorPane() {
-    const j = this.api.journal.value;
-    const v = j?.valor;
-    if (!v) {
-      return (
-        <p class="py-8 text-center text-xs text-slate-500">
-          {j?.char
-            ? 'no active training regime — select a page at a Field Manual or Grounds Tome'
-            : 'no journal data — log in and zone'}
-        </p>
-      );
-    }
-    const hidden = (j?.untracked ?? []).includes(groupKey('valor', 'valor'));
-    const kindName =
-      v.kind === 'fov' ? 'Fields of Valor' : 'Grounds of Valor';
-    // desc parts align with needs[] — '5 Scarab Beetles + 1 Forest Funguar'
-    const parts = (v.desc ?? '').split(' + ').map((s) => s.trim());
-    const objName = (i: number) =>
-      (parts[i] ?? '').replace(/^\d+\s*/, '') || `objective ${i + 1}`;
-    const wikiUrl =
-      v.kind === 'fov'
-        ? 'https://www.bg-wiki.com/ffxi/Fields_of_Valor'
-        : 'https://www.bg-wiki.com/ffxi/Grounds_of_Valor';
-    return (
-      <div class="m-2 max-w-lg self-start rounded border border-slate-800 bg-slate-950/60 p-4">
-        <p class="pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-          {kindName}
-          {v.done && <span class="text-emerald-400"> · completed</span>}
-        </p>
-        <h3 class="text-sm font-semibold text-slate-100">
-          {v.zone_name ?? `zone ${v.zone}`} — Page {v.page}
-        </h3>
-        {(v.low != null || v.high != null) && (
-          <p class="pb-1 text-[10px] text-slate-500">
-            recommended level {v.low ?? '?'}~{v.high ?? '?'}
-            {v.regime != null && ` · regime ${v.regime}`}
-          </p>
-        )}
-        <div class="space-y-1.5 pt-1">
-          {(v.needs ?? []).map((need, i) => {
-            const killed = Math.min(v.killed?.[i] ?? 0, need);
-            const full = killed >= need;
-            return (
-              <div key={i}>
-                <div class="flex items-center justify-between text-xs">
-                  <span
-                    class={cn(
-                      'truncate',
-                      full ? 'text-emerald-400' : 'text-slate-300',
-                    )}
-                  >
-                    {objName(i)}
-                  </span>
-                  <span class="pl-2 text-[10px] tabular-nums text-slate-400">
-                    {killed}/{need}
-                  </span>
-                </div>
-                <div class="mt-0.5 h-1 overflow-hidden rounded bg-slate-800">
-                  <div
-                    class={cn(
-                      'block h-full rounded',
-                      full ? 'bg-emerald-500' : 'bg-sky-500',
-                    )}
-                    style={`width:${Math.min(100, (killed / need) * 100)}%`}
-                  />
-                </div>
-              </div>
-            );
-          })}
-          {v.needs.length === 0 && v.last && (
-            <p class="text-xs text-slate-300">
-              progress: {v.last.killed}/{v.last.needed}
-            </p>
-          )}
-        </div>
-        {j?.valor_points != null && (
-          <p class="pt-3 text-[10px] text-slate-500">
-            {j.valor_points} tab{j.valor_points === 1 ? '' : 's'}
-          </p>
-        )}
-        <div class="flex items-center gap-2 pt-3">
-          <button
-            class={cn(
-              'rounded border px-2 py-0.5 text-[10px]',
-              hidden
-                ? 'border-sky-800/60 bg-sky-950/40 text-sky-300 hover:bg-sky-900/40'
-                : 'border-slate-700 bg-slate-900/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200',
-            )}
-            onClick={() =>
-              void this.api
-                .setTracked('valor', 'valor', undefined, hidden)
-                .catch((err) => (this.roeError.value = String(err)))
-            }
-          >
-            {hidden ? 'show in tracker' : 'hide from tracker'}
-          </button>
-          <button
-            class="flex items-center gap-0.5 text-[10px] text-sky-400 hover:underline"
-            title="open in your browser"
-            onClick={() => host.openExternal(wikiUrl)}
-          >
-            {kindName}
-            <ExternalLink size={9} />
-          </button>
-        </div>
-        <p class="pt-3 text-[10px] leading-relaxed text-slate-600">
-          shown as-encountered — the game sends no regime summary, so this
-          reflects what xicompanion has observed (page selects, kill messages).
-          Regimes started before tracking began appear on first progress
-          or when re-selected at a manual.
-        </p>
-      </div>
-    );
-  }
-
   render() {
     const names = this.names.value;
     const j = this.api.journal.value;
@@ -868,19 +754,6 @@ export class JournalView extends View implements OnInit, OnDestroy {
             {activeOnly && !hasActivity(j, names, 'roe', 'roe') && (
               <p class="px-2 text-[10px] text-slate-600">none active</p>
             )}
-            <p class="px-2 pb-1 pt-3 text-[10px] font-semibold tracking-wider text-slate-500">
-              TRAINING
-            </p>
-            {(!activeOnly || hasActivity(j, names, 'valor', 'valor')) &&
-              this.groupRow(
-                'valor',
-                'valor',
-                'Training Regime',
-                this.valorHint(),
-              )}
-            {activeOnly && !hasActivity(j, names, 'valor', 'valor') && (
-              <p class="px-2 text-[10px] text-slate-600">none active</p>
-            )}
           </div>
           <div class="border-t border-slate-800 p-2 text-[10px] text-slate-500">
             {j?.char ? (
@@ -907,9 +780,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
                   ? names?.mission_lines?.[sel.key]?.name
                   : sel.kind === 'quest'
                     ? names?.quest_areas?.[sel.key]?.name
-                    : sel.kind === 'valor'
-                      ? 'Training Regime'
-                      : 'Objectives') ?? sel.key;
+                    : 'Objectives') ?? sel.key;
               return (
                 <div class="flex min-w-0 flex-1 items-center gap-2">
                   <span class="truncate text-xs font-semibold text-slate-300">
@@ -972,24 +843,18 @@ export class JournalView extends View implements OnInit, OnDestroy {
             </p>
           )}
           <div class="min-h-0 flex-1 overflow-y-auto p-2">
-            {sel.kind === 'valor' ? (
-              this.valorPane()
-            ) : (
-              <>
-                {this.filtered.value.length === 0 && (
-                  <p class="py-8 text-center text-xs text-slate-500">
-                    {j?.char
-                      ? this.query.value
-                        ? 'no matches'
-                        : 'nothing logged yet — zone to refresh the journal'
-                      : 'no journal data — log in and zone'}
-                  </p>
-                )}
-                {sel.kind === 'roe'
-                  ? this.roeGroups.value.map((cat) => this.roeCat(cat))
-                  : this.filtered.value.map((e) => this.entryRow(e))}
-              </>
+            {this.filtered.value.length === 0 && (
+              <p class="py-8 text-center text-xs text-slate-500">
+                {j?.char
+                  ? this.query.value
+                    ? 'no matches'
+                    : 'nothing logged yet — zone to refresh the journal'
+                  : 'no journal data — log in and zone'}
+              </p>
             )}
+            {sel.kind === 'roe'
+              ? this.roeGroups.value.map((cat) => this.roeCat(cat))
+              : this.filtered.value.map((e) => this.entryRow(e))}
           </div>
         </section>
 

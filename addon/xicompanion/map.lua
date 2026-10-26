@@ -10,7 +10,9 @@
 -- Entities come from get_mob_array() (render range ~50y) — the always-on
 -- radar layer. Widescan (0x0F4 bursts between 0x0F6 markers, 0x0F5 track
 -- updates) reaches much further but only exists while a scan is active;
--- its x/y are map-pixel offsets relative to the player's map position.
+-- its x/z are world-yalm deltas from the player, so each entry is
+-- projected through get_map_data at receipt into absolute map px
+-- (wx/wy) — the same transform the entities and tracked targets use.
 --
 -- polled from pump() every call; internally throttled to 4Hz. Map px are
 -- rounded to ints so the payload diff only fires on real movement.
@@ -36,6 +38,16 @@ local ls_names = { {}, {} }  -- [1]=linkshell, [2]=linkshell2 name sets
 local ls_char = nil          -- character the loaded sets belong to
 local ls_dirty = false
 local ls_next_save = 0
+
+-- NM set: the client never reports notorious status (no entity flag,
+-- nothing in widescan packets) — so it's matched by name against the
+-- generated nm_names.lua table (bg-wiki Category:Notorious_Monster via
+-- scripts/extract-nms.py). Missing file just means no NM colors.
+local nm_names = {}
+do
+    local ok, t = pcall(dofile, plat.addon_path .. 'nm_names.lua')
+    if ok and type(t) == 'table' then nm_names = t end
+end
 
 function M.setup(deps)
     ctx = deps
@@ -113,6 +125,14 @@ local function scan(now)
     local zr = ctx.res and ctx.res.zones and ctx.res.zones[zone]
     if zr then zn = zr.en end
 
+    -- grid coord ("F-10") from the client's own pos function — the same
+    -- string <pos> expands to; absent under Ashita (no mapinfo read)
+    local pos
+    if plat.ffxi.get_position then
+        local okp, p = pcall(plat.ffxi.get_position, me.index)
+        if okp and type(p) == 'string' and p ~= '' then pos = p end
+    end
+
     local ents = ctx.json_array and ctx.json_array({}) or {}
     local okm, arr = pcall(plat.ffxi.get_mob_array)
     if okm and type(arr) == 'table' then
@@ -134,6 +154,15 @@ local function scan(now)
                     if ls_names[1][e.name] or ls_names[2][e.name] then
                         fl = fl + 8
                     end
+                    if nm_names[e.name:lower()] then fl = fl + 16 end
+                    -- height delta vs the player: the mob struct's z is
+                    -- the vertical axis but increases DOWNWARD (mobs
+                    -- below read positive), so flip it — +el = above.
+                    -- The radar turns |el| >= a few yalms into ▲/▼
+                    local elv
+                    if e.z ~= nil and me.z ~= nil then
+                        elv = math.floor(me.z - e.z + 0.5)
+                    end
                     ents[#ents + 1] = {
                         i = idx, n = e.name, x = ex, y = ey,
                         st = e.spawn_type or 0,
@@ -142,6 +171,7 @@ local function scan(now)
                         d = e.distance and
                             math.floor(math.sqrt(e.distance) * 10 + 0.5) / 10
                             or 0,
+                        el = elv,
                     }
                 end
             end
@@ -160,7 +190,7 @@ local function scan(now)
     for _, e in pairs(ws_pending) do ws[#ws + 1] = e end
 
     return {
-        z = zone, zn = zn, m = mid, ms = mspace,
+        z = zone, zn = zn, m = mid, ms = mspace, pos = pos,
         me = { x = mx, y = my, f = me.facing or 0 },
         e = ents,
         ws = ws,
@@ -226,16 +256,34 @@ function M.handle_incoming(id, data)
         -- index 0 is the player ("You"); nameless / typeless rows are
         -- padding the client sends in the burst — not real blips
         if index ~= 0 and name ~= nil and name ~= '' and typ ~= 0 then
-            ws_pending[index] = {
+            local e = {
                 i = index, l = level, t = typ,
                 x = xo, y = yo, n = name,
+                nm = nm_names[name:lower()] and 1 or nil,
             }
+            -- xo/yo are world-yalm deltas from the player, not map px —
+            -- project (player pos + delta) through the client's own
+            -- map transform so the diamond lands where the in-game map
+            -- puts it. Widescan is same-floor, so the player's height
+            -- selects the right sub-map.
+            local mok, me = pcall(plat.ffxi.get_mob_by_target, 'me')
+            if mok and type(me) == 'table' and me.x and me.y then
+                local _, tx, ty = pcall(plat.ffxi.get_map_data,
+                    me.x + xo, me.y + yo, me.z or 0)
+                if tx then
+                    e.wx = math.floor(tx + 0.5)
+                    e.wy = math.floor(ty + 0.5)
+                end
+            end
+            ws_pending[index] = e
         end
         ws_deadline = now + 0.35
     elseif id == 0x0F5 and data and #data >= 20 then
-        -- tracked target's live world pos (float X@4, Z@8, Y@12 — FFXI's
-        -- up axis is Y) → back through get_map_data for an absolute map
-        -- position, which beats the stale scan-time offset
+        -- tracked target's live world pos (float X@4, Z@8, Y@12 — the
+        -- packet's 'Y' field is height, exposed as .z on mob records) →
+        -- back through get_map_data for an absolute map position, which
+        -- beats the stale scan-time offset. get_map_data takes mob-struct
+        -- order (x, north-south, height), so packet Z precedes packet Y.
         local _, fx = pcall(string.unpack, '<f', data, 5)
         local _, fz = pcall(string.unpack, '<f', data, 9)
         local _, fy = pcall(string.unpack, '<f', data, 13)
@@ -245,10 +293,16 @@ function M.handle_incoming(id, data)
             e.tr = 1
             if fx and fy and fz then
                 local _, tx, ty = pcall(
-                    plat.ffxi.get_map_data, fx, fy, fz)
+                    plat.ffxi.get_map_data, fx, fz, fy)
                 if tx then
                     e.wx = math.floor(tx + 0.5)
                     e.wy = math.floor(ty + 0.5)
+                end
+                -- fy is the target's live height — keep the same player-
+                -- relative elevation delta the radar dots carry
+                local mok, pme = pcall(plat.ffxi.get_mob_by_target, 'me')
+                if mok and type(pme) == 'table' and pme.z then
+                    e.el = math.floor(pme.z - fy + 0.5)
                 end
             end
         end

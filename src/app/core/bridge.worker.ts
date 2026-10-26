@@ -25,8 +25,24 @@ const API_BASE: string =
 
 const ports = new Set<MessagePort>();
 const latest = new Map<string, string>();
-const REPLAY = new Set(['state', 'journal', 'recasts', 'map']);
-const EVENTS = new Set(['ping', 'state', 'chat', 'journal', 'recasts', 'map']);
+const REPLAY = new Set([
+  'state',
+  'journal',
+  'recasts',
+  'map',
+  'party',
+  'macrosel',
+]);
+const EVENTS = new Set([
+  'ping',
+  'state',
+  'chat',
+  'journal',
+  'recasts',
+  'map',
+  'party',
+  'macrosel',
+]);
 
 let sseAbort: AbortController | null = null;
 let sseOpen = false;

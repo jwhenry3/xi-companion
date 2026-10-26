@@ -319,42 +319,77 @@ body.tooltip-mode {
   overflow: hidden;
 }
 
-/* glass theme — translucent black panel, squared edges, no borders.
-   Meant for detached overlay windows (the macro bar reads as a flat
-   strip of controls over the game). Every rule is scoped so the pick
-   can differ per window. */
-html.glass .ffxi-panel {
-  background-color: rgb(0 0 0 / 0.8);
+/* slate theme — frosted panel over whatever's beneath the window. The
+   actual blur is shell-side: applyTheme posts xicompanion:blur:on and
+   the overlay turns on DWM blur-behind (backdrop-filter can't see past
+   a transparent window). The translucent tint here is what the blur
+   reads through. Squared edges, no borders. */
+html.slate .ffxi-panel {
+  background-color: rgb(2 6 23 / 0.90);
   border: none;
   border-radius: 0;
   box-shadow: none;
 }
-html.glass .ffxi-panel-title {
-  background: rgb(255 255 255 / 0.06);
+html.slate .ffxi-panel-title {
+  background: rgb(255 255 255 / 0.05);
   border-bottom: none;
   border-radius: 0;
 }
-html.glass .ffxi-fab {
-  background-color: rgb(0 0 0 / 0.6);
+html.slate .ffxi-fab {
+  background-color: rgb(0 0 0 / 0.22);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14);
 }
-html.glass .ffxi-fab:hover,
-html.glass .ffxi-fab.on {
+html.slate .ffxi-fab:hover,
+html.slate .ffxi-fab.on {
   background-color: rgb(255 255 255 / 0.14);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.3);
 }
 /* square every control and drop visible borders — border-color keeps
    the 1px layout space, it just doesn't paint. Accent fills (active
    macro slots, selections) still carry state. */
-html.glass * {
+html.slate * {
   border-radius: 0 !important;
   border-color: transparent !important;
 }
-html.glass ::-webkit-scrollbar-thumb {
+html.slate ::-webkit-scrollbar-thumb {
   background: rgb(255 255 255 / 0.2);
 }
-html.glass ::-webkit-scrollbar-thumb:hover {
+html.slate ::-webkit-scrollbar-thumb:hover {
   background: rgb(255 255 255 / 0.35);
+}
+
+/* charcoal theme — the mica look without the blur: solid near-black
+   grays, square edges, no borders. Same chrome language as slate but
+   fully opaque. */
+html.charcoal .ffxi-panel {
+  background-color: #141414;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+html.charcoal .ffxi-panel-title {
+  background: #1e1e1e;
+  border-bottom: none;
+  border-radius: 0;
+}
+html.charcoal .ffxi-fab {
+  background-color: #141414;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.12);
+}
+html.charcoal .ffxi-fab:hover,
+html.charcoal .ffxi-fab.on {
+  background-color: #2a2a2a;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.3);
+}
+html.charcoal * {
+  border-radius: 0 !important;
+  border-color: transparent !important;
+}
+html.charcoal ::-webkit-scrollbar-thumb {
+  background: #333;
+}
+html.charcoal ::-webkit-scrollbar-thumb:hover {
+  background: #464646;
 }
 
 /* bare theme — fully transparent chrome; only the buttons and controls

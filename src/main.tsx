@@ -1,6 +1,6 @@
 import { bootstrap } from '@preact-mvc/core';
 import { AppModule } from './app/app.module';
-import { host, fabMode, detachedMode, tooltipMode, installWindowChrome } from './app/core/host';
+import { host, fabMode, detachedMode, menuMode, tooltipMode, installWindowChrome } from './app/core/host';
 import './styles.css';
 
 // Esc collapses the overlay back to the floating button — in Electron the
@@ -15,6 +15,7 @@ window.addEventListener(
     // an open modal owns Esc — collapsing the window mid-dialog is jarring
     if (document.querySelector('[data-modal]')) return;
     if (tooltipMode) host.closeTooltip();
+    else if (menuMode) host.fabMenuHide();
     else if (detachedMode) host.closeWindow();
     else host.collapse();
   },

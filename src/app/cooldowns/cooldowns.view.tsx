@@ -60,7 +60,7 @@ export class CooldownsView extends View implements OnInit, OnDestroy {
             {fmtCd(left)}
           </span>
         </span>
-        <span class="mt-0.5 block h-1 overflow-hidden rounded bg-slate-800/80">
+        <span class="mt-0.5 block h-1.5 overflow-hidden rounded border border-slate-500/60 bg-slate-800/80">
           <span
             class={cn(
               'block h-full rounded',

@@ -58,6 +58,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skill/spell book** (`/abilities`, "Book" nav + fab button) — every
+  JA/WS/spell the current job can learn vs. has learned: spell
+  requirements come from `res.spells[].levels` (subjob reqs doubled to
+  main level), JA acquisition from generated `ja_levels.lua` (bg-wiki
+  Category:Job_Ability infoboxes, 346 entries). Click a learned row to
+  fire it through the input line with `<t>`/`<st>`/`<me>` target chips
+  (`<st>` opens the client's own subtarget cursor); each row's ⓘ button
+  shows the canonical macro line with a copy button. Live recast state
+  joins the cooldowns SSE feed; lists refetch on job change.
+- **NM highlighting on the map** — the client never reports notorious
+  status (no entity flag, nothing in widescan), so `map.lua`
+  name-matches entities (f&16) and widescan entries (`nm`) against a
+  generated `nm_names.lua` table (2,479 names from bg-wiki's
+  Category:Notorious_Monster via `scripts/extract-nms.py`). NMs render
+  yellow on the radar and get their own `nm` kind/label/filter chip in
+  the entity list.
 - **Ashita v4 target (untested against a live client)** — `plat.lua`
   now dispatches to `plat_windower`/`plat_ashita` so the same
   `addon/xicompanion/` tree installs under both hosts (`xicompanion.lua` is the Ashita

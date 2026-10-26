@@ -13,6 +13,10 @@ const dst = process.argv[2]
   ? path.resolve(process.argv[2])
   : path.join(root, '..', 'addons', 'xicompanion');
 
+// the overlay exe builds straight into the deployable tree (npm run
+// build:overlay -> addon/xicompanion/overlay/) — nothing to stage.
+// Previous staging copied overlay/wails/*.exe (including stale plain
+// `go build` outputs) OVER the production binary every deploy.
 mkdirSync(dst, { recursive: true });
 
 // drop stale hashed ui bundles so only the current build is live

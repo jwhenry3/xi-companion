@@ -3,14 +3,19 @@
 // diamonds while a scan is held, and a side list of what the radar sees.
 // A "widescan" button re-issues the server's 0x0F4 scan request; the
 // floating /minimap window renders the same feed zoomed to the player.
+// The radar zooms via a bottom slider (persisted, 0 = whole-map fit)
+// and pans by dragging — a recenter chip re-follows the player.
 import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
-import { ExternalLink, Radar } from 'lucide-preact';
+import { ExternalLink, LocateFixed, Radar } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
 import { host } from '../core/host';
 import type { MapEntity } from '../core/types';
-import { MapRadar } from './map-radar';
+import { MapRadar, ELEV_DELTA } from './map-radar';
 import { resolveMapImage } from './map-image';
+import { radiusFor, loadZoom, saveZoom } from './map-zoom';
+
+const ZOOM_KEY = 'xicompanion.map.zoom';
 
 function entLabel(e: MapEntity): string {
   const k = entKind(e);
@@ -24,6 +29,7 @@ function entKind(e: MapEntity): string {
   if (e.f & 1) return 'party';
   if (e.f & 2) return 'alliance';
   if (e.f & 8) return 'linkshell';
+  if (e.f & 16) return 'nm';
   if (e.st === 16) return 'mob';
   if (e.f & 4 || e.st === 2) return 'npc';
   if (e.st === 1) return 'player';
@@ -36,6 +42,7 @@ const KIND_ORDER = [
   'linkshell',
   'player',
   'npc',
+  'nm',
   'mob',
   'other',
 ];
@@ -45,6 +52,7 @@ const KIND_COLOR: Record<string, string> = {
   linkshell: 'text-orange-300',
   player: 'text-violet-300',
   npc: 'text-emerald-300',
+  nm: 'text-yellow-300',
   mob: 'text-rose-300',
   other: 'text-slate-400',
 };
@@ -60,6 +68,16 @@ export class MapView extends View implements OnInit, OnDestroy {
   private imgFor = '';
   private scanning = signal(false);
   private scanTimer = 0;
+  private zoom = signal(loadZoom(ZOOM_KEY, 0)); // slider %, 0 = whole-map fit
+  // explicit view center once the user drags; null = follow the player
+  private pan = signal<{ x: number; y: number } | null>(null);
+  private drag = signal<{
+    px: number;
+    py: number;
+    cx: number;
+    cy: number;
+    r: number;
+  } | null>(null);
 
   onInit() {
     void this.api.refreshMap();
@@ -77,8 +95,14 @@ export class MapView extends View implements OnInit, OnDestroy {
     const key = s?.z != null && s.m != null ? `${s.z}_${s.m}` : '';
     if (!s || !key || key === this.imgFor) return;
     this.imgFor = key;
+    this.pan.value = null; // new zone/map — drop any stale drag center
     void resolveMapImage(this.api.mapImgUrl(s.z!, s.m!), key).then((url) => {
-      if (this.imgFor === key) this.mapImg.value = url;
+      if (this.imgFor === key) {
+        this.mapImg.value = url;
+        // failed fetches used to latch imgFor forever — unlatch so the
+        // next map event retries (resolveMapImage still rate-limits)
+        if (!url) this.imgFor = '';
+      }
     });
   }
 
@@ -90,6 +114,35 @@ export class MapView extends View implements OnInit, OnDestroy {
       2000,
     );
   }
+
+  private mapPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    const s = this.api.map.value;
+    const r = radiusFor(this.zoom.value, s?.ms ?? 512);
+    if (!r || !s?.me) return; // whole-map fit: nothing to pan
+    const c = this.pan.value ?? s.me;
+    this.drag.value = { px: e.clientX, py: e.clientY, cx: c.x, cy: c.y, r };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  private mapPointerMove = (e: PointerEvent) => {
+    const d = this.drag.value;
+    if (!d) return;
+    const el = e.currentTarget as HTMLElement;
+    // the square viewBox letterboxes inside the box, so the smaller
+    // side owns the screen-px -> map-px scale
+    const side = Math.min(el.clientWidth, el.clientHeight) || 1;
+    const u = (d.r * 2) / side;
+    const ms = this.api.map.value?.ms ?? 512;
+    this.pan.value = {
+      x: Math.min(ms, Math.max(0, d.cx - (e.clientX - d.px) * u)),
+      y: Math.min(ms, Math.max(0, d.cy - (e.clientY - d.py) * u)),
+    };
+  };
+
+  private mapPointerUp = () => {
+    this.drag.value = null;
+  };
 
   private hiddenKinds = signal<ReadonlySet<string>>(new Set());
 
@@ -166,6 +219,15 @@ export class MapView extends View implements OnInit, OnDestroy {
         <span class="min-w-0 flex-1 truncate text-slate-200">
           {e.n || '—'}
         </span>
+        {e.el != null && Math.abs(e.el) >= ELEV_DELTA && (
+          <span
+            class="shrink-0 text-[9px] tabular-nums text-slate-400"
+            title={`${Math.abs(e.el)} yalms ${e.el > 0 ? 'above' : 'below'} you`}
+          >
+            {e.el > 0 ? '▲' : '▼'}
+            {Math.abs(e.el)}
+          </span>
+        )}
         {label && (
           <span class="shrink-0 text-[9px] uppercase text-slate-500">
             {label}
@@ -180,6 +242,7 @@ export class MapView extends View implements OnInit, OnDestroy {
     this.resolveImage();
     const on = !!s && s.on !== 0 && !!s.me;
     const ws = s?.ws ?? [];
+    const radius = radiusFor(this.zoom.value, s?.ms ?? 512);
     return (
       <div class="flex h-full flex-col gap-3">
         <div class="flex items-center gap-3">
@@ -190,6 +253,7 @@ export class MapView extends View implements OnInit, OnDestroy {
           {on && (
             <span class="text-[11px] tabular-nums text-slate-500">
               {Math.round(s!.me!.x)}, {Math.round(s!.me!.y)}
+              {!!s!.pos && <span class="text-slate-400"> · {s!.pos}</span>}
             </span>
           )}
           <span class="flex-1" />
@@ -218,8 +282,53 @@ export class MapView extends View implements OnInit, OnDestroy {
           )}
         </div>
         <div class="flex min-h-0 flex-1 gap-3">
-          <div class="min-w-0 flex-1 overflow-hidden rounded border border-slate-800 bg-slate-950">
-            <MapRadar s={s} img={this.mapImg.value} />
+          <div class="relative min-w-0 flex-1 overflow-hidden rounded border border-slate-800 bg-slate-950">
+            <div
+              class={`h-full w-full touch-none ${
+                radius
+                  ? this.drag.value
+                    ? 'cursor-grabbing'
+                    : 'cursor-grab'
+                  : ''
+              }`}
+              onPointerDown={this.mapPointerDown}
+              onPointerMove={this.mapPointerMove}
+              onPointerUp={this.mapPointerUp}
+              onPointerCancel={this.mapPointerUp}
+            >
+              <MapRadar
+                s={s}
+                img={this.mapImg.value}
+                radius={radius}
+                center={this.pan.value ?? undefined}
+              />
+            </div>
+            {radius && this.pan.value && (
+              <button
+                class="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded border border-slate-700 bg-slate-900/80 text-slate-400 hover:text-slate-200"
+                title="recenter on the player"
+                onClick={() => (this.pan.value = null)}
+              >
+                <LocateFixed size={13} />
+              </button>
+            )}
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={this.zoom.value}
+              title="zoom"
+              class="absolute inset-x-2 bottom-1 h-1.5 accent-sky-400 opacity-80 hover:opacity-100"
+              onInput={(e) => {
+                const v = Number(
+                  (e.currentTarget as HTMLInputElement).value,
+                );
+                this.zoom.value = v;
+                saveZoom(ZOOM_KEY, v);
+                if (v <= 0) this.pan.value = null;
+              }}
+            />
           </div>
           <div class="flex w-56 shrink-0 flex-col rounded border border-slate-800 bg-slate-950">
             {this.kinds.value.length > 0 && (

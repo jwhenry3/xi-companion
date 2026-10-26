@@ -117,6 +117,11 @@ end
 
 -- WIN32_FIND_DATAA: enough to read dwFileAttributes + cFileName (@0x2C).
 local find_data = ffi.new('unsigned char[592]')
+-- [NOT PORTED] mtime listing for the palette-departure watch —
+-- io.popen exists under Ashita too, so the Windower impl would probably
+-- work, but it's unverified; nil disables the feature there.
+P.file_mtimes = nil
+
 function P.get_dir(path)
     local out = {}
     local h = ffi.C.FindFirstFileA(path .. '\\*', find_data)
@@ -286,6 +291,17 @@ function ffxi.get_spell_recasts()
         if ok and t and t > 0 then out[i] = t end
     end
     return out
+end
+
+-- [UNVERIFIED] learned-set reads: Ashita v4's recast/inventory managers
+-- don't expose "known abilities/spells", so the ability book falls back
+-- to obtainable-only (learned highlights just won't mark). If a
+-- GetLearnedAbilities-style call exists on IPlayer it slots in here.
+function ffxi.get_abilities()
+    return { job_abilities = {}, weapon_skills = {} }
+end
+function ffxi.get_spells()
+    return {}
 end
 
 -- FFXI position struct order is {X, Z, Y} — Z is the vertical axis.
@@ -558,6 +574,9 @@ local function build_packet(id, fields)
         [0x050] = { size = 0x08, fields = {
             { 'Item Index', 'u8', 0x04 }, { 'Equip Slot', 'u8', 0x05 },
             { 'Bag', 'u8', 0x06 } } },
+        [0x03A] = { size = 0x08, fields = {
+            { 'Bag', 'u8', 0x04 }, { '_unknown1', 'u8', 0x05 },
+            { '_unknown2', 'u16', 0x06 } } },
         [0x0F4] = { size = 0x08, fields = { { 'Flags', 'u8', 0x04 } } },
         [0x10C] = { size = 0x08, fields = { { 'RoE Quest', 'u16', 0x04 } } },
         [0x10D] = { size = 0x08, fields = { { 'RoE Quest', 'u16', 0x04 } } },

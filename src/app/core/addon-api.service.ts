@@ -13,6 +13,8 @@ import type {
   ItemMeta,
   RecastState,
   MapState,
+  PartyState,
+  AbilitiesPayload,
 } from './types';
 
 // In production the addon serves this UI itself, so same-origin is correct.
@@ -90,7 +92,10 @@ export class AddonApi {
     const es = new EventSource(`${API_BASE}/api/events`);
     this.es = es;
     const bump = () => (this.lastEventAt = Date.now());
-    for (const e of ['ping', 'state', 'chat', 'journal', 'recasts', 'map']) {
+    for (const e of [
+      'ping', 'state', 'chat', 'journal', 'recasts', 'map', 'party',
+      'macrosel',
+    ]) {
       es.addEventListener(e, (ev) => {
         bump();
         this.dispatchSse(e, (ev as MessageEvent).data);
@@ -224,6 +229,12 @@ export class AddonApi {
         case 'map':
           this.map.value = JSON.parse(d);
           break;
+        case 'party':
+          this.party.value = JSON.parse(d);
+          break;
+        case 'macrosel':
+          this.macroSel.value = JSON.parse(d);
+          break;
         // 'ping' — just the lastEventAt bump handled by the caller
       }
     } catch {
@@ -243,6 +254,7 @@ export class AddonApi {
       void this.refreshJournal();
       void this.refreshRecasts();
       void this.refreshMap();
+      void this.refreshParty();
     }
   }
 
@@ -357,6 +369,21 @@ export class AddonApi {
   /** item icon (extracted bmp served by the addon); 404s until extracted */
   iconUrl(id: number): string {
     return `${API_BASE}/api/icon?id=${id}`;
+  }
+
+  /** status-effect icon (buff DAT extract, same bmp pipeline) */
+  statusIconUrl(id: number): string {
+    return `${API_BASE}/api/statusicon?id=${id}`;
+  }
+
+  /** menu spell/JA icon (ROM/280/15+324/95, pre-extracted DXT3 bmp) */
+  menuIconUrl(id: number): string {
+    return `${API_BASE}/api/menuicon?id=${id}`;
+  }
+
+  /** weapon-class tile from the misc/ws sprite sheet */
+  wsIconUrl(tile: number): string {
+    return `${API_BASE}/api/menuicon?ws=${tile}`;
   }
 
   /** raw per-id item meta fetch — use inside a queryFn. `itemMeta()` below
@@ -480,6 +507,13 @@ export class AddonApi {
     }
   }
 
+  /** ask the server to re-broadcast the journal snapshot over SSE —
+   *  covers the reload race where the diff-gated flush fired while
+   *  this window's link was down (server is the authority, no cache) */
+  pokeJournal() {
+    void this.req('/api/journal/refresh', { method: 'POST' }).catch(() => {});
+  }
+
   /** set/cancel an RoE objective — injects the client's menu packets
    *  (0x10C/0x10D); the server replies with a fresh 0x111 which lands
    *  back in `journal` via SSE. Must be logged in. */
@@ -495,7 +529,7 @@ export class AddonApi {
    *  tracker window — omit id to toggle the group (future items in it
    *  stay hidden too). Persists per character; lands back via SSE */
   async setTracked(
-    kind: 'quest' | 'mission' | 'roe' | 'valor',
+    kind: 'quest' | 'mission' | 'roe',
     key: string,
     id: number | undefined,
     tracked: boolean,
@@ -535,6 +569,36 @@ export class AddonApi {
       staleTime: 0,
     });
     this.map.value = r;
+  }
+
+  // ---------- abilities (skill/spell book) ----------
+
+  /** obtainable+learned JA/WS/spells for the current job — keyed by job
+   *  ids so the query cache refetches on job change */
+  async fetchAbilities(
+    mainJob: number,
+    subJob: number,
+  ): Promise<AbilitiesPayload> {
+    return queryClient.fetchQuery({
+      queryKey: ['abilities', mainJob, subJob],
+      queryFn: () => this.req<AbilitiesPayload>('/api/abilities'),
+      staleTime: 30_000,
+    });
+  }
+
+  // ---------- party / target HUD ----------
+
+  /** member vitals+buffs, target HP, cast bar — SSE `party` event is
+   *  the live feed; this is the snapshot/reconnect pull */
+  readonly party = signal<PartyState | null>(null);
+
+  async refreshParty() {
+    const r = await queryClient.fetchQuery({
+      queryKey: ['party'],
+      queryFn: () => this.req<PartyState>('/api/party'),
+      staleTime: 0,
+    });
+    this.party.value = r;
   }
 
   /** ask the server for a widescan refresh (same packet the map menu's
@@ -579,11 +643,22 @@ export class AddonApi {
 
   readonly macros = signal<MacroState | null>(null);
 
+  /** in-game active palette per char dir — the client writes mcr.sys on
+   *  every book/page switch; the addon polls it and pushes `macrosel`
+   *  events so the macro bar can follow. {charId: {b, p}} */
+  readonly macroSel = signal<Record<string, { b: number; p: number }>>(
+    {},
+  );
+
   async refreshMacros() {
     this.macros.value = await queryClient.fetchQuery({
       queryKey: ['macros'],
       queryFn: () => this.req<MacroState>('/api/macros'),
     });
+  }
+
+  async refreshMacroSel() {
+    this.macroSel.value = await this.req('/api/macrosel');
   }
 
   /** write one palette page (20 macros) to mcr<index>.dat.

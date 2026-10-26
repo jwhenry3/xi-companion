@@ -163,6 +163,10 @@ export class MacrosView extends View implements OnInit {
         this.loggedIn.value, // apply: force the client to re-read via book switch
       );
       this.baseline.value = clone(this.draft.value);
+      // tell sibling windows (the detached macro bar) data changed —
+      // storage events only fire in OTHER windows, which is exactly
+      // where the stale palette lives
+      localStorage.setItem('xicompanion.macros.saved', String(Date.now()));
       this.message.value = {
         text: res.applied
           ? `saved ${res.file} — applying in-game via book switch (~5s)`

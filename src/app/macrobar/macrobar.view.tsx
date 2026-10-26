@@ -4,7 +4,7 @@
 // No NAV entry; reached via "macro bar" on the Macros page or //xicompanion
 // macrobar. Char/book/page persist in localStorage so the bar reopens
 // where it was.
-import { Component, View, inject, signal, computed } from '@preact-mvc/core';
+import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { RefreshCw } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
@@ -30,7 +30,15 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
   private running = signal<number | null>(null);
   private err = signal<string | null>(null);
   private timer = 0;
+  private disposeSel?: () => void;
+  // suppress in-game follow briefly after a local pick — the client's
+  // mcr.sys write lands ~a poll later, and without the hold the effect
+  // snaps the picker back to the stale value before it can
+  private selHold = 0;
   private onFocus = () => void this.api.refreshMacros();
+  private onStorage = (e: StorageEvent) => {
+    if (e.key === 'xicompanion.macros.saved') this.onFocus();
+  };
 
   private chars = computed(() => this.api.macros.value?.characters ?? []);
   private char = computed<MacroCharacter | null>(
@@ -69,15 +77,34 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
       // fresh state
     }
     void this.api.refreshMacros();
+    void this.api.refreshMacroSel();
+    // follow the client's active palette: mcr.sys changes push a
+    // `macrosel` event → adopt its book/page when it names our char
+    // (the pickers' own in-game sync echoes back here harmlessly)
+    this.disposeSel = effect(() => {
+      const c = this.char.value;
+      const v = c ? this.api.macroSel.value[c.id] : undefined;
+      if (
+        v && Date.now() >= this.selHold &&
+        (v.b !== this.book.value || v.p !== this.page.value)
+      ) {
+        this.book.value = v.b;
+        this.page.value = v.p;
+        this.persist();
+      }
+    });
     // this window has its own api context — edits saved in the editor
-    // window don't reach us, so refetch on focus + a slow poll
+    // window don't reach us, so refetch on save bumps, focus + a poll
     this.timer = window.setInterval(this.onFocus, 15000);
     window.addEventListener('focus', this.onFocus);
+    window.addEventListener('storage', this.onStorage);
   }
 
   onDestroy() {
     clearInterval(this.timer);
     window.removeEventListener('focus', this.onFocus);
+    window.removeEventListener('storage', this.onStorage);
+    this.disposeSel?.();
   }
 
   private persist() {
@@ -112,12 +139,14 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
 
   private pickBook(b: number) {
     const changed = b !== this.book.value;
+    this.selHold = Date.now() + 2500;
     this.book.value = b;
     this.persist();
     this.syncInGame(changed);
   }
 
   private pickPage(p: number) {
+    this.selHold = Date.now() + 2500;
     this.page.value = p;
     this.persist();
     this.syncInGame(false);

@@ -363,6 +363,20 @@ function M.palette_file(index)
     return index == 0 and 'mcr.dat' or ('mcr%d.dat'):format(index)
 end
 
+-- mcr.sys: 28B header + u32 palette file index — the client rewrites it
+-- on every in-game book/page switch (and at logout), which makes it the
+-- only observable of the active palette: no packet or API reports it.
+-- Returns the 0-based palette index (book = i/10+1, page = i%10+1), or
+-- nil when the file is absent/malformed.
+function M.read_sys_index(dir)
+    local data = read_file(join(dir, 'mcr.sys'))
+    if not data or #data < 28 or data:byte(1) ~= 1 then return nil end
+    return data:byte(25)
+        + data:byte(26) * 256
+        + data:byte(27) * 65536
+        + data:byte(28) * 16777216
+end
+
 function M.read_titles(dir)
     local titles = {}
     for f = 1, 2 do

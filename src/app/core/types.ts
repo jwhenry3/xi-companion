@@ -167,19 +167,6 @@ export interface JournalNames {
   roe_categories: Record<string, string>;
   /** the client's menu tree: top category id -> ordered subcategory ids */
   roe_tree?: Record<string, number[]>;
-  /** training regime pages by zone display name (bg-wiki extract) */
-  regimes?: {
-    fov?: Record<string, RegimePage[]>;
-    gov?: Record<string, RegimePage[]>;
-  };
-}
-
-export interface RegimePage {
-  page: number;
-  desc: string;
-  needs: number[];
-  low: number;
-  high: number;
 }
 
 export interface JournalQuestArea {
@@ -203,27 +190,6 @@ export interface JournalRoeObjective {
   limited?: boolean;
 }
 
-export interface JournalValor {
-  kind: 'fov' | 'gov';
-  zone: number;
-  zone_name?: string;
-  page: number;
-  /** objective text, e.g. '5 Scarab Beetles + 1 Forest Funguar' */
-  desc?: string;
-  /** required count per objective */
-  needs: number[];
-  /** live kill progress per objective */
-  killed: number[];
-  low?: number;
-  high?: number;
-  done?: boolean;
-  /** server-side regime id, when a menu echo revealed it */
-  regime?: number;
-  accepted?: number;
-  /** last progress message that didn't match a known objective */
-  last?: { killed: number; needed: number };
-}
-
 export interface JournalState {
   char: string | null;
   nation?: number | null;
@@ -234,10 +200,6 @@ export interface JournalState {
     active: JournalRoeObjective[];
     done: number[];
   };
-  /** active Fields/Grounds of Valor training regime, if any */
-  valor?: JournalValor | null;
-  /** tabs currency from the 0x113 currency packet */
-  valor_points?: number;
   /** 'kind:key:id' entries hidden from the detached tracker window —
    *  everything is tracked by default until the player disables it */
   untracked?: string[];
@@ -260,6 +222,79 @@ export interface RecastState {
   list: RecastEntry[];
 }
 
+// ---------- ability/spell book ----------
+
+export interface AbilityEntry {
+  id: number;
+  /** display name */
+  n: string;
+  /** command prefix — '/jobability', '/weaponskill', '/pet', … */
+  pfx: string;
+  /** targets bitmask (res convention: 1 self, 32 enemy, 63 any player) */
+  tg: number;
+  mp?: number;
+  tp?: number;
+  /** range in yalms */
+  rg?: number;
+  dur?: number;
+  /** JA recast_id — joins to RecastEntry.k = 'a<rid>' */
+  rid?: number;
+  /** acquisition type — Level | Merit | JP | … (ja_levels.lua) */
+  ty?: string;
+  /** main-job level at which it becomes available (subjob reqs ×2) */
+  lvl?: number;
+  /** job source: 'M' main job, 'S' subjob */
+  j?: 'M' | 'S';
+  /** canonical macro line from the wiki infobox, e.g. /ja "X" <me> */
+  cmd?: string;
+  /** menu icon id — served by /api/statusicon */
+  ic?: number;
+  /** name-keyed menu icon index — served by /api/menuicon (preferred) */
+  mic?: number;
+  /** element 0-7 — background tile color (weapon skills) */
+  el?: number;
+  /** 1 = learned */
+  l?: number;
+  /** kind: 'ja' job ability | 'ws' weapon skill */
+  k: 'ja' | 'ws';
+}
+
+export interface SpellEntry {
+  id: number;
+  n: string;
+  /** '/magic', '/ninjutsu', '/song', '/pet', … */
+  pfx: string;
+  tg: number;
+  /** spell family — WhiteMagic, BlackMagic, Ninjutsu, Trust, … */
+  ty?: string;
+  sk?: number;
+  el?: number;
+  mp?: number;
+  /** cast time / base recast, seconds */
+  ct?: number;
+  rc?: number;
+  rg?: number;
+  lvl?: number;
+  j?: 'M' | 'S';
+  /** menu icon id — served by /api/statusicon */
+  ic?: number;
+  /** item icon id — served by /api/icon (Trust role weapons) */
+  iic?: number;
+  /** name-keyed menu icon index — served by /api/menuicon (preferred) */
+  mic?: number;
+  /** Trust party-list name (differs from `n` on some alter egos) */
+  pn?: string;
+  l?: number;
+  k: 'sp';
+}
+
+export interface AbilitiesPayload {
+  /** absent/0 = logged out */
+  on?: number;
+  abilities?: AbilityEntry[];
+  spells?: SpellEntry[];
+}
+
 // ---------- map / minimap ----------
 
 export interface MapEntity {
@@ -272,12 +307,16 @@ export interface MapEntity {
   y: number;
   /** raw spawn_type (16 = monster, 1 = PC, 2 = NPC) */
   st: number;
-  /** flags: 1 = in party, 2 = in alliance, 4 = is_npc, 8 = linkshell */
+  /** flags: 1 = in party, 2 = in alliance, 4 = is_npc, 8 = linkshell,
+   *  16 = notorious monster (name-matched — the client never flags NMs) */
   f: number;
   /** hp percent (0..100) */
   hp: number;
   /** distance in yalms */
   d: number;
+  /** height delta vs the player in yalms (+ above, - below); absent
+   *  when the entity's height isn't known */
+  el?: number;
 }
 
 export interface MapWsEntry {
@@ -287,15 +326,22 @@ export interface MapWsEntry {
   l: number;
   /** widescan type byte */
   t: number;
-  /** map-pixel offset relative to the player's map position */
+  /** world-yalm deltas from the player at scan time (0x0F4) — kept raw;
+   *  rendering uses the projected wx/wy */
   x: number;
   y: number;
   n?: string;
+  /** 1 when the name is in the NM table (name-matched) */
+  nm?: number;
   /** 1 when this is the target the client is tracking */
   tr?: number;
-  /** absolute map px — filled by 0x0F5 live track updates */
+  /** absolute map px — projected from the world-yalm deltas at receipt,
+   *  refreshed by 0x0F5 live track updates */
   wx?: number;
   wy?: number;
+  /** height delta vs the player — only track updates (0x0F5) carry a
+   *  live height, so most entries never set it */
+  el?: number;
 }
 
 export interface MapState {
@@ -310,10 +356,125 @@ export interface MapState {
   ms?: number;
   /** player: map px + facing (radians, 0 = east, increasing clockwise) */
   me?: { x: number; y: number; f: number };
+  /** player's grid coord, e.g. 'F-10' — the client's own pos string */
+  pos?: string;
   /** entities in render range */
   e?: MapEntity[];
-  /** widescan entries (relative offsets; wx/wy when tracked) */
+  /** widescan entries (wx/wy absolute map px; x/y raw world deltas) */
   ws?: MapWsEntry[];
   /** 1 while a widescan result list is held */
   wsa?: number;
+}
+
+// ---------- party / target (party.lua) ----------
+
+export interface PartyBuff {
+  i: number;
+  n?: string;
+}
+
+export interface PartyMember {
+  n: string;
+  /** hp/mp percentages, tp raw */
+  hp: number;
+  mp: number;
+  tp: number;
+  /** raw current hp/mp (exact for the player, packet-derived for others) */
+  hc?: number;
+  mc?: number;
+  /** max hp/mp — exact for the player via vitals, derived from the
+   *  floored percentage for others */
+  hx?: number;
+  mx?: number;
+  /** 1 = out of zone */
+  o?: number;
+  /** 1 = party/alliance leader */
+  l?: number;
+  /** main job abbrev ('WAR') + level — self via get_player, others from
+   *  the 0x0DD/0x0DF update feed */
+  j?: string;
+  jl?: number;
+  /** sub job abbrev + level */
+  sj?: string;
+  sjl?: number;
+  /** Trust role tag (TNK/HLR/RNG/CST/SUP/DD) — trusts have no job packets */
+  tr?: string;
+  b?: PartyBuff[];
+}
+
+export interface TargetCast {
+  /** actor id */
+  a: number;
+  /** actor name (resolved via get_mob_by_id — match fallback) */
+  an?: string;
+  /** actor is the local player (id or zone-index match) */
+  own?: 1;
+  n: string;
+  /** unix seconds when the cast lands */
+  t: number;
+  /** total cast duration (s) */
+  d: number;
+}
+
+export interface TargetState {
+  i: number;
+  n: string;
+  hpp?: number;
+  tp?: number;
+  /** claim status: 0 unclaimed, 1 self, 2 party, 3 someone else's */
+  cl?: number;
+  cast?: TargetCast;
+}
+
+/** one live skillchain (prediction, per target) — etas are unix secs */
+export interface ScChain {
+  /** active chainable elements — WS props at lv0, the formed SC after */
+  e: string[];
+  /** 0 = WS root (no chain formed yet), 1-4 = formed chain level */
+  lv: number;
+  /** display name — formed SC element or the root WS name */
+  n: string;
+  /** last actor + weapon skill that opened/extended the chain */
+  an?: string;
+  w?: string;
+  /** chain target's display name */
+  tg?: string;
+  /** unix time the chain formed/started */
+  t: number;
+  /** chain window opens / closes */
+  o: number;
+  c: number;
+  /** magic-burst window end (set once a chain actually forms) */
+  b?: number;
+}
+
+export interface ScEvent {
+  an?: string;
+  ws: string;
+  /** formed skillchain element, if this WS chained */
+  sc?: string;
+  /** target name */
+  tg?: string;
+  /** unix time of the action */
+  t: number;
+}
+
+export interface PartyState {
+  on?: number;
+  /** party / alliance 1 / alliance 2 rows */
+  p?: PartyMember[];
+  a1?: PartyMember[];
+  a2?: PartyMember[];
+  t?: TargetState;
+  /** the player's mob id — lets the UI skip its own casts */
+  me?: number;
+  /** any cast currently being tracked (actor may not be the target) */
+  cast?: TargetCast;
+  /** skillchain / magic-burst tracking — active chains + recent WSs */
+  sc?: {
+    c?: ScChain[];
+    h?: ScEvent[];
+    /** WSs the current equipment allows: id, name, chainable props */
+    ws?: { i: number; n: string; p: string[] }[];
+  };
 }

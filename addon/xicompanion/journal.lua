@@ -45,11 +45,8 @@ local log
 local log_err
 local player_name_fn
 local data_root
-local zones_res   -- resources zones table (id -> {en=...})
-local mob_name_fn -- index -> npc/mob display name
 
 local names = nil -- generated journal_names.lua contents
-local regime_names = { fov = {}, gov = {} } -- generated regime_names.lua
 
 local state = nil
 local dirty = false
@@ -145,6 +142,7 @@ local function ensure_state()
     state = load_persisted(char) or empty_state(char)
     state.char = char
     state.untracked = state.untracked or {} -- persisted files predate the field
+    state.valor, state.valor_points = nil, nil -- FoV/GoV tracking was removed
     return state
 end
 
@@ -351,265 +349,6 @@ local function handle_roe_log(data)
 end
 
 ----------------------------------------------------------------------
--- Fields of Valor / Grounds of Valor (training regimes)
---
--- There is no zone-in state sync for regimes; state is learned live:
---  - outgoing 0x05B dialogue choice at a Field Manual/Grounds Tome NPC:
---      option == 3            -> regime canceled
---      option % 16 == 2       -> page select: page = option >> 4
---      option bit 0x80000000  -> re-registering last regime (repeat)
---  - incoming 0x05C menu params (8 u32s @0x04): page preview carries
---    {n1..n4, 0, low, high, regime_id}; a "review" request carries
---    {req1..4, killed1..4}
---  - incoming 0x029/0x02D action messages:
---      558 = defeated a target (param1=killed, param2=needed)
---      559 = completed regime
---      643 = regime begins anew (daily renewal)
---  - incoming 0x113: valor points (tabs) u16 @0x1C
---
--- Page -> objectives/levels comes from generated regime_names.lua.
--- Option/message structure mirrors darkstar/LSB's regimes.lua, which is
--- built from retail captures.
-----------------------------------------------------------------------
-
-local MANUAL_NPCS = {
-    ['Field Manual'] = 'fov',
-    ['Grounds Tome'] = 'gov',
-    ['Survival Guide'] = 'gov',
-}
-local REGIME_MSG = {
-    [558] = 'progress', -- killed, needed
-    [559] = 'done',
-    [643] = 'anew',
-}
-local MAX_PAGE = { fov = 5, gov = 10 }
-
-local menu_ctx = nil       -- {kind=, zone=, t=} while a manual menu is open
-local pending_choice = nil -- last 0x05B option sent to a manual
-
-local function zone_disp_name(zone_id)
-    local z = zones_res and zones_res[zone_id]
-    return z and (z.en or z.english or z.name) or nil
-end
-
-local regime_lookup = nil -- normalized zone name -> kind -> page -> def
-local function regime_def(kind, zone_id, page)
-    if not regime_lookup then
-        regime_lookup = {}
-        for k, zones in pairs(regime_names) do
-            for zname, pages in pairs(zones or {}) do
-                local nk = zname:lower():gsub('[^%w]', '')
-                regime_lookup[nk] = regime_lookup[nk] or {}
-                local by_page = {}
-                for _, p in ipairs(pages) do by_page[p.page] = p end
-                regime_lookup[nk][k] = by_page
-            end
-        end
-    end
-    local zname = zone_disp_name(zone_id)
-    if not zname then return nil, nil end
-    local z = regime_lookup[zname:lower():gsub('[^%w]', '')]
-    local def = z and z[kind] and z[kind][page]
-    return def, zname
-end
-
-local function valor_accept(kind, zone_id, page, repeat_)
-    local st = ensure_state()
-    if not st then return end
-    local def, zname = regime_def(kind, zone_id, page)
-    local needs = {}
-    if def then
-        for i, n in ipairs(def.needs or {}) do needs[i] = n end
-    end
-    local v = st.valor
-    local same = v and v.kind == kind and v.zone == zone_id and v.page == page
-    if same and not repeat_ then
-        return -- re-picked the active page; keep progress
-    end
-    st.valor = {
-        kind = kind,
-        zone = zone_id,
-        zone_name = zname,
-        page = page,
-        desc = def and def.desc or nil,
-        needs = needs,
-        killed = {},
-        low = def and def.low or nil,
-        high = def and def.high or nil,
-        accepted = os.time(),
-    }
-    dirty = true
-end
-
-local function valor_cancel()
-    local st = ensure_state()
-    if st and st.valor then
-        st.valor = nil
-        dirty = true
-    end
-end
-
--- classify an outgoing 0x05B dialogue choice; kind is only set when the
--- packet's target resolved to a manual/tome NPC
-function M.handle_outgoing(id, data)
-    if id ~= 0x05B or type(data) ~= 'string' or #data < 0x14 then return end
-    local target_index = u16(data, 0x0D)
-    local npc = mob_name_fn and mob_name_fn(target_index) or nil
-    local kind = npc and MANUAL_NPCS[npc] or nil
-    if not kind then return end
-    local zone = u16(data, 0x11)
-    -- option u32 = low word (choice value) + high word (repeat flag in
-    -- bit 15, i.e. u32 bit 31). Reading the words separately sidesteps
-    -- 0x80000000 parsing differently across lua flavours
-    local option = u16(data, 9)
-    local repeat_ = u16(data, 0x0B) >= 0x8000
-    menu_ctx = { kind = kind, zone = zone, t = os.clock() }
-    pending_choice = { kind = kind, zone = zone, option = option, t = os.clock() }
-    if option == 3 then
-        valor_cancel()
-        return
-    end
-    if option % 16 == 2 then
-        local page = math.floor(option / 16)
-        if page >= 1 and page <= MAX_PAGE[kind] then
-            valor_accept(kind, zone, page, repeat_)
-        end
-    end
-end
-
--- incoming menu-open / params while a manual menu has context
-local function apply_menu_params(p)
-    local st = ensure_state()
-    local v = st and st.valor
-    -- page preview/select echo: {n1..n4, 0, low, high, regime_id}
-    if p[5] == 0 and p[6] > 0 and p[7] > 0 and p[8] > 0 then
-        if v then
-            v.low, v.high = p[6], p[7]
-            v.regime = p[8]
-            local needs = {}
-            for i = 1, 4 do
-                if p[i] > 0 then needs[#needs + 1] = p[i] end
-            end
-            if #needs > 0 then v.needs = needs end
-            dirty = true
-        end
-        return
-    end
-    -- review current regime: {req1..4, killed1..4}
-    if v and (p[1] > 0 or p[2] > 0 or p[3] > 0 or p[4] > 0) then
-        local needs, killed = {}, {}
-        for i = 1, 4 do
-            if p[i] > 0 then
-                needs[#needs + 1] = p[i]
-                killed[#killed + 1] = p[i + 4]
-            end
-        end
-        if #needs > 0 then
-            v.needs = needs
-            v.killed = killed
-            dirty = true
-        end
-    end
-end
-
-local function menu_ctx_live()
-    return menu_ctx and (os.clock() - menu_ctx.t) < 15 and menu_ctx or nil
-end
-
-local function handle_menu_info(data)
-    -- 0x05C Dialogue Information: 32B menu params @0x04
-    if not menu_ctx_live() then return end
-    local p = {}
-    for i = 0, 7 do
-        p[i + 1] = u32(data, 5 + i * 4)
-    end
-    apply_menu_params(p)
-end
-
-local function handle_npc_menu(id, data)
-    -- 0x033: name @0x10, params @0x50; 0x034: index @0x28, params @0x08;
-    -- 0x032: index @0x08 only (no params)
-    local npc, params_off
-    if id == 0x033 then
-        if #data < 0x30 then return end
-        local name = data:sub(0x11, 0x20):match('^%Z+')
-        npc = name
-        params_off = 0x51
-    else
-        if #data < 0x0C then return end
-        local idx = id == 0x034 and u16(data, 0x29) or u16(data, 9)
-        npc = mob_name_fn and mob_name_fn(idx) or nil
-        params_off = id == 0x034 and 9 or nil
-    end
-    local kind = npc and MANUAL_NPCS[npc] or nil
-    if not kind then return end
-    menu_ctx = { kind = kind, t = os.clock() }
-    if params_off and #data >= params_off + 31 then
-        local p = {}
-        for i = 0, 7 do
-            p[i + 1] = u32(data, params_off + i * 4)
-        end
-        apply_menu_params(p)
-    end
-end
-
-local function handle_valor_message(id, data)
-    -- 0x029: params @0x0C/0x10, msg @0x18; 0x02D: params @0x10/0x14, msg @0x18
-    local msg = u16(data, 0x19) % 0x8000
-    local kind = REGIME_MSG[msg]
-    if not kind then return end
-    local st = ensure_state()
-    local v = st and st.valor
-    if not v then return end
-    if kind == 'done' then
-        v.done = true
-        for i, n in ipairs(v.needs or {}) do v.killed[i] = n end
-        dirty = true
-        return
-    end
-    if kind == 'anew' then
-        v.done = nil
-        v.killed = {}
-        dirty = true
-        return
-    end
-    -- progress: param1 = killed, param2 = needed
-    local off = id == 0x02D and 0x11 or 0x0D
-    local killed, needed = u32(data, off), u32(data, off + 4)
-    local needs = v.needs or {}
-    v.killed = v.killed or {}
-    local matched = false
-    for i = 1, #needs do
-        if needs[i] == needed and (v.killed[i] or 0) < needs[i] then
-            v.killed[i] = killed
-            matched = true
-            break
-        end
-    end
-    if not matched then
-        for i = 1, #needs do
-            if (v.killed[i] or 0) < needs[i] then
-                v.killed[i] = math.min(killed, needs[i])
-                matched = true
-                break
-            end
-        end
-    end
-    if not matched and needed > 0 then
-        v.last = { killed = killed, needed = needed }
-    end
-    dirty = true
-end
-
-local function handle_valor_points(data)
-    if #data < 0x1E then return end
-    local st = ensure_state()
-    if not st then return end
-    st.valor_points = u16(data, 0x1D)
-    dirty = true
-end
-
-----------------------------------------------------------------------
 -- public API
 ----------------------------------------------------------------------
 
@@ -630,7 +369,7 @@ end
 local function state_payload()
     local st = state
     if not st then
-        return { char = nil, updated = 0, quests = {}, missions = {}, roe = { active = {}, done = {} }, untracked = {}, valor = nil }
+        return { char = nil, updated = 0, quests = {}, missions = {}, roe = { active = {}, done = {} }, untracked = {} }
     end
     pointer_completion()
     local quests = {}
@@ -659,25 +398,6 @@ local function state_payload()
     local un = {}
     for k in pairs(st.untracked or {}) do un[#un + 1] = k end
     table.sort(un)
-    local v = st.valor
-    local valor = nil
-    if v then
-        valor = {
-            kind = v.kind,
-            zone = v.zone,
-            zone_name = v.zone_name,
-            page = v.page,
-            desc = v.desc,
-            needs = json_array(v.needs or {}),
-            killed = json_array(v.killed or {}),
-            low = v.low,
-            high = v.high,
-            done = v.done or nil,
-            regime = v.regime,
-            accepted = v.accepted,
-            last = v.last,
-        }
-    end
     return {
         char = st.char,
         nation = st.nation,
@@ -685,8 +405,6 @@ local function state_payload()
         quests = quests,
         missions = missions,
         roe = { active = json_array(st.roe.active), done = json_array(roe_done) },
-        valor = valor,
-        valor_points = st.valor_points,
         untracked = json_array(un),
     }
 end
@@ -709,14 +427,6 @@ function M.handle_packet(id, data)
         handle_roe_update(data)
     elseif id == 0x112 then
         handle_roe_log(data)
-    elseif id == 0x05C then
-        handle_menu_info(data)
-    elseif id == 0x032 or id == 0x033 or id == 0x034 then
-        handle_npc_menu(id, data)
-    elseif id == 0x029 or id == 0x02D then
-        handle_valor_message(id, data)
-    elseif id == 0x113 then
-        handle_valor_points(data)
     end
 end
 
@@ -757,7 +467,7 @@ end
 function M.set_tracked(kind, key, id, tracked)
     local st = ensure_state()
     if not st then return nil, 'not logged in' end
-    if kind ~= 'quest' and kind ~= 'mission' and kind ~= 'roe' and kind ~= 'valor' then
+    if kind ~= 'quest' and kind ~= 'mission' and kind ~= 'roe' then
         return nil, 'bad kind'
     end
     key = tostring(key or '')
@@ -800,7 +510,6 @@ function M.names_json()
             roe = stringify_keys(names.roe),
             roe_categories = stringify_keys(names.roe_categories),
             roe_tree = stringify_keys(names.roe_tree or {}),
-            regimes = regime_names,
         })
     end
     return names_json_cache
@@ -826,8 +535,6 @@ function M.setup(deps)
     log_err = deps.log_err or log
     player_name_fn = deps.player_name
     data_root = deps.data_dir
-    zones_res = deps.zones
-    mob_name_fn = deps.mob_name
     local path = join(deps.addon_path, 'journal_names.lua')
     local ok, t = pcall(dofile, path)
     if ok and type(t) == 'table' then
@@ -835,13 +542,6 @@ function M.setup(deps)
     else
         names = { quest_areas = {}, mission_lines = {}, roe = {}, roe_categories = {}, roe_tree = {} }
         log_err('journal_names.lua missing or invalid - run scripts/extract-journal.py')
-    end
-    local ok2, t2 = pcall(dofile, join(deps.addon_path, 'regime_names.lua'))
-    if ok2 and type(t2) == 'table' then
-        regime_names = { fov = t2.fov or {}, gov = t2.gov or {} }
-    else
-        regime_names = { fov = {}, gov = {} }
-        log_err('regime_names.lua missing or invalid - run scripts/extract-regimes.py')
     end
 end
 

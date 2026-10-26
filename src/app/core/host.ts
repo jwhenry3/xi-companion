@@ -50,13 +50,18 @@ if (inWebView()) tell('wails:runtime:ready');
 // would otherwise read as the fab. inWebView gates dev browser tabs.
 const FAB_VIEWPORT = 200;
 export const fabMode = signal(false);
+// latched while a fab dropdown is showing — the menu itself lives in the
+// shared detached /fabmenu window now, so this is bookkeeping for the
+// bar's own button glow (and a belt-and-suspenders fabMode hold if an
+// old shell still grows the window)
+export const fabMenuOpen = signal(false);
 
 const updateFabMode = () => {
   fabMode.value =
     inWebView() &&
     !tooltipMode &&
     !detachedMode &&
-    window.innerHeight < FAB_VIEWPORT;
+    (fabMenuOpen.value || window.innerHeight < FAB_VIEWPORT);
   // body paints the opaque app background — drop it in fab mode so the
   // window's transparent backdrop shows through around the bar
   document.body.classList.toggle('fab-mode', fabMode.value);
@@ -72,6 +77,16 @@ if (winParam && winParam !== '1' && winParam.startsWith('/')) {
 }
 export const detachedMode = winParam !== null;
 
+/** the shared hidden window that hosts the fab's dropdown menus —
+ *  the fab bar never resizes for a menu; this window shows/sizes/
+ *  positions itself under the tapped group button instead */
+export const menuMode =
+  detachedMode && window.location.pathname === '/fabmenu';
+
+/** the collapse-all handle — a bare floating button, no chrome */
+export const visibilityMode =
+  detachedMode && window.location.pathname === '/visibility';
+
 /** detached windows that render as floating overlay panels — the
  *  transparent backdrop + opaque card chrome. The shell skips the
  *  opaque backdrop and Go keeps them on the always-on-top fab layer
@@ -84,11 +99,27 @@ export const macrobarMode =
   detachedMode && window.location.pathname === '/macrobar';
 export const minimapMode =
   detachedMode && window.location.pathname === '/minimap';
+export const partyMode =
+  detachedMode && window.location.pathname === '/party';
+export const targetMode =
+  detachedMode && window.location.pathname === '/target';
+export const skillchainMode =
+  detachedMode && window.location.pathname === '/skillchain';
 // every spawned window gets the transparent backdrop so the ffxi-panel
 // card's rounded corners clip cleanly; fab-layer panels additionally
 // disable selection (tracker-style overlay panels)
 if (detachedMode) document.body.classList.add('detached-mode');
-if (trackerMode || cooldownsMode || macrobarMode || minimapMode)
+if (
+  trackerMode ||
+  cooldownsMode ||
+  macrobarMode ||
+  minimapMode ||
+  partyMode ||
+  targetMode ||
+  skillchainMode ||
+  visibilityMode ||
+  menuMode
+)
   document.body.classList.add('panel-mode');
 
 /** ?tooltip=1 — this window IS the floating item tooltip. The shell
@@ -133,6 +164,31 @@ export const shellGeom = signal<ShellGeom | null>(null);
  *  the list via __xicWindows on every spawn/close; the fab's menu bar
  *  reads it to mark which toggles are on. */
 export const openWindows = signal<string[]>([]);
+/** collapse-all toggle state — owned by the shell, pushed via
+ *  __xicCollapsed so every window's control shows the same state */
+export const uiCollapsed = signal(false);
+
+// fab-layer routes whose login autospawn lives in addon settings — user
+// hides/shows flip the same flag so the next login matches the last
+// state (only explicit open/close actions post; quitting posts nothing)
+const PANEL_SETTING: Record<string, string> = {
+  '/tracker': 'tracker',
+  '/macrobar': 'macrobar',
+  '/cooldowns': 'cooldowns',
+  '/minimap': 'minimap',
+  '/party': 'party',
+  '/target': 'target',
+  '/skillchain': 'skillchain',
+};
+function persistPanel(path: string, on: boolean) {
+  const key = PANEL_SETTING[path];
+  if (!key || !inWebView()) return;
+  void fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ [key]: on }),
+  }).catch(() => {});
+}
 
 if (inWebView()) {
   (window as any).__xicGeom = (g: ShellGeom) => {
@@ -140,6 +196,11 @@ if (inWebView()) {
   };
   (window as any).__xicWindows = (list: string[]) => {
     openWindows.value = list ?? [];
+  };
+  // collapse-all state pushed by the shell — keeps the fab's button
+  // and the /visibility window's icon in sync across reloads
+  (window as any).__xicCollapsed = (c: boolean) => {
+    uiCollapsed.value = !!c;
   };
   // the shell only reports on change — ask once at load so a page that
   // mounted after windows were already up starts with the right list
@@ -149,25 +210,43 @@ if (inWebView()) {
 // ---------- theme ----------
 // the app is styled exclusively in Tailwind's slate ramp, so light mode
 // flips the ramp (styles.css html.light) — no per-component work.
-// 'glass' is a translucent-black square-edged skin for detached panels.
+// 'slate' is a translucent-black square-edged skin for detached panels.
 // Each detached window can pick its own theme — the per-route key
 // shadows the global one for that window only.
 
-export type Theme = 'dark' | 'light' | 'glass' | 'bare';
-export const THEMES: Theme[] = ['dark', 'light', 'glass', 'bare'];
+export type Theme = 'classic' | 'light' | 'slate' | 'charcoal' | 'bare';
+export const THEMES: Theme[] = [
+  'classic',
+  'light',
+  'slate',
+  'charcoal',
+  'bare',
+];
+// renames — normalize stored picks from older builds
+// ('dark' → 'classic', 'glass' → 'slate')
+const normTheme = (v: string | null): Theme | null =>
+  v === 'dark'
+    ? 'classic'
+    : v === 'glass'
+      ? 'slate'
+      : (v as Theme | null);
 const THEME_KEY = 'xicompanion.theme';
 const WTHEME_KEY = `xicompanion.wintheme.${window.location.pathname}`;
-const storedTheme = (detachedMode
-  ? localStorage.getItem(WTHEME_KEY)
-  : null) as Theme | null;
+const storedTheme = detachedMode
+  ? normTheme(localStorage.getItem(WTHEME_KEY))
+  : null;
 export const theme = signal<Theme>(
-  storedTheme || (localStorage.getItem(THEME_KEY) as Theme) || 'dark',
+  storedTheme || normTheme(localStorage.getItem(THEME_KEY)) || 'classic',
 );
 const applyTheme = (t: Theme) => {
   const cl = document.documentElement.classList;
   cl.toggle('light', t === 'light');
-  cl.toggle('glass', t === 'glass');
+  cl.toggle('slate', t === 'slate');
+  cl.toggle('charcoal', t === 'charcoal');
   cl.toggle('bare', t === 'bare');
+  // DWM blur-behind is shell-side (backdrop-filter can't see through a
+  // transparent window) — slate posts 'on', every other theme clears it
+  if (inWebView()) tell(`xicompanion:blur:${t === 'slate' ? 'on' : 'off'}`);
 };
 applyTheme(theme.value);
 export function setTheme(t: Theme) {
@@ -178,7 +257,7 @@ export function setTheme(t: Theme) {
 const winKey = (path: string) => `xicompanion.wintheme.${path}`;
 /** a detached route's stored pick (null = follows the global theme) */
 export function getWinTheme(path: string): Theme | null {
-  return localStorage.getItem(winKey(path)) as Theme | null;
+  return normTheme(localStorage.getItem(winKey(path)));
 }
 export function setWinTheme(path: string, t: Theme | null) {
   if (t) localStorage.setItem(winKey(path), t);
@@ -186,7 +265,7 @@ export function setWinTheme(path: string, t: Theme | null) {
   // storage events don't reach the originating window — if the change
   // targets this window, apply it directly (null = back to global)
   if (detachedMode && path === window.location.pathname) {
-    const v = t ?? (localStorage.getItem(THEME_KEY) as Theme) ?? 'dark';
+    const v = t ?? normTheme(localStorage.getItem(THEME_KEY)) ?? 'classic';
     theme.value = v;
     applyTheme(v);
   }
@@ -199,9 +278,9 @@ window.addEventListener('storage', (e) => {
   if (e.key === mine) {
     // null newValue = key removed → fall back to the global
     const v =
-      (e.newValue as Theme) ??
-      (localStorage.getItem(THEME_KEY) as Theme) ??
-      'dark';
+      normTheme(e.newValue) ??
+      normTheme(localStorage.getItem(THEME_KEY)) ??
+      'classic';
     theme.value = v;
     applyTheme(v);
   } else if (
@@ -209,7 +288,7 @@ window.addEventListener('storage', (e) => {
     e.key === THEME_KEY &&
     !localStorage.getItem(WTHEME_KEY)
   ) {
-    theme.value = (e.newValue as Theme) || 'dark';
+    theme.value = normTheme(e.newValue) || 'classic';
     applyTheme(theme.value);
   }
 });
@@ -309,12 +388,33 @@ export const host = {
   /** spawn-or-close a detached window — the fab's menu-bar buttons
    *  toggle rather than always opening */
   toggleWindow(path: string) {
+    // remember the resulting visibility — the addon's login autospawn
+    // reads the same settings keys, so a hidden panel stays hidden
+    persistPanel(path, !openWindows.value.includes(path));
     tell(`xicompanion:toggle:${path}`);
+  },
+
+  /** collapse/restore every overlay window — the fab's collapse-all
+   *  button; the bar itself stays up as the restore handle */
+  collapseAll() {
+    tell('xicompanion:collapseall');
+  },
+
+  /** show/position the shared fab menu window — <group>:<x>,<y>,<w>,<h>
+   *  in screen px (see fabMenuShow in main.go) */
+  fabMenuShow(group: string, x: number, y: number, w: number, h: number) {
+    tell(`xicompanion:fabmenu-show:${group}:${x},${y},${w},${h}`);
+  },
+
+  /** hide the shared fab menu window (item click, bar drag, retarget) */
+  fabMenuHide() {
+    tell('xicompanion:fabmenu-hide');
   },
 
   /** close this window (a spawned tab). On the main window Esc/× use
    *  collapse() instead — the fab is its "closed" state. */
   closeWindow() {
+    persistPanel(window.location.pathname, false);
     if (inWebView()) tell('xicompanion:close');
     else window.close();
   },
@@ -464,7 +564,8 @@ export function installWindowChrome() {
           tell('xicompanion:drag');
           return;
       }
-      const edge = tooltipMode ? null : edgeAt(e.clientX, e.clientY);
+      const edge =
+        tooltipMode || menuMode ? null : edgeAt(e.clientX, e.clientY);
       if (edge) {
         e.preventDefault();
         e.stopPropagation();

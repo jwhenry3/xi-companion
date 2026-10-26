@@ -116,7 +116,7 @@ export function FilterDropdown({ sections, toggles = [], className }: FilterDrop
                 {isOpen && (
                   <div
                     role="listbox"
-                    className="absolute left-full top-0 z-50 ml-1 max-h-60 min-w-44 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
+                    className="absolute right-full top-0 z-50 mr-1 max-h-60 min-w-44 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
                   >
                     {s.options.map((o) => (
                       <div

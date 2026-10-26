@@ -4,8 +4,8 @@
 // by the same `journal` SSE signal as the journal view. Clicking a row
 // posts xicompanion:main:<path> so the main window surfaces on that journal
 // entry; the tracker itself stays up.
-import { Component, View, inject, signal, computed } from '@preact-mvc/core';
-import type { OnInit } from '@preact-mvc/core';
+import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
+import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { host } from '../core/host';
 import type { JournalNames } from '../core/types';
@@ -19,7 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 
 interface TrackItem {
-  kind: 'mission' | 'quest' | 'roe' | 'valor';
+  kind: 'mission' | 'quest' | 'roe';
   /** group key for the journal deep link (storyline / quest area) */
   key: string;
   id: number;
@@ -32,14 +32,46 @@ interface TrackItem {
 }
 
 @Component()
-export class TrackerView extends View implements OnInit {
+export class TrackerView extends View implements OnInit, OnDestroy {
   private api = inject(AddonApi);
   private names = signal<JournalNames | null>(null);
+  private disposeConn?: () => void;
+  private staleTimer?: ReturnType<typeof setInterval>;
 
   onInit() {
-    void Promise.all([this.api.refreshJournal(), this.api.journalNames()]).then(
-      ([, n]) => (this.names.value = n),
-    );
+    void this.api.refreshJournal();
+    void this.loadNames();
+    // poke for a server-side rebroadcast — covers the reload race where
+    // journal's diff-gated flush fired while this window's link was down
+    this.api.pokeJournal();
+    // the auto-spawned window can come up before the addon's HTTP server
+    // is listening — a failed names fetch used to stick forever
+    // ("Objective #N"), so refetch on every (re)connect
+    this.disposeConn = effect(() => {
+      if (this.api.connected.value) {
+        void this.loadNames();
+        this.api.pokeJournal();
+      }
+    });
+    // …and poll-and-repair while details are still missing — a fetch that
+    // fails AFTER connect leaves `connected` true forever, so the effect
+    // above never refires; retry until the rows have real data
+    this.staleTimer = setInterval(() => {
+      if (this.stale.value && !this.refreshing.value) this.refresh();
+    }, 10_000);
+  }
+
+  onDestroy() {
+    clearInterval(this.staleTimer);
+    this.disposeConn?.();
+  }
+
+  private async loadNames() {
+    try {
+      this.names.value = await this.api.journalNames();
+    } catch {
+      // retried on the next reconnect
+    }
   }
 
   private items = computed<TrackItem[]>(() => {
@@ -104,31 +136,33 @@ export class TrackerView extends View implements OnInit {
         limited: a.limited,
       });
     }
-
-    // active training regime — a single row; 'valor:valor' hides it
-    const v = j?.valor;
-    if (v && !hidden.has(groupKey('valor', 'valor'))) {
-      const progress = (v.killed ?? []).reduce((a, b) => a + b, 0);
-      const target = (v.needs ?? []).reduce((a, b) => a + b, 0);
-      out.push({
-        kind: 'valor',
-        key: 'valor',
-        id: 0,
-        group: v.kind === 'fov' ? 'Fields of Valor' : 'Grounds of Valor',
-        name:
-          `${v.zone_name ?? `zone ${v.zone}`} — Page ${v.page}` +
-          (v.done ? ' ✓' : ''),
-        progress: target > 0 ? progress : v.last?.killed,
-        target: target > 0 ? target : v.last?.needed,
-      });
-    }
     return out;
   });
 
+  // details that never landed — no names table (every row falls back to
+  // "Objective #N" and missions/quests vanish entirely), or no journal
+  // snapshot at all while a character is logged in. Names is the common
+  // case: a fetch that fails post-connect never retries on its own.
+  private stale = computed(() => {
+    if (!this.api.connected.value) return false;
+    if (!this.names.value) return true;
+    return this.api.journal.value == null && this.api.state.value?.player != null;
+  });
+
   private open(it: TrackItem) {
-    const id = it.kind === 'valor' ? '' : `&id=${it.id}`;
-    host.showInMain(`/journal?g=${it.kind}&s=${it.key}${id}`);
+    host.showInMain(`/journal?g=${it.kind}&s=${it.key}&id=${it.id}`);
   }
+
+  private refresh() {
+    this.refreshing.value = true;
+    void this.loadNames();
+    this.api.pokeJournal();
+    void this.api
+      .refreshJournal()
+      .finally(() => setTimeout(() => (this.refreshing.value = false), 400));
+  }
+
+  private refreshing = signal(false);
 
   private row(it: TrackItem) {
     return (
@@ -176,7 +210,6 @@ export class TrackerView extends View implements OnInit {
     const missions = items.filter((i) => i.kind === 'mission');
     const quests = items.filter((i) => i.kind === 'quest');
     const roe = items.filter((i) => i.kind === 'roe');
-    const valor = items.filter((i) => i.kind === 'valor');
     const section = (label: string, list: TrackItem[]) =>
       list.length > 0 && (
         <div class="mb-1">
@@ -195,6 +228,26 @@ export class TrackerView extends View implements OnInit {
           items.length === 0 && 'flex items-center justify-center',
         )}
       >
+        <div class="flex items-center justify-end px-1 pb-0.5">
+          <button
+            class={cn(
+              'rounded p-0.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200',
+              this.refreshing.value && 'animate-spin',
+            )}
+            title="refresh objectives & quests"
+            onClick={() => this.refresh()}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              class="h-3 w-3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+            </svg>
+          </button>
+        </div>
         {items.length === 0 ? (
           <p class="px-2 py-1 text-[10px] text-slate-400">
             {this.api.journal.value?.char
@@ -206,7 +259,6 @@ export class TrackerView extends View implements OnInit {
             {section('Missions', missions)}
             {section('Quests', quests)}
             {section('Objectives', roe)}
-            {section('Training', valor)}
           </>
         )}
       </div>

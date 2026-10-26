@@ -1,9 +1,9 @@
 // Menu bar — what the overlay renders while the shell is in fab mode
-// (540×56 window): one row of buttons covering every detached-able
+// (540×56 window): dropdown groups covering every detached-able
 // window. A click toggles the window (open ↔ close); the XIC mark opens
 // the main UI. Open windows glow. Drag anywhere to reposition,
 // right-click quits the overlay process.
-import { host, openWindows } from './core/host';
+import { host, openWindows, fabMenuOpen } from './core/host';
 import {
   ScrollText,
   Keyboard,
@@ -16,14 +16,21 @@ import {
   NotebookPen,
   Shirt,
   Settings,
+  Sparkles,
+  Swords,
+  Link2,
+  Users,
+  Crosshair,
+  ChevronDown,
 } from 'lucide-preact';
+import { signal } from '@preact-mvc/core';
 
 const DRAG_THRESHOLD = 4; // px of movement before a press becomes a drag
 
 // "XIC" in the FFXI wordmark style — Cinzel Bold (Trajan clone,
 // bundled in assets/fonts) with the logo's gold metallic gradient over
 // a dark edge. paint-order=stroke keeps the outline behind the fill.
-function XicLogo({ size = 24 }: { size?: number }) {
+export function XicLogo({ size = 24 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <defs>
@@ -71,6 +78,7 @@ function pressDrag(onPress: () => void) {
         dragging = true;
         window.removeEventListener('mousemove', onMove, true);
         window.removeEventListener('mouseup', onUp, true);
+        closeMenu(); // a bar drag strands a floating menu — drop it first
         host.drag(); // → xicompanion:drag
       }
     };
@@ -90,26 +98,134 @@ function pressDrag(onPress: () => void) {
 const BTN =
   'ffxi-fab grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full transition';
 
-// always-on fab layer first (tracker-style overlay panels), then the
-// main UI's pages — both groups toggle their own detached window
-const PANELS = [
-  { path: '/tracker', label: 'quest tracker', Icon: ScrollText },
-  { path: '/macrobar', label: 'macro bar', Icon: Keyboard },
-  { path: '/cooldowns', label: 'cooldowns', Icon: Timer },
-  { path: '/minimap', label: 'minimap', Icon: Radar },
+type Icon = typeof Package;
+interface FabItem {
+  path: string;
+  label: string;
+  Icon: Icon;
+}
+interface FabGroup {
+  key: string;
+  label: string;
+  Icon: Icon;
+  items: FabItem[];
+}
+
+// page/panel fabs grouped by feature — combat tools, macros, quests,
+// world, gear. Each dropdown toggles that feature's detached window(s).
+const GROUPS: FabGroup[] = [
+  {
+    key: 'combat',
+    label: 'party & combat',
+    Icon: Swords,
+    items: [
+      { path: '/party', label: 'party', Icon: Users },
+      { path: '/target', label: 'target', Icon: Crosshair },
+      { path: '/cooldowns', label: 'cooldowns', Icon: Timer },
+      { path: '/skillchain', label: 'skillchains', Icon: Link2 },
+      { path: '/abilities', label: 'spell book', Icon: Sparkles },
+    ],
+  },
+  {
+    key: 'macros',
+    label: 'macros',
+    Icon: Keyboard,
+    items: [
+      { path: '/macrobar', label: 'macro bar', Icon: Keyboard },
+      { path: '/macros', label: 'macro editor', Icon: NotebookPen },
+    ],
+  },
+  {
+    key: 'quests',
+    label: 'quests & objectives',
+    Icon: ScrollText,
+    items: [
+      { path: '/journal', label: 'journal', Icon: BookOpen },
+      { path: '/tracker', label: 'quest tracker', Icon: ScrollText },
+    ],
+  },
+  {
+    key: 'world',
+    label: 'maps',
+    Icon: MapIcon,
+    items: [
+      { path: '/map', label: 'map', Icon: MapIcon },
+      { path: '/minimap', label: 'minimap', Icon: Radar },
+    ],
+  },
+  {
+    key: 'gear',
+    label: 'gear',
+    Icon: Package,
+    items: [
+      { path: '/', label: 'inventory', Icon: Package },
+      { path: '/profile', label: 'gearswap sets', Icon: Shirt },
+    ],
+  },
 ];
-const PAGES = [
-  { path: '/', label: 'inventory', Icon: Package },
+// frequent/config pages stay as one-tap buttons
+const PAGES: FabItem[] = [
   { path: '/chat', label: 'chat', Icon: MessageSquare },
-  { path: '/journal', label: 'journal', Icon: BookOpen },
-  { path: '/map', label: 'map', Icon: MapIcon },
-  { path: '/macros', label: 'macro editor', Icon: NotebookPen },
-  { path: '/profile', label: 'gearswap sets', Icon: Shirt },
   { path: '/settings', label: 'settings', Icon: Settings },
 ];
 
+// dropdown rows are ~30px + label header + padding — the menu window
+// sizes itself to this on each show
+const menuHeight = (g: FabGroup) => g.items.length * 30 + 34;
+const MENU_W = 176; // w-44
+const BAR_H = 56;
+
 function Sep() {
   return <span class="h-6 w-px shrink-0 bg-indigo-200/30" />;
+}
+
+const menuKey = signal<string | null>(null);
+const groupBtns = new Map<string, HTMLElement>();
+// which group the shared menu window is rendering — retargeted by the
+// shell's __xicMenu ExecJS
+const menuGroup = signal(
+  new URLSearchParams(location.search).get('g') ?? 'hud',
+);
+// set up the shell's hooks once per window context — the menu window
+// gets __xicMenu retargets, the bar window gets __xicMenuClosed nudges
+(window as any).__xicMenu = (g: string) => {
+  menuGroup.value = g;
+};
+(window as any).__xicMenuClosed = () => {
+  fabMenuOpen.value = false;
+  menuKey.value = null;
+};
+
+function closeMenu() {
+  if (!fabMenuOpen.value) return;
+  fabMenuOpen.value = false;
+  menuKey.value = null;
+  host.fabMenuHide();
+}
+
+function toggleMenu(g: FabGroup) {
+  if (menuKey.value === g.key) return closeMenu();
+  // the dropdown is its own always-hidden window — we just tell the
+  // shell where to put it. Prefer above the bar (the fab usually parks
+  // near the screen bottom), down only when the space above won't fit.
+  const h = menuHeight(g);
+  const scr = screen as Screen & { availTop: number; availLeft?: number };
+  const btn = groupBtns.get(g.key);
+  const r = btn?.getBoundingClientRect();
+  // screenX/Y = window origin; the frameless webview fills the window
+  const top = window.screenY + (r?.top ?? 0);
+  const left = window.screenX + (r ? r.left + r.width / 2 - MENU_W / 2 : 0);
+  const availL = scr.availLeft ?? 0;
+  const up =
+    top - h >= scr.availTop ||
+    top + BAR_H + h > scr.availTop + scr.availHeight;
+  const x = Math.round(
+    Math.max(availL, Math.min(left, availL + scr.availWidth - MENU_W)),
+  );
+  const y = Math.round(up ? top - h : top + BAR_H);
+  menuKey.value = g.key;
+  fabMenuOpen.value = true;
+  host.fabMenuShow(g.key, x, y, MENU_W, h);
 }
 
 export function Fab() {
@@ -123,38 +239,80 @@ export function Fab() {
     host.quit();
   };
 
+  const bar = (
+    <div
+      class="flex h-14 w-full items-center justify-center gap-1"
+      onMouseDown={gap.onMouseDown}
+    >
+      <Sep />
+      {GROUPS.map((g) => (
+        <button
+          ref={(el) => {
+            if (el) groupBtns.set(g.key, el);
+          }}
+          class={`${BTN}${g.items.some((p) => open.includes(p.path)) || menuKey.value === g.key ? ' on' : ''}`}
+          title={g.label}
+          {...pressDrag(() => toggleMenu(g))}
+        >
+          <span class="flex items-center">
+            <g.Icon size={16} />
+            <ChevronDown size={10} class="-ml-0.5 opacity-70" />
+          </span>
+        </button>
+      ))}
+      <Sep />
+      {PAGES.map(({ path, label, Icon }) => (
+        <button
+          class={`${BTN}${open.includes(path) ? ' on' : ''}`}
+          title={label}
+          {...pressDrag(() => {
+            closeMenu();
+            host.toggleWindow(path);
+          })}
+        >
+          <Icon size={18} />
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div
-      class="flex h-screen w-screen cursor-default items-center justify-center bg-transparent"
+      class="flex h-screen w-screen cursor-default flex-col justify-center overflow-hidden bg-transparent"
       title="XI Companion — click toggles a window · drag to move · right-click to quit"
       onContextMenu={onContextMenu}
     >
-      <div class="flex items-center gap-1" onMouseDown={gap.onMouseDown}>
-        <button
-          class={BTN}
-          title="main window"
-          {...pressDrag(() => host.expand())}
-        >
-          <XicLogo size={26} />
-        </button>
-        <Sep />
-        {PANELS.map(({ path, label, Icon }) => (
+      {bar}
+    </div>
+  );
+}
+
+// Renders inside the shared menu window (/fabmenu?window=1&g=<key>) —
+// the bare dropdown, no chrome. The shell retargets an already-open
+// menu over __xicMenu ExecJS instead of navigating.
+export function FabMenu() {
+  const g = GROUPS.find((x) => x.key === menuGroup.value) ?? GROUPS[0];
+  const open = openWindows.value;
+  return (
+    <div class="h-screen w-screen cursor-default overflow-hidden bg-transparent p-1">
+      <div class="w-full rounded border border-slate-600 bg-[#0d1338]/95 py-1 shadow-lg">
+        <p class="px-2 pb-0.5 pt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400/70">
+          {g.label}
+        </p>
+        {g.items.map(({ path, label, Icon }) => (
           <button
-            class={`${BTN}${open.includes(path) ? ' on' : ''}`}
-            title={label}
-            {...pressDrag(() => host.toggleWindow(path))}
+            key={path}
+            class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11px] text-slate-100 hover:bg-slate-700/60"
+            onClick={() => {
+              host.toggleWindow(path);
+              host.fabMenuHide();
+            }}
           >
-            <Icon size={18} />
-          </button>
-        ))}
-        <Sep />
-        {PAGES.map(({ path, label, Icon }) => (
-          <button
-            class={`${BTN}${open.includes(path) ? ' on' : ''}`}
-            title={label}
-            {...pressDrag(() => host.toggleWindow(path))}
-          >
-            <Icon size={18} />
+            <Icon size={14} />
+            <span class="flex-1">{label}</span>
+            {open.includes(path) && (
+              <span class="text-[8px] text-sky-300">●</span>
+            )}
           </button>
         ))}
       </div>

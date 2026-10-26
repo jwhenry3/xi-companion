@@ -91,6 +91,13 @@ writeFileSync(join(macroDir, 'mcr10.dat'), buildPalette([
   { name: 'Stone', lines: ['/console stone', '', '', '', '', ''] },
 ]));
 writeFileSync(join(macroDir, 'mcr.ttl'), buildTitles(['Book 1', 'RDM']));
+// mcr.sys: the client's active-palette marker — same 28B format
+// (header + u32 file index @24). Index 20 -> book 3, page 1.
+{
+  const sel = Buffer.alloc(4);
+  sel.writeUInt32LE(20);
+  writeFileSync(join(macroDir, 'mcr.sys'), Buffer.concat([mcrHdr(sel), sel]));
+}
 
 const L = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(L);
@@ -316,9 +323,15 @@ const resModule = {
   },
   job_abilities: {
     31: { id: 31, en: 'Berserk' },
+    35: { id: 35, en: 'Provoke', prefix: '/jobability', targets: 32 },
+  },
+  weapon_skills: {
+    1: { id: 1, en: 'Combo', prefix: '/weaponskill', targets: 32 },
   },
   spells: {
-    4: { id: 4, en: 'Cure IV', recast: 8 },
+    4: { id: 4, en: 'Cure IV', recast: 8, levels: { 1: 41 }, mp_cost: 88, prefix: '/magic' },
+    // NIN-job spell — exercises the subjob obtainable path (req*2)
+    338: { id: 338, en: 'Utsusemi: Ichi', levels: { 13: 12 }, mp_cost: 0, prefix: '/ninjutsu' },
   },
 };
 
@@ -341,8 +354,9 @@ const bags = {
 const BAG_KEYS = { 0: 'inventory', 1: 'safe', 8: 'wardrobe' };
 
 let loggedIn = false;
-// npc/mob index -> entity (manual/tome names drive regime capture)
+// npc/mob index -> entity
 const mobs = {};
+let targetIndex = 0; // mob index get_mob_by_target('t') resolves
 // the player's own index in the stubbed mob array — map.poll() reads
 // mobs[meIndex].mapPos for the player dot
 const meIndex = 0x101;
@@ -374,17 +388,32 @@ const windower = {
     get_mob_by_index: fn((i) => mobs[i] ?? null),
     get_ability_recasts: fn(() => abilityRecasts),
     get_spell_recasts: fn(() => spellRecasts),
+    // learned sets for the ability book — JA 31 learned, 35 not;
+    // WS 1 learned; spell 4 learned, 338 not (subjob-obtainable)
+    get_abilities: fn(() => ({ job_abilities: [31], weapon_skills: [1] })),
+    // id->bool map: 338's false must NOT mark it learned (regression:
+    // falsy values used to set learned_sp[k]=true → everything learned)
+    get_spells: fn(() => ({ 4: true, 338: false })),
     // 'me' resolves to the player's mob record; get_map_data projects
     // world coords into the client's map-pixel space. Raw jsfunction —
     // fn() returns one value, this needs three.
-    get_mob_by_target: fn((t) => (t === 'me' ? mobs[meIndex] : null)),
+    get_mob_by_target: fn((t) =>
+      t === 'me' ? mobs[meIndex] : t === 't' ? mobs[targetIndex] : null,
+    ),
+    // party roster for the /party feed — p0 self + one member with a
+    // mob id the 0x076 buff packet can attribute to
+    get_party: fn(() => ({
+      p0: { name: 'Tester', hpp: 92, mpp: 61, tp: 1400, zone: 100, mob: { id: meIndex } },
+      p1: { name: 'Allymate', hp: 1100, hpp: 88, mp: 300, mpp: 45, tp: 350, zone: 100, mob: { id: 0x1000 } },
+    })),
     get_map_data: (L) => {
       const n = lua.lua_gettop(L);
       let mid = 0, mx = 0, my = 0;
       if (n >= 3) {
-        // world x,y,z — the stub maps 1:1 into map px (+256 centering)
+        // world x,y,z — x/y are the horizontal plane (z is height), the
+        // stub maps 1:1 into map px (+256 centering)
         mx = (jsval(1) ?? 0) + 256;
-        my = (jsval(3) ?? 0) + 256;
+        my = (jsval(2) ?? 0) + 256;
       } else {
         // by entity index — index -> [map_id, x, y]
         const pos = mobs[jsval(1)]?.mapPos;
@@ -444,6 +473,16 @@ const windower = {
   }),
   get_dir: fn((p) => {
     try { return readdirSync(p); } catch { return {}; }
+  }),
+  // mcr*.dat stamp map — the departure-watch diffs these per poll
+  file_mtimes: fn((dir) => {
+    const out = {};
+    try {
+      for (const f of readdirSync(dir))
+        if (/^mcr\d*\.dat$/.test(f))
+          out[f] = String(statSync(join(dir, f)).mtimeMs);
+    } catch {}
+    return out;
   }),
   get_windower_settings: fn(() => ({ ui_x_res: 1920, ui_y_res: 1080 })),
 };
@@ -927,6 +966,22 @@ await step(5);
   console.log('PASS apply (book-switch dance)');
 }
 
+// palette-departure watch: the client rewrites the outgoing page's file
+// on every palette move — the poll diffs mtimes and reports the
+// departed index as the active palette
+{
+  loggedIn = true;
+  await step(35); // prime the watch baseline
+  writeFileSync(join(macroDir, 'mcr30.dat'), buildPalette([])); // left idx 30
+  await step(35);
+  const ms = fetch(`${base}/api/macrosel`).then((r) => r.json());
+  await step(3);
+  const jms = await ms;
+  assert.deepEqual(jms.deadbee, { b: 4, p: 1 }, 'macrosel did not follow mcrN.dat write');
+  loggedIn = false;
+  console.log('PASS macro palette departure tracking');
+}
+
 // POST /api/macros/run replays a cell's lines through `input`; stored
 // AT phrases are re-encoded to their raw FD wire bytes
 {
@@ -980,7 +1035,8 @@ await step(5);
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(Buffer.from(value).toString('utf8'));
-      if (chunks.join('').includes('\n\n')) break;
+      // macrosel is the last snapshot event on connect — read until it
+      if (chunks.join('').includes('event: macrosel')) break;
     }
   })();
   await step(8);
@@ -988,6 +1044,7 @@ await step(5);
   await readLoop.catch(() => {});
   const text = chunks.join('');
   assert.ok(text.includes('event: state'), 'no SSE state event');
+  assert.ok(text.includes('event: macrosel'), 'no SSE macrosel snapshot');
   assert.ok(text.includes('"player"'), 'SSE payload missing state');
   console.log('PASS SSE /api/events');
 }
@@ -1411,109 +1468,13 @@ const chatPacket = (mode, name, text) => {
   );
   console.log('PASS POST /api/journal/track');
 
-  // training regimes: outgoing 0x05B page selects at a manual/tome mark a
-  // regime active; 0x029 progress/completion messages and 0x113 tabs
-  // feed it. Packet layouts: addons/libs/packets/fields.lua
+  // little-endian packet writers shared by the map/party tests below.
+  // Packet layouts: addons/libs/packets/fields.lua
   const put16 = (b, o, v) => { b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff; };
   const put32 = (b, o, v) => {
     b[o] = v & 0xff; b[o + 1] = (v >> 8) & 0xff;
     b[o + 2] = (v >> 16) & 0xff; b[o + 3] = (v >>> 24) & 0xff;
   };
-  const dlg = (option, tidx, zone) => {
-    const b = new Uint8Array(0x14);
-    b[0] = 0x5b;
-    put32(b, 0x08, option);
-    put16(b, 0x0c, tidx);
-    put16(b, 0x10, zone);
-    return b;
-  };
-  const actMsg = (msg, p1, p2) => {
-    const b = new Uint8Array(0x1c);
-    b[0] = 0x29;
-    put32(b, 0x0c, p1);
-    put32(b, 0x10, p2);
-    put16(b, 0x18, msg);
-    return b;
-  };
-  const getJournal = async () => {
-    const p = fetch(`${base}/api/journal`).then((r) => r.json());
-    await step(3);
-    return p;
-  };
-  // a choice aimed at a non-manual NPC must not create a regime
-  mobs[6] = { name: 'Some NPC' };
-  fireEvent('outgoing chunk', 0x05b, dlg(50, 6, 100));
-  // Field Manual, option 50 = 16*3+2 -> West Ronfaure page 3
-  mobs[7] = { name: 'Field Manual' };
-  fireEvent('outgoing chunk', 0x05b, dlg(50, 7, 100));
-  {
-    const v = (await getJournal()).valor;
-    assert.equal(v?.kind, 'fov', 'fov regime not captured');
-    assert.equal(v?.page, 3, 'fov page wrong');
-    assert.equal(v?.zone_name, 'West Ronfaure', 'fov zone name wrong');
-    assert.deepEqual(v?.needs, [5, 1], 'fov objectives wrong');
-    assert.match(v?.desc ?? '', /Scarab Beetle/, 'fov desc missing');
-    assert.equal(v?.low, 4, 'fov level range wrong');
-  }
-  // kill progress: 558 carries killed/needed — matched to the objective
-  // whose target count is `needed`
-  fireEvent('incoming chunk', 0x029, actMsg(558, 3, 5));
-  fireEvent('incoming chunk', 0x029, actMsg(558, 1, 1));
-  {
-    const v = (await getJournal()).valor;
-    assert.deepEqual(v?.killed, [3, 1], 'fov progress wrong');
-  }
-  // 559 = regime completed; 643 = begins anew (daily renewal)
-  fireEvent('incoming chunk', 0x029, actMsg(559, 0, 0));
-  {
-    const v = (await getJournal()).valor;
-    assert.equal(v?.done, true, 'completion not recorded');
-    assert.deepEqual(v?.killed, [5, 1], 'completion should fill counts');
-  }
-  // repeat-flagged select of the same page renews it
-  fireEvent('outgoing chunk', 0x05b, dlg(0x80000000 + 50, 7, 100));
-  {
-    const v = (await getJournal()).valor;
-    assert.equal(v?.page, 3, 'repeat should keep the page');
-    assert.ok(!v?.done, 'repeat should clear completion');
-    assert.deepEqual(v?.killed ?? [], [], 'repeat should reset progress');
-  }
-  // Grounds Tome page select switches kinds/zones
-  mobs[8] = { name: 'Grounds Tome' };
-  fireEvent('outgoing chunk', 0x05b, dlg(18, 8, 166)); // 16*1+2 -> page 1
-  {
-    const v = (await getJournal()).valor;
-    assert.equal(v?.kind, 'gov', 'gov regime not captured');
-    assert.equal(v?.zone_name, 'Ranguemont Pass', 'gov zone name wrong');
-    assert.equal(v?.page, 1, 'gov page wrong');
-    assert.deepEqual(v?.needs, [4, 1], 'gov objectives wrong');
-  }
-  // option 3 = cancel the current regime
-  fireEvent('outgoing chunk', 0x05b, dlg(3, 8, 166));
-  assert.equal((await getJournal()).valor ?? null, null, 'cancel failed');
-  // 0x113 carries the tabs balance
-  {
-    const b = new Uint8Array(0x20);
-    b[0] = 0x13; b[1] = 0x01;
-    put16(b, 0x1c, 42);
-    fireEvent('incoming chunk', 0x113, b);
-    assert.equal((await getJournal()).valor_points, 42, 'tabs missing');
-  }
-  // 'valor:valor' group key hides the whole section from the tracker
-  {
-    const vp = fetch(`${base}/api/journal/track`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'valor', key: 'valor', tracked: false }),
-    }).then((r) => r.json());
-    await step(3);
-    assert.equal((await vp).ok, true, 'valor track toggle failed');
-    assert.ok(
-      (await getJournal()).untracked.includes('valor:valor'),
-      'valor group key missing',
-    );
-  }
-  console.log('PASS training regime packets + GET /api/journal');
 
   // addon settings — flat scalars round-trip through /api/settings
   const sg = fetch(`${base}/api/settings`).then((r) => r.json());
@@ -1574,22 +1535,30 @@ const chatPacket = (mode, name, text) => {
     index: meIndex, name: 'Tester', x: 0, y: 0, z: 0, facing: 0,
     spawn_type: 1, valid_target: true, mapPos: [0, 300, 300],
   };
+  // z is the height axis — x/y are the horizontal plane; z grows
+  // downward, so -12 is 12 yalms ABOVE the player (el = +12)
   mobs[0x202] = {
-    index: 0x202, name: 'Goblin Thug', x: 10, y: 0, z: -5, facing: 0,
+    index: 0x202, name: 'Goblin Thug', x: 10, y: -5, z: -12, facing: 0,
     spawn_type: 16, valid_target: true, hpp: 80, distance: 100,
   };
   // nameless mob-array rows are padding — targetable but not real
   // entities; they must not reach the radar payload
   mobs[0x203] = {
-    index: 0x203, name: '', x: 5, y: 0, z: 5, facing: 0,
+    index: 0x203, name: '', x: 5, y: 5, z: 0, facing: 0,
     spawn_type: 16, valid_target: true,
   };
   // no entity field marks linkshell membership — the roster is names
   // heard speaking in the LS channels; Linkbuddy's 0x017 (mode 5)
   // should flag their radar blip f&8
   mobs[0x204] = {
-    index: 0x204, name: 'Linkbuddy', x: -8, y: 0, z: 4, facing: 0,
+    index: 0x204, name: 'Linkbuddy', x: -8, y: 4, z: 0, facing: 0,
     spawn_type: 1, valid_target: true, hpp: 100, distance: 64,
+  };
+  // NMs carry no entity flag either — flagged by name against the
+  // generated nm_names.lua table (bg-wiki Category:Notorious_Monster)
+  mobs[0x205] = {
+    index: 0x205, name: 'Valkurm Emperor', x: 12, y: 8, z: 0, facing: 0,
+    spawn_type: 16, valid_target: true, hpp: 99, distance: 144,
   };
   fireEvent('incoming chunk', 0x017, chatPacket(5, 'Linkbuddy', 'anyone around?'));
   const wsPacket = (index, level, typ, xoff, yoff, name) => {
@@ -1612,6 +1581,7 @@ const chatPacket = (mode, name, text) => {
   fireEvent('incoming chunk', 0x0f4, wsPacket(0, 0, 0, 0, 0, 'You'));
   fireEvent('incoming chunk', 0x0f4, wsPacket(0x23, 0, 0, 10, 10, 'No Type'));
   fireEvent('incoming chunk', 0x0f4, wsPacket(0x24, 0, 1, 10, 10, ''));
+  fireEvent('incoming chunk', 0x0f4, wsPacket(0x25, 75, 2, -30, 15, 'Valkurm Emperor'));
   await step(12); // let the every-6th pump scan run
   {
     const mp = fetch(`${base}/api/map`).then((r) => r.json());
@@ -1625,19 +1595,28 @@ const chatPacket = (mode, name, text) => {
     assert.equal(thug.x, 266, 'mob map x wrong'); // 10 + 256
     assert.equal(thug.y, 251, 'mob map y wrong'); // -5 + 256
     assert.equal(thug.st, 16, 'mob spawn_type lost');
+    // y is the world height axis — el is the delta vs the player (y=0)
+    assert.equal(thug.el, 12, 'mob elevation delta wrong');
     assert.ok(mj.e?.every((e) => e.n !== 'Tester'), 'player leaked into entity list');
     assert.ok(mj.e?.every((e) => e.n), 'nameless mob-array row leaked');
     const buddy = mj.e?.find((e) => e.n === 'Linkbuddy');
     assert.ok(buddy, 'player entity missing from radar');
+    assert.equal(buddy.el, 0, 'flat entity should sit at el 0');
     assert.ok((buddy.f & 8) === 8, 'linkshell member not flagged: ' + JSON.stringify(buddy));
     assert.ok(!(thug.f & 8), 'non-ls mob flagged as linkshell');
+    const nm = mj.e?.find((e) => e.n === 'Valkurm Emperor');
+    assert.ok(nm, 'NM missing from entity radar');
+    assert.ok((nm.f & 16) === 16, 'NM not flagged: ' + JSON.stringify(nm));
+    assert.ok(!(thug.f & 16), 'normal mob flagged as NM');
     const wsn = mj.ws?.map((w) => w.n);
     assert.ok(wsn?.includes('Goblin Thug'), 'widescan mob missing');
     assert.ok(wsn?.includes('Gate Guard'), 'widescan NPC missing');
     assert.ok(!wsn?.includes('You'), 'widescan self-blip leaked');
     assert.ok(!wsn?.includes('No Type'), 'typeless widescan row leaked');
-    assert.equal(mj.ws?.length, 2, 'widescan padding rows not filtered');
+    assert.equal(mj.ws?.length, 3, 'widescan padding rows not filtered');
     assert.equal(mj.ws?.find((w) => w.n === 'Goblin Thug')?.l, 15, 'ws level lost');
+    assert.equal(mj.ws?.find((w) => w.n === 'Valkurm Emperor')?.nm, 1, 'ws NM not flagged');
+    assert.ok(!mj.ws?.find((w) => w.n === 'Goblin Thug')?.nm, 'ws non-NM flagged');
     assert.equal(mj.wsa, 1, 'wsa flag not set');
     console.log('PASS map position + entities + widescan');
   }
@@ -1645,6 +1624,97 @@ const chatPacket = (mode, name, text) => {
   delete mobs[0x202];
   delete mobs[0x203];
   delete mobs[0x204];
+  delete mobs[0x205];
+
+  // party + target + cast bar: a mob-targeted 0x028 cat-8 cast must
+  // surface in /api/party's t.cast, member rows carry vitals, and a
+  // 0x076 block attaches buffs to p1's mob id
+  {
+    mobs[0x300] = {
+      index: 0x300, id: 0x01000300, name: 'Casting Orc', x: 0, y: 0, z: 0,
+      facing: 0, spawn_type: 16, valid_target: true, hpp: 77,
+    };
+    targetIndex = 0x300;
+    const putBits = (b, off, n, v) => {
+      for (let i = 0; i < n; i++)
+        if ((v >> i) & 1) b[(off + i) >> 3] |= 1 << ((off + i) & 7);
+    };
+    const castPkt = (cat, spell) => {
+      const b = new Uint8Array(80);
+      b[0] = 0x28;
+      put32(b, 4, 0x01000300);            // actor
+      putBits(b, 72, 10, 1);              // target count
+      putBits(b, 82, 4, cat);             // category
+      putBits(b, 118, 32, 240);           // recast ticks -> 4s
+      putBits(b, 150, 32, meIndex);       // target id
+      putBits(b, 182, 4, 1);              // action count
+      putBits(b, 213, 17, spell);         // first action param
+      return b;
+    };
+    fireEvent('incoming chunk', 0x028, castPkt(8, 4)); // Cure IV start
+    // 0x076: five 48B blocks @4 — block 0 names p1's mob id; buff 32's
+    // low byte sits at +20 (0-based), hi nibble byte at +12
+    const buffs = new Uint8Array(244);
+    buffs[0] = 0x76;
+    put32(buffs, 4, 0x1000);
+    buffs[20] = 32;
+    fireEvent('incoming chunk', 0x076, buffs);
+    // party.poll only folds packets into last_payload every 15th pump —
+    // step BEFORE fetching or the snapshot predates the events
+    await step(20);
+    const pP = fetch(`${base}/api/party`).then((r) => r.json());
+    await step(5);
+    const p = await pP;
+    assert.equal(p.on, 1, 'party feed off');
+    assert.equal(p.p?.length, 2, 'party members missing');
+    assert.equal(p.p?.[1]?.n, 'Allymate', 'member name wrong');
+    assert.equal(p.p?.[1]?.hp, 88, 'member hpp wrong');
+    assert.equal(p.p?.[1]?.b?.[0]?.i, 32, '0x076 buff not decoded');
+    assert.equal(p.t?.n, 'Casting Orc', 'target name wrong');
+    assert.equal(p.t?.hpp, 77, 'target hpp wrong');
+    assert.equal(p.t?.cast?.n, 'Cure IV', 'mob cast not tracked');
+    // a finish packet from the same actor clears the cast
+    fireEvent('incoming chunk', 0x028, castPkt(4, 4));
+    await step(20);
+    const p2P = fetch(`${base}/api/party`).then((r) => r.json());
+    await step(5);
+    const p2 = await p2P;
+    assert.ok(!p2.t?.cast, 'cast not cleared on finish');
+    console.log('PASS party vitals + 0x076 buffs + mob cast bar');
+    delete mobs[0x300];
+    targetIndex = 0;
+  }
+
+  // abilities book: learned sets join res levels + the generated
+  // ja_levels.lua table (WAR99/NIN49 player stub)
+  {
+    const abP = fetch(`${base}/api/abilities`).then((r) => r.json());
+    await step(3);
+    const ab = await abP;
+    const berserk = ab.abilities?.find((e) => e.n === 'Berserk');
+    assert.ok(berserk, 'learned JA missing from book');
+    assert.equal(berserk.l, 1, 'learned JA not flagged');
+    assert.equal(berserk.lvl, 15, 'JA level req wrong'); // ja_levels WAR 15
+    assert.equal(berserk.j, 'M', 'JA job source wrong');
+    assert.equal(berserk.cmd, '/ja "Berserk" <me>', 'JA cmd missing');
+    const provoke = ab.abilities?.find((e) => e.n === 'Provoke');
+    assert.ok(provoke, 'obtainable JA missing (unlearned but job-listed)');
+    assert.ok(!provoke.l, 'unlearned JA flagged learned');
+    assert.equal(provoke.lvl, 5, 'obtainable JA level req wrong');
+    const combo = ab.abilities?.find((e) => e.n === 'Combo');
+    assert.ok(combo?.k === 'ws' && combo.l === 1, 'learned WS missing');
+    const cure = ab.spells?.find((e) => e.n === 'Cure IV');
+    assert.ok(
+      cure?.l === 1 && cure.lvl === 41 && cure.j === 'M',
+      'learned main-job spell wrong',
+    );
+    const utsu = ab.spells?.find((e) => e.n === 'Utsusemi: Ichi');
+    assert.ok(
+      utsu && utsu.lvl === 24 && utsu.j === 'S' && !utsu.l,
+      'subjob spell obtainable math wrong',
+    );
+    console.log('PASS abilities book');
+  }
 
   // map image route: mapdats + FTABLE resolve a zone/map to a client DAT;
   // the route serves raw bytes as application/x-ffxi-map (browser decodes).

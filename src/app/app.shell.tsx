@@ -2,8 +2,10 @@ import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc
 import { ExternalLink } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, theme, setTheme, THEMES, type Theme } from './core/host';
-import { Fab } from './fab';
+import { host, fabMode, detachedMode, menuMode, visibilityMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, theme, setTheme, THEMES, type Theme } from './core/host';
+import { Dropdown } from './core/dropdown';
+import { Fab, FabMenu } from './fab';
+import { VisibilityView } from './visibility/visibility.view';
 import { TooltipView } from './tooltip/tooltip.view';
 
 const NAV = [
@@ -12,29 +14,25 @@ const NAV = [
   { to: '/journal', match: '/journal', label: 'Journal' },
   { to: '/map', match: '/map', label: 'Map' },
   { to: '/macros', match: '/macros', label: 'Macros' },
+  { to: '/abilities', match: '/abilities', label: 'Book' },
   { to: '/profile', match: '/profile', label: 'GearSwap' },
   { to: '/settings', match: '/settings', label: 'Settings' },
 ];
 
 // per-window theme picker for detached windows — the choice persists
-// under xicompanion.wintheme.<route> so each spawned window keeps its own look
+// under xicompanion.wintheme.<route> so each spawned window keeps its
+// own look. A native <select>'s popup needs window activation (these
+// panels are NOACTIVATE) — the shared Dropdown is the same fix in-page.
 function ThemePicker() {
   return (
-    <select
-      class="h-5 cursor-pointer rounded border border-indigo-300/30 bg-transparent px-0.5 text-[10px] capitalize leading-none"
-      style="color: inherit"
+    <Dropdown
+      class="h-5 shrink-0 cursor-pointer rounded border border-indigo-300/30 bg-transparent px-1 text-[10px] capitalize leading-none"
       title="theme for this window only"
+      align="right"
       value={theme.value}
-      onChange={(e) =>
-        setTheme((e.target as HTMLSelectElement).value as Theme)
-      }
-    >
-      {THEMES.map((t) => (
-        <option class="capitalize text-slate-800" value={t}>
-          {t}
-        </option>
-      ))}
-    </select>
+      options={THEMES}
+      onChange={(t) => setTheme(t as Theme)}
+    />
   );
 }
 
@@ -58,6 +56,12 @@ export class AppShell extends View {
     // this window IS the floating item tooltip — just the card
     if (tooltipMode) return <TooltipView />;
 
+    // this window IS the shared fab dropdown — bare menu, no chrome
+    if (menuMode) return <FabMenu />;
+
+    // the collapse-all handle — bare floating button, no chrome
+    if (visibilityMode) return <VisibilityView />;
+
     // the shell is in fab mode — just the floating button
     if (fabMode.value) return <Fab />;
 
@@ -66,10 +70,11 @@ export class AppShell extends View {
     // a spawned per-tab window (?window=1): the classic FFXI window skin
     // — deep navy card, pale border, blue title bar — over a transparent
     // window backdrop, plus just the routed view (no nav). Fab-layer
-    // panels (/tracker, /macrobar, /cooldowns, /minimap) keep tighter
-    // padding so they read as overlay panels.
+    // panels (/tracker, /macrobar, /cooldowns, /minimap, /party,
+    // /target) keep tighter padding so they read as overlay panels.
     const panelMode =
-      trackerMode || cooldownsMode || macrobarMode || minimapMode;
+      trackerMode || cooldownsMode || macrobarMode || minimapMode ||
+      partyMode || targetMode || skillchainMode;
     if (detachedMode) {
       // router.url carries the ?window=1 query — compare the bare path
       const path = url.split('?')[0];
@@ -80,6 +85,9 @@ export class AppShell extends View {
             '/cooldowns': 'Cooldowns',
             '/macrobar': 'Macro Bar',
             '/minimap': 'Minimap',
+            '/party': 'Party',
+            '/target': 'Target',
+            '/skillchain': 'Skillchains',
           } as Record<string, string>
         )[path] ??
         NAV.find(
