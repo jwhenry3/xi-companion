@@ -1888,11 +1888,18 @@ end
 -- poll diffs rather than re-stating.
 local macro_sel = {}
 local macro_watch = {}
+local memscan_hits
 
 local function poll_macro_sel()
     if not logged_in() or not plat.file_mtimes or not macrofs then return end
     for _, d in ipairs(macrofs.find_char_dirs(plat.ffxi_path)) do
-        local idx = macrofs.read_sys_index(d.path)
+        -- mcr.sys mirrors the client's live palette index; when the
+        -- memory dll is present, the in-memory copy is the same read
+        -- without disk latency (mem_index returns nil until a verified
+        -- signature exists — file stays authoritative)
+        local idx = (macrofs.mem_index and plat.memory)
+            and macrofs.mem_index(d.path)
+            or macrofs.read_sys_index(d.path)
         if idx then
             local v = {
                 b = math.floor(idx / 10) + 1,
@@ -2969,7 +2976,7 @@ plat.on('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | start | stop | status | port <n> | refresh | swap | equip <set>')
+        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | start | stop | status | port <n> | refresh | swap | equip <set> | memscan [idx]')
     elseif cmd == 'open' then
         if server or start_server() then
             plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -3133,6 +3140,69 @@ plat.on('addon command', function(cmd, ...)
         broadcast_state()
         if swapui then pcall(swapui.rescan) end
         log('state pushed to clients')
+    elseif cmd == 'memscan' then
+        -- value-diff hunt for the live palette index: seeds from
+        -- mcr.sys (or an explicit index), then flip a page/book in
+        -- game and re-run `memscan <new index>` — each pass keeps
+        -- only addresses still holding the new value.
+        -- pass keeps only addresses still holding the new value.
+        -- Candidate list is dumped to data/memscan.txt.
+        if not plat.memory then
+            log_err('memscan: _WindowerMemory.dll not loaded')
+        else
+            local val = tonumber(args[1])
+            if not val and macrofs then
+                local dirs = macrofs.find_char_dirs(plat.ffxi_path)
+                if dirs[1] then val = macrofs.read_sys_index(dirs[1].path) end
+            end
+            if not val then
+                log_err('usage: //xicompanion memscan [index]')
+            else
+                if not memscan_hits then
+                    memscan_hits = {}
+                    local pat = string.char(
+                        val % 256,
+                        math.floor(val / 256) % 256,
+                        math.floor(val / 65536) % 256,
+                        math.floor(val / 16777216) % 256):gsub('.', function(c)
+                            return string.format('%02x ', c:byte())
+                        end):gsub('%s+$', '')
+                    for _, mod in ipairs({ 'FFXiMain.dll', 'pol.exe' }) do
+                        local base, size = plat.memory.get_base(mod),
+                            plat.memory.get_size(mod)
+                        if base ~= 0 and size ~= 0 then
+                            local n = 0
+                            while n < 4096 do
+                                local a = plat.memory.find(
+                                    base, size, pat, 0, n)
+                                if a == 0 then break end
+                                memscan_hits[#memscan_hits + 1] = a
+                                n = n + 1
+                            end
+                        end
+                    end
+                else
+                    local keep = {}
+                    for _, a in ipairs(memscan_hits) do
+                        if plat.memory.read_uint32(a) == val then
+                            keep[#keep + 1] = a
+                        end
+                    end
+                    memscan_hits = keep
+                end
+                plat.create_dir(plat.addon_path .. 'data')
+                local f = io.open(
+                    plat.addon_path .. 'data/memscan.txt', 'w')
+                if f then
+                    for _, a in ipairs(memscan_hits) do
+                        f:write(('0x%08x\n'):format(a))
+                    end
+                    f:close()
+                end
+                log(('memscan: %d candidate(s) for index %d')
+                    :format(#memscan_hits, val))
+            end
+        end
     elseif cmd == 'equip' then
         local path = table.concat(args, ' ')
         if path == '' then

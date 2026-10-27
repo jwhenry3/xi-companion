@@ -378,6 +378,14 @@ function M.read_sys_index(dir)
         + data:byte(28) * 16777216
 end
 
+-- In-memory mirror of the sys index via _WindowerMemory.dll
+-- (plat.memory). The live palette index sits in an FFXiMain structure;
+-- the exact location still needs a verified signature, so this returns
+-- nil until one is pinned — callers fall back to read_sys_index.
+function M.mem_index(dir)
+    return nil
+end
+
 function M.read_titles(dir)
     local titles = {}
     for f = 1, 2 do

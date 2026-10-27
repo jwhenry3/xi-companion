@@ -11,6 +11,18 @@ P.dir_exists  = windower.dir_exists
 P.create_dir  = windower.create_dir
 P.get_dir     = windower.get_dir
 
+-- native memory primitives — vendored _WindowerMemory.dll (pin in
+-- libs/windowermemory.json). Optional: P.memory is nil when the dll
+-- can't load, so every caller must tolerate its absence.
+do
+    local ok, mem = pcall(function()
+        package.cpath = package.cpath .. ';' ..
+            (P.addon_path:gsub('\\', '/') .. 'libs/?.dll')
+        return require('_WindowerMemory')
+    end)
+    if ok then P.memory = mem end
+end
+
 -- {name -> stamp} for files matching a glob — the client rewrites
 -- mcr.sys + the departing palette on every in-game book/page switch.
 -- Content-Hashed rather than mtime'd: forfiles/io.popen spawns a
