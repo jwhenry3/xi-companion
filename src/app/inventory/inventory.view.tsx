@@ -1,8 +1,9 @@
 import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
-import { Sparkles } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
+import { Input } from '@/components/ui/input';
+import { TabBar, Tab } from '../core/tabs';
 import {
   host,
   detachedMode,
@@ -204,12 +205,31 @@ export class InventoryView extends View implements OnInit, OnDestroy {
       .filter(({ items }) => items.length > 0);
   });
 
+  /** per-bag selected type tab — '' shows every group stacked */
+  private typeTabs = signal<Record<string, string>>({});
+
   private bagAvailable = computed(() => {
     const bf = this.bagFilter.value;
     if (bf === 'all') return true;
     const b = this.bags.value.find((x) => x.key === bf);
     return b !== undefined && b.enabled !== false;
   });
+
+  /** items bucketed by catalog category, groups alphabetical —
+   *  members keep the table sort order */
+  private groupedItems(items: BagItem[]): [string, BagItem[]][] {
+    const cat = this.catalog.value;
+    const map = new Map<string, BagItem[]>();
+    for (const it of items) {
+      const c = cat[it.id]?.category ?? '';
+      const g = map.get(c);
+      if (g) g.push(it);
+      else map.set(c, [it]);
+    }
+    return [...map.entries()].sort(
+      ([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)),
+    );
+  }
 
   private itemRow(bag: Bag, item: BagItem) {
     const meta = this.catalog.value[item.id];
@@ -235,6 +255,23 @@ export class InventoryView extends View implements OnInit, OnDestroy {
           isSel ? 'bg-sky-950/40' : 'hover:bg-slate-800/60'
         }`}
       >
+        <td class="w-14 whitespace-nowrap px-2 py-1 text-[10px] tabular-nums text-slate-400">
+          {meta?.level ?? ''}
+          {/* ilvl sorts from its own number — the column header sorts
+              by level */}
+          {meta?.ilvl != null && (
+            <span
+              class="cursor-pointer text-indigo-300 hover:text-indigo-200"
+              title="sort by item level"
+              onClick={(e) => {
+                e.stopPropagation();
+                this.sortBy('ilvl');
+              }}
+            >
+              /{meta.ilvl}
+            </span>
+          )}
+        </td>
         <td class="min-w-0 px-2 py-1">
           <span class="flex items-center gap-2">
             <img
@@ -255,16 +292,6 @@ export class InventoryView extends View implements OnInit, OnDestroy {
             </span>
           </span>
         </td>
-        <td class="w-24 truncate px-2 py-1 text-slate-400">{meta?.category ?? ''}</td>
-        <td class="w-10 px-2 py-1 text-slate-400">{meta?.level ?? ''}</td>
-        <td class="w-10 px-2 py-1 text-indigo-300">{meta?.ilvl ?? ''}</td>
-        <td class="w-10 px-2 py-1">
-          {item.augments && (
-            <span title="has augments — details in the item tooltip">
-              <Sparkles size={11} class="inline text-fuchsia-300" />
-            </span>
-          )}
-        </td>
       </tr>
     );
   }
@@ -277,8 +304,8 @@ export class InventoryView extends View implements OnInit, OnDestroy {
       <div class="flex h-full min-h-0 gap-4">
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
           <div class="mb-4 flex flex-wrap items-center gap-3">
-            <input
-              class="w-64 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm placeholder:text-slate-600"
+            <Input
+              class="w-64"
               placeholder="Search items…"
               value={this.q.value}
               onInput={(e) => (this.q.value = (e.target as HTMLInputElement).value)}
@@ -372,22 +399,67 @@ export class InventoryView extends View implements OnInit, OnDestroy {
                     <span class="font-normal text-rose-400"> — unavailable</span>
                   )}
                 </h2>
-                {/* min-w keeps the fixed columns legible — narrow windows
-                    scroll sideways instead of crushing the name column */}
-                <table class="w-full min-w-[26rem] table-fixed text-left text-xs">
-                  <thead>
-                    <tr class="text-[10px] font-semibold uppercase tracking-wider text-slate-600">
-                      {this.sortHeader('name', 'Item')}
-                      {this.sortHeader('category', 'Type', 'w-24')}
-                      {this.sortHeader('level', 'Lv', 'w-10')}
-                      {this.sortHeader('ilvl', 'iLv', 'w-10')}
-                      <th class="w-10 px-2 py-1">Aug</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((it) => this.itemRow(bag, it))}
-                  </tbody>
-                </table>
+                {(() => {
+                  const groups = this.groupedItems(items);
+                  const picked = this.typeTabs.value[bag.key] ?? '';
+                  // a picked type can vanish under the filters — fall
+                  // back to 'all' instead of showing nothing
+                  const sel =
+                    picked === '' || groups.some(([c]) => c === picked)
+                      ? picked
+                      : '';
+                  const setTab = (v: string) =>
+                    (this.typeTabs.value = {
+                      ...this.typeTabs.value,
+                      [bag.key]: v,
+                    });
+                  const shown =
+                    sel === '' ? groups : groups.filter(([c]) => c === sel);
+                  return (
+                    <>
+                      <TabBar class="mb-3">
+                        <Tab active={sel === ''} onClick={() => setTab('')}>
+                          all
+                        </Tab>
+                        {groups.map(([cat, g]) => (
+                          <Tab
+                            key={cat || '__other'}
+                            active={sel === cat}
+                            onClick={() => setTab(cat)}
+                          >
+                            {cat || 'other'} ({g.length})
+                          </Tab>
+                        ))}
+                      </TabBar>
+                      {shown.map(([cat, group]) => (
+                        <div key={cat || '__other'} class="mb-4 last:mb-0">
+                          {/* the active tab already names the type — only
+                              label groups in the stacked 'all' view */}
+                          {sel === '' && (
+                            <h3 class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+                              {cat || 'other'}{' '}
+                              <span class="font-normal">({group.length})</span>
+                            </h3>
+                          )}
+                          {/* min-w keeps the fixed columns legible —
+                              narrow windows scroll sideways instead of
+                              crushing the name column */}
+                          <table class="w-full min-w-[26rem] table-fixed text-left text-xs">
+                            <thead>
+                              <tr class="text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+                                {this.sortHeader('level', 'Lv/iLv', 'w-14')}
+                                {this.sortHeader('name', 'Item')}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.map((it) => this.itemRow(bag, it))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
               </section>
             ))}
           </div>

@@ -1046,9 +1046,33 @@ local function at_names_table()
     return at_names or {}
 end
 
+local at_marker_ids -- lazily inverted '@X' marker -> phrase id
+local function at_marker(marker)
+    if at_marker_ids == nil then
+        at_marker_ids = {}
+        for id, n in pairs(at_names_table()) do
+            if type(n) == 'string' and n:sub(1, 1) == '@' then
+                at_marker_ids[n] = id
+            end
+        end
+    end
+    local id = at_marker_ids[marker]
+    if not id then return nil end
+    if auto_translates == nil then
+        local ok, t = pcall(function() return res.auto_translates end)
+        auto_translates = (ok and type(t) == 'table') and t or false
+    end
+    local p = auto_translates and auto_translates[id]
+    if p then return p.en or p.ja end
+    local n = at_names_table()[id]
+    return (type(n) == 'string' and n:sub(1, 1) ~= '@') and n or nil
+end
+
 local function at_phrase(id)
     local n = at_names_table()[id]
-    if n then return n end
+    -- DAT placeholders store '@X' markers as the 'name' — treat them as
+    -- unresolved and fall through to res.auto_translates
+    if n and n:sub(1, 1) ~= '@' then return n end
     if auto_translates == nil then
         local ok, t = pcall(function() return res.auto_translates end)
         auto_translates = (ok and type(t) == 'table') and t or false
@@ -1366,7 +1390,7 @@ local function sanitize_log_text(text)
     local out, i, n = {}, 1, #text
     while i <= n do
         local b = text:byte(i)
-        if b == 0x1E or b == 0x1F then
+        if b == 0x1E or b == 0x1F or b == 0x01 then
             i = i + 2
         else
             out[#out + 1] = string.char(b)
@@ -1378,16 +1402,38 @@ end
 
 local OWN_CHAT_PREFIX = '[xicompanion]'
 
+-- normalize for dedupe: trim edges + canonicalize auto-translate
+-- markers — the packet path decodes FD..FD into names ({box}) while a
+-- rendered line may keep raw ids ({AT} / {AT:xxxx}) or drop a trailing
+-- marker entirely, so neither is byte-identical to the other
+local function atnorm(x)
+    x = (x or ''):gsub('%s+$', ''):gsub('^%s+', '')
+    return (x:gsub('{[^}]*}', '{AT}'))
+end
+
 local function packet_recent(text)
-    -- suffix match: rendered lines prepend sender metadata the packet
-    -- doesn't carry ('Fczjsgdl[BastokMine]: msg' vs 'msg') — the packet
-    -- text is always the rendered line's tail
+    -- rendered lines prepend sender metadata the packet doesn't carry
+    -- ('Fczjsgdl[BastokMine]: msg' vs 'msg') and can truncate the tail —
+    -- compare in BOTH directions after normalization, plus the
+    -- post-prefix tail as a fallback (senderless re-renders)
     local now = os.time()
+    local tail = text:match('^%S+%[%S*%]: (.+)$') -- 'Sender[Zone]: tail'
+        or text:match('^%S+: (.+)$')            -- 'Sender: tail'
+    local a = atnorm(text)
+    local b = tail and atnorm(tail) or nil
     for ptext, t in pairs(recent_packet_text) do
         if now - t > 10 then
             recent_packet_text[ptext] = nil
-        elseif #text >= #ptext and text:sub(-#ptext) == ptext then
-            return true
+        else
+            local p = atnorm(ptext)
+            if a == p
+                or (#a >= #p and a:sub(-#p) == p)
+                or (#p >= #a and p:sub(-#a) == a)
+                or (b and (b == p
+                    or (#b >= #p and b:sub(-#p) == p)
+                    or (#p >= #b and p:sub(-#b) == b))) then
+                return true
+            end
         end
     end
     return false
@@ -1398,6 +1444,15 @@ plat.on('incoming text', function(original, modified, original_mode, modified_mo
     local mode = modified_mode or original_mode or 0
     local text = sanitize_log_text(modified or original or '')
     if text == '' then return end
+    -- client-rendered unknown ATs show as {@id} markers — at_names.lua
+    -- maps id -> marker (the DAT's own placeholder, e.g. [5297]='@A25'),
+    -- so invert it and resolve the real name via res.auto_translates
+    if text:find('{@') then
+        text = text:gsub('%{(@[%w]+)%}', function(h)
+            local n = at_marker(h)
+            return n and ('{' .. n .. '}') or ('{' .. h .. '}')
+        end)
+    end
     -- packet-mode lines are only skipped when the 0x017 handler actually
     -- pushed this text — otherwise it's a client-rendered line (assist
     -- notice, add_to_chat at a shared mode) and it's ours to capture
@@ -1557,6 +1612,9 @@ routes['GET /api/status'] = function(conn)
         version = _addon.version,
         port = bound_port or settings.port,
         hidden = overlay_hidden(),
+        -- per-load marker: a reload replaces it, so the overlay
+        -- treats a changed boot as a restart and quits itself
+        boot = chat_boot,
         sse_clients = (function()
             local n = 0
             for _, c in ipairs(conns) do if c.sse and not c.closed then n = n + 1 end end
@@ -1821,42 +1879,40 @@ local function macro_char_dir(char_id)
     return plat.dir_exists(dir) and dir or nil
 end
 
--- Active-palette tracking: the client writes mcrN.dat when you LEAVE a
--- palette page (single write on every page flip and book switch), so
--- the newest-changed file index is the palette just departed — the only
--- live signal for in-game book/page changes (mcr.sys only updates at
--- login). macro_watch holds the last-seen stamp per file so each poll
--- diffs rather than re-stating.
+-- Active-palette + macro-content tracking. mcr.sys holds the client's
+-- active palette index and is rewritten on every in-game book/page
+-- switch — the authoritative sel source (the newest-written mcr*.dat
+-- only names the page just left). Any stamp move on mcr* — client
+-- writes, our PUT writes, external edits — pings views to refetch
+-- ('macros'). macro_watch holds the last-seen stamp per file so each
+-- poll diffs rather than re-stating.
 local macro_sel = {}
 local macro_watch = {}
 
 local function poll_macro_sel()
     if not logged_in() or not plat.file_mtimes or not macrofs then return end
     for _, d in ipairs(macrofs.find_char_dirs(plat.ffxi_path)) do
-        local cur = plat.file_mtimes(d.path, 'mcr*.dat')
+        local idx = macrofs.read_sys_index(d.path)
+        if idx then
+            local v = {
+                b = math.floor(idx / 10) + 1,
+                p = idx % 10 + 1,
+            }
+            local was = macro_sel[d.id]
+            if not was or was.b ~= v.b or was.p ~= v.p then
+                macro_sel[d.id] = v
+                sse_broadcast('macrosel', json.encode(macro_sel))
+            end
+        end
+        local cur = plat.file_mtimes(d.path, 'mcr*')
         if cur then
             local prev = macro_watch[d.id]
             macro_watch[d.id] = cur
             if prev then
-                local newest
                 for fname, stamp in pairs(cur) do
                     if prev[fname] ~= stamp then
-                        local idx = fname == 'mcr.dat' and 0
-                            or tonumber(fname:match('^mcr(%d+)%.dat$'))
-                        if idx and (not newest or idx > newest) then
-                            newest = idx
-                        end
-                    end
-                end
-                if newest then
-                    local v = {
-                        b = math.floor(newest / 10) + 1,
-                        p = newest % 10 + 1,
-                    }
-                    local was = macro_sel[d.id]
-                    if not was or was.b ~= v.b or was.p ~= v.p then
-                        macro_sel[d.id] = v
-                        sse_broadcast('macrosel', json.encode(macro_sel))
+                        sse_broadcast('macros', '{}')
+                        break
                     end
                 end
             end
@@ -1927,6 +1983,30 @@ routes['PUT /api/macros/palette'] = function(conn, req)
 
     local apply = (req.query.apply == '1' or req.query.apply == 'true')
         and logged_in()
+    -- book switches via ffxi.run — the client's command parser, no
+    -- input-line involvement (an `input` firing while the user has the
+    -- chat line open is what wedged the input modal)
+    local function macro_cmd(cmd)
+        if plat.ffxi.run then
+            pcall(plat.ffxi.run, cmd)
+        else
+            plat.send_command('input ' .. cmd)
+        end
+    end
+    -- self-heal: probe the client's menu state after the apply chain —
+    -- a wedged chat-input line reports as an open chat/input menu;
+    -- dismiss it like a physical Esc (sendkey injects at the client
+    -- input level, past whatever ate the real keypress)
+    local function unstick_input()
+        if not plat.ffxi.get_menu then return end
+        local ok, m = pcall(plat.ffxi.get_menu)
+        if not ok or not m then return end
+        local name = tostring(type(m) == 'table' and (m.name or m[1]) or m)
+        if name:lower():find('chat') or name:lower():find('input') then
+            plat.send_command('sendkey escape')
+            log_err('macro apply: cleared stuck input (' .. name .. ')')
+        end
+    end
     if apply then
         -- Validate + build the image now so errors stay synchronous; the
         -- bytes land in a scheduled step between book switches.
@@ -1937,13 +2017,15 @@ routes['PUT /api/macros/palette'] = function(conn, req)
         local book = math.floor(index / 10) + 1
         local page = index % 10 + 1
         local other = book == 1 and 2 or 1
-        plat.send_command(('input /macro book %d'):format(other))
+        macro_cmd(('/macro book %d'):format(other))
         macro_schedule(function()
             macrofs.commit_image(path, image)
+            sse_broadcast('macros', '{}')
             macro_schedule(function()
-                plat.send_command(('input /macro book %d'):format(book))
+                macro_cmd(('/macro book %d'):format(book))
                 macro_schedule(function()
-                    plat.send_command(('input /macro set %d'):format(page))
+                    macro_cmd(('/macro set %d'):format(page))
+                macro_schedule(unstick_input, MACRO_SWITCH_DELAY)
                 end, MACRO_SWITCH_DELAY)
             end, MACRO_SWITCH_DELAY)
         end, MACRO_SWITCH_DELAY)
@@ -1961,6 +2043,7 @@ routes['PUT /api/macros/palette'] = function(conn, req)
     if not ok then
         return send_json(conn, 400, { error = tostring(err) })
     end
+    sse_broadcast('macros', '{}')
     send_json(conn, 200, {
         ok = true,
         file = macrofs.palette_file(index),
@@ -1992,6 +2075,7 @@ routes['PUT /api/macros/title'] = function(conn, req)
     if not ok then
         return send_json(conn, 400, { error = tostring(err) })
     end
+    sse_broadcast('macros', '{}')
     send_json(conn, 200, { ok = true, logged_in = logged_in() })
 end
 
@@ -2853,57 +2937,9 @@ plat.on('incoming chunk', pump)
 -- window is open, eat the configured combo before the client sees it
 -- and push 'chatfocus' — the UI raises our window + composer.
 -- default shift+space — plain space still opens the native chat line.
-local DIK_KEYS = {
-    a=0x1E,b=0x30,c=0x2E,d=0x20,e=0x12,f=0x21,g=0x22,h=0x23,i=0x17,
-    j=0x24,k=0x25,l=0x26,m=0x32,n=0x31,o=0x18,p=0x19,q=0x10,r=0x13,
-    s=0x1F,t=0x14,u=0x16,v=0x2F,w=0x11,x=0x2D,y=0x15,z=0x2C,
-    ['0']=0x0B,['1']=0x02,['2']=0x03,['3']=0x04,['4']=0x05,['5']=0x06,
-    ['6']=0x07,['7']=0x08,['8']=0x09,['9']=0x0A,
-    f1=0x3B,f2=0x3C,f3=0x3D,f4=0x3E,f5=0x3F,f6=0x40,f7=0x41,f8=0x42,
-    f9=0x43,f10=0x44,f11=0x57,f12=0x58,
-    space=0x39,enter=0x1C,tab=0x0F,backspace=0x0E,escape=0x01,
-    minus=0x0C,equals=0x0D,lbracket=0x1A,rbracket=0x1B,backslash=0x2B,
-    semicolon=0x27,apostrophe=0x28,grave=0x29,comma=0x33,period=0x34,
-    slash=0x35,
-}
-local DIK_MODS = {
-    shift = { [0x2A]=true, [0x36]=true },  -- lshift / rshift
-    ctrl  = { [0x1D]=true, [0x9D]=true },  -- lctrl / rctrl
-    alt   = { [0x38]=true, [0xB8]=true },  -- lmenu / rmenu
-}
-local focus_mods = { shift = false, ctrl = false, alt = false }
-local function parse_hotkey(str)
-    local mods, key = { shift = false, ctrl = false, alt = false }, nil
-    for part in string.gmatch(str or '', '[^+]+') do
-        local p = part:match('^%s*(.-)%s*$'):lower()
-        if DIK_MODS[p] then
-            mods[p] = true
-        else
-            key = DIK_KEYS[p]
-        end
-    end
-    return mods, key
-end
-if plat.on_key then
-    plat.on_key(function(dik, down, _flags, _blocked)
-        if DIK_MODS.shift[dik] then focus_mods.shift = down; return end
-        if DIK_MODS.ctrl[dik] then focus_mods.ctrl = down; return end
-        if DIK_MODS.alt[dik] then focus_mods.alt = down; return end
-        if not down then return end -- presses only
-        if not settings.chat_space_focus or chat_focus_windows <= 0 then
-            return
-        end
-        local mods, key = parse_hotkey(settings.chat_focus_hotkey)
-        if not key or dik ~= key then return end
-        if mods.shift ~= focus_mods.shift or
-           mods.ctrl ~= focus_mods.ctrl or
-           mods.alt ~= focus_mods.alt then
-            return
-        end
-        sse_broadcast('chatfocus', '{}')
-        return true -- the client never sees it — its chat line stays closed
-    end)
-end
+-- hotkey key-steal removed: the addon must never block key
+-- input — only a focused input field may claim keys. The
+-- chatfocus SSE plumbing stays but nothing broadcasts it.
 
 -- spawn the overlay shell. fab=true launches the collapsed floating
 -- button (bundled exe only — no Electron fallback, it's too heavy to

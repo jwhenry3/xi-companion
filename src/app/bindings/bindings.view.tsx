@@ -225,7 +225,7 @@ export class BindingsView extends View implements OnInit {
     const drafting = this.draftSegs.value.length > 0 || this.draftSet.value !== '';
     return (
       <div class="flex h-full min-h-0 flex-col">
-        <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+        <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3">
           {noFile && (
             <p class="text-sm text-slate-500">
               Select a GearSwap profile above — bindings map set types like

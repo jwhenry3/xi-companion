@@ -15,6 +15,7 @@ import type { ChatCustomChannel, ChatMessage } from '../core/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { PanelShell, PanelSidebar } from '../core/panel';
 
 interface ChannelDef {
   key: string;
@@ -289,17 +290,16 @@ function MessageList({
                 <span class="h-px flex-1 bg-rose-500/60" />
               </div>
             )}
-          <div
-            class={cn(
-              'pt-0.5',
-              learn &&
-                'rounded border-l-2 border-sky-500/70 bg-sky-950/30 py-1 pl-1.5',
-            )}
-          >
+          <div class={cn('pt-0.5', m.self && 'text-right')}>
             {/* metadata line: time, sender, then channel/zone after the
                 name — message text drops to the line below so long
                 bodies never crowd the label */}
-            <div class="flex items-baseline gap-2">
+            <div
+              class={cn(
+                'flex items-baseline gap-2',
+                m.self && 'justify-end',
+              )}
+            >
               {learn && <span class="text-[10px] text-sky-300">★</span>}
               <span
                 class="shrink-0 text-xs font-semibold text-slate-400"
@@ -307,14 +307,6 @@ function MessageList({
               >
                 {fmtTime(m.ts)}
               </span>
-              {m.sender && (
-                <span
-                  class="shrink-0 text-xs font-bold"
-                  style={nameColor(m.sender)}
-                >
-                  {m.sender}
-                </span>
-              )}
               <button
                 class="shrink-0 text-xs font-bold hover:brightness-125"
                 style={{ color: CHANNEL_COLOR[m.channel] ?? '#64748b' }}
@@ -324,20 +316,38 @@ function MessageList({
                   ? `@${m.peer ?? m.sender ?? '?'}`
                   : `#${m.channel}`}
               </button>
+              {m.sender && !m.self && (
+                <button
+                  class="shrink-0 text-xs font-bold hover:underline"
+                  title={`message ${m.sender}`}
+                  style={nameColor(m.sender)}
+                  onClick={() =>
+                    onOpenThread?.('tell:' + m.sender)
+                  }
+                >
+                  {m.sender}
+                </button>
+              )}
               {m.zone && (
                 <span class="shrink-0 text-xs font-semibold text-slate-400">
                   {m.zone}
                 </span>
               )}
             </div>
-            <div
-              class={cn(
-                'min-w-0 break-words pl-1 text-sm leading-snug',
-                learn ? 'text-sky-100' : 'text-slate-200',
-                m.channel === 'emote' && 'italic',
-              )}
-            >
+            {/* sms-style bubble — self right with a tail, others left */}
+            <div class={cn('flex', m.self ? 'justify-end' : 'justify-start')}>
+              <div
+                class={cn(
+                  'chat-bubble max-w-[80%] rounded-sm px-1.5 py-0.5 text-left text-sm leading-snug break-words',
+                  m.self
+                    ? 'bg-sky-700/20 text-sky-50'
+                    : 'bg-black/20 text-slate-200',
+                  learn && 'learn border-l-2 bg-sky-950/20 text-sky-100',
+                  m.channel === 'emote' && 'italic',
+                )}
+              >
               {m.channel === 'emote' ? `* ${m.text}` : renderMsgText(m.text, query)}
+              </div>
             </div>
           </div>
           </div>
@@ -368,7 +378,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
   private sectionHead(name: string, label: string, extra?: JSX.Element) {
     const hidden = this.sectionHidden.value.has(name);
     return (
-      <div class="mt-3 flex items-center justify-between px-2 pb-1">
+      <div class="mt-2 flex items-center justify-between border-t border-slate-800 px-2 pt-2 pb-1">
         <button
           class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-slate-500 hover:text-slate-300"
           onClick={() => this.toggleSection(name)}
@@ -710,18 +720,29 @@ export class ChatView extends View implements OnInit, OnDestroy {
 
   private open(thread: string) {
     // capture the unread anchor BEFORE markChatRead zeroes the badge —
-    // the first unread message is unread-count back from the tail
+    // the first unread message is unread-count back from the tail.
+    // Only set on unread — re-entering a read thread must NOT clear it:
+    // the marker is dismissed by interaction, not navigation
     const unread = this.api.chatUnread.value[thread] ?? 0;
     if (unread > 0) {
       const msgs = this.filterMsgs(thread, false, '');
-      this.dividerSeq.value = msgs[msgs.length - unread]?.seq ?? null;
-    } else {
-      this.dividerSeq.value = null;
+      const seq = msgs[msgs.length - unread]?.seq;
+      if (seq != null) this.dividerSeq.value = seq;
     }
     this.api.activeChat.value = thread;
     this.api.markChatRead(thread);
     // search is scoped to the thread — it doesn't travel with the switch
     this.searchQ.value = '';
+  }
+
+  /** dismiss the new-messages marker — only when the pane interacted
+   *  with is the one actually rendering it (a click in a different
+   *  channel's pane shouldn't count) */
+  private dismissNew() {
+    const seq = this.dividerSeq.value;
+    if (seq != null && this.messages.value.some((m) => m.seq === seq)) {
+      this.dividerSeq.value = null;
+    }
   }
 
   private startDm() {
@@ -885,7 +906,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
         <button
           class={cn(
             'flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-sm',
-            active ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
+            active ? 'bg-black/30 text-slate-100' : 'text-slate-400 hover:bg-black/30/60 hover:text-slate-200',
           )}
           onClick={() => this.open(key)}
         >
@@ -933,9 +954,9 @@ export class ChatView extends View implements OnInit, OnDestroy {
       this.searchAll.value || isAll || isSplit || thread.startsWith('custom:');
 
     return (
-      <div class="flex h-full min-h-0 overflow-hidden rounded border border-slate-800 bg-slate-900">
+      <PanelShell class="chat-view">
         {/* channel / DM sidebar */}
-        <aside class="flex w-48 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60">
+        <PanelSidebar class="w-48">
           <div class="flex-1 overflow-y-auto p-2">
             {this.threadRow('all', 'all', '≡')}
             {this.threadRow('chat', 'chat', '≡')}
@@ -1012,7 +1033,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                 <p class="px-2 text-[10px] text-slate-600">no conversations</p>
               )}
           </div>
-        </aside>
+        </PanelSidebar>
 
         {/* message pane + composer */}
         <section class="flex min-w-0 flex-1 flex-col">
@@ -1020,7 +1041,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
           <header class="flex h-10 shrink-0 items-center gap-2 border-b border-slate-800 px-4">
             {isSplit ? (
               <Dropdown
-                class="h-6 rounded border border-slate-700 bg-slate-950 px-1.5 text-xs font-semibold text-slate-300 hover:border-slate-500"
+                class="font-semibold"
                 title="pane channel"
                 value={this.pane1Thread.value}
                 onChange={(v) => this.setPane1Thread(v)}
@@ -1077,7 +1098,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                   merged views, clearing them would be ambiguous */}
               {(isTell || CHANNELS.some((c) => c.key === thread)) && (
                 <button
-                  class="rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                  class="rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-black/30 hover:text-slate-300"
                   title="clear this channel's history"
                   onClick={() => this.api.clearChat(thread)}
                 >
@@ -1088,28 +1109,15 @@ export class ChatView extends View implements OnInit, OnDestroy {
                   accident: first arms the confirm, second clears */}
               {isAll && (
                 <button
-                  class={cn(
-                    'rounded px-1.5 py-0.5 text-[10px]',
-                    this.clearAllArm.value
-                      ? 'bg-red-900/60 text-red-200'
-                      : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300',
-                  )}
+                  class="rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-black/30 hover:text-slate-300"
                   title="clear ALL chat history"
-                  onClick={() => {
-                    if (this.clearAllArm.value) {
-                      this.clearAllArm.value = false;
-                      this.api.clearChat('*');
-                    } else {
-                      this.clearAllArm.value = true;
-                      setTimeout(() => (this.clearAllArm.value = false), 3000);
-                    }
-                  }}
+                  onClick={() => (this.clearAllArm.value = true)}
                 >
-                  {this.clearAllArm.value ? 'sure?' : 'clear all'}
+                  clear all
                 </button>
               )}
               <Input
-                class="h-6 w-36 rounded border border-slate-700 bg-slate-950 px-2 text-xs text-slate-300 placeholder:text-slate-600"
+                class="w-36"
                 placeholder={
                   this.searchAll.value ? 'search all' : 'search'
                 }
@@ -1126,7 +1134,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
           <MessageList
             messages={this.messages.value}
             newAt={this.dividerSeq.value}
-            onDismiss={() => (this.dividerSeq.value = null)}
+            onDismiss={() => this.dismissNew()}
             query={this.searchQ.value.trim() || undefined}
             onOpenThread={
               mixed
@@ -1143,7 +1151,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             <div class="flex min-h-0 flex-1 flex-col">
               <header class="flex h-10 shrink-0 items-center gap-2 border-y border-slate-800 px-4">
                 <Dropdown
-                  class="h-6 rounded border border-slate-700 bg-slate-950 px-1.5 text-xs font-semibold text-slate-300 hover:border-slate-500"
+                  class="font-semibold"
                   title="split pane channel"
                   value={this.splitThread.value}
                   onChange={(v) => this.setSplitThread(v)}
@@ -1174,7 +1182,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                 />
                 <div class="ml-auto flex items-center gap-1">
                   <Input
-                    class="h-6 w-36 rounded border border-slate-700 bg-slate-950 px-2 text-xs"
+                    class="w-36"
                     placeholder="search"
                     value={this.splitSearchQ.value}
                     onInput={(e) =>
@@ -1193,7 +1201,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
               />
             </div>
           )}
-          <footer class="shrink-0 border-y border-slate-700 p-3">
+          <footer class="shrink-0 border-y border-slate-700 p-1.5">
             {canSend && this.markedPhrases(this.draft.value).length > 0 && (
               <div class="flex flex-wrap items-center gap-1 pb-1.5">
                 <span class="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
@@ -1212,10 +1220,10 @@ export class ChatView extends View implements OnInit, OnDestroy {
               </div>
             )}
             {canSend ? (
-              <div class="flex gap-2">
+              <div class="flex">
                 {targets && (
                   <Dropdown
-                    class="h-8 shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-1.5 text-xs text-slate-300 hover:border-slate-500"
+                    class="shrink-0 rounded-r-none border-r-0"
                     title="send to"
                     value={this.sendChannel() ?? ''}
                     formatValue={(v) => `#${v} ▾`}
@@ -1231,16 +1239,19 @@ export class ChatView extends View implements OnInit, OnDestroy {
                     inputRef={(el) => {
                       this.inputEl = el;
                     }}
-                    class="h-8 w-full rounded border border-slate-700 bg-slate-950 font-mono text-sm text-slate-200"
+                    class={cn(
+                      'rounded-r-none border-r-0 font-mono',
+                      targets && 'rounded-l-none',
+                    )}
                     placeholder={`message ${title} — tab completes auto-translate`}
                     value={this.draft.value}
                     onInput={(e) => this.onComposerInput(e)}
                     onKeyDown={(e) => this.onComposerKey(e)}
-                    onFocus={() => (this.dividerSeq.value = null)}
+                    onFocus={() => this.dismissNew()}
                     onBlur={() => (this.suggest.value = null)}
                   />
                   {this.suggest.value && (
-                    <div class="absolute bottom-full left-0 mb-1 w-72 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-xl">
+                    <div class="absolute bottom-full left-0 mb-1 w-72 overflow-hidden rounded-lg border border-slate-700 bg-black/30 shadow-xl">
                       <p class="px-2 pt-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
                         auto-translate · tab/enter accepts
                       </p>
@@ -1253,8 +1264,8 @@ export class ChatView extends View implements OnInit, OnDestroy {
                               // slate-50 flips dark in light mode —
                               // 'text-white' would vanish on the
                               // flipped slate-700 row
-                              ? 'bg-slate-700 text-slate-50'
-                              : 'text-slate-300 hover:bg-slate-800',
+                              ? 'bg-black/40 text-slate-50'
+                              : 'text-slate-300 hover:bg-black/30',
                           )}
                           // mousedown beats input blur so clicks still land
                           onMouseDown={(e) => {
@@ -1272,7 +1283,10 @@ export class ChatView extends View implements OnInit, OnDestroy {
                     </div>
                   )}
                 </div>
-                <Button class="h-8 px-3" onClick={() => void this.send()}>
+                <Button
+                  class="h-8 rounded-l-none border border-input bg-card px-3 hover:bg-accent"
+                  onClick={() => void this.send()}
+                >
                   send
                 </Button>
               </div>
@@ -1287,6 +1301,45 @@ export class ChatView extends View implements OnInit, OnDestroy {
           </footer>
         </section>
 
+        {/* clear-all-history confirm */}
+        {this.clearAllArm.value && (
+          <div
+            class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+            data-modal
+            onClick={() => (this.clearAllArm.value = false)}
+          >
+            <div
+              class="w-72 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 class="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Clear all history
+              </h3>
+              <p class="text-xs text-slate-400">
+                This wipes every channel's saved history — it can't be
+                undone.
+              </p>
+              <div class="mt-3 flex justify-end gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => (this.clearAllArm.value = false)}
+                >
+                  cancel
+                </Button>
+                <Button
+                  size="sm"
+                  class="bg-red-800 hover:bg-red-700"
+                  onClick={() => {
+                    this.clearAllArm.value = false;
+                    this.api.clearChat('*');
+                  }}
+                >
+                  clear all
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* new-direct-message dialog */}
         {this.dmOpen.value && (
           <div
@@ -1295,7 +1348,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             onClick={() => (this.dmOpen.value = false)}
           >
             <div
-              class="w-72 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
+              class="w-72 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1335,7 +1388,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             onClick={() => (this.customOpen.value = false)}
           >
             <div
-              class="w-80 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
+              class="w-80 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1389,7 +1442,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             </div>
           </div>
         )}
-      </div>
+      </PanelShell>
     );
   }
 }

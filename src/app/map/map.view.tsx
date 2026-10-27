@@ -14,6 +14,7 @@ import type { MapEntity } from '../core/types';
 import { MapRadar, ELEV_DELTA } from './map-radar';
 import { resolveMapImage } from './map-image';
 import { radiusFor, loadZoom, saveZoom } from './map-zoom';
+import { PanelSidebar } from '../core/panel';
 
 const ZOOM_KEY = 'xicompanion.map.zoom';
 
@@ -330,7 +331,7 @@ export class MapView extends View implements OnInit, OnDestroy {
               }}
             />
           </div>
-          <div class="flex w-56 shrink-0 flex-col rounded border border-slate-800 bg-slate-950">
+          <PanelSidebar class="w-56">
             {this.kinds.value.length > 0 && (
               <div class="flex flex-wrap gap-1 border-b border-slate-800 p-1">
                 {this.kinds.value.map((k) => {
@@ -364,7 +365,7 @@ export class MapView extends View implements OnInit, OnDestroy {
                 this.ents.value.map((e) => this.entRow(e))
               )}
             </div>
-          </div>
+          </PanelSidebar>
         </div>
         {this.entMenu.value && (
           <>

@@ -186,14 +186,14 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
         <div class="flex items-center gap-2">
           {this.chars.value.length > 1 && (
             <Select
-              className="h-7 w-24 text-xs"
+              className="w-24"
               value={c?.id ?? ''}
               options={this.chars.value.map((x) => ({ value: x.id, label: x.id }))}
               onChange={(v) => this.pickChar(v)}
             />
           )}
           <Select
-            className="h-7 w-40 text-xs"
+            className="w-40"
             filterable
             value={String(this.book.value)}
             options={Array.from({ length: NUM_BOOKS }, (_, i) => {

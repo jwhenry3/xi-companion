@@ -291,6 +291,18 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   Electron handles Esc natively via `before-input-event`).
 - `core/item-utils.ts` — shared item helpers (catalog merge, flag/tag
   formatting) used by inventory/sets pickers and the tooltip page.
+- `src/styles.css` — theme palettes. `host.ts` `applyTheme` toggles
+  `html.classic|slate|charcoal|bare` (per-window picks via
+  `xicompanion.wintheme.<route>` shadow the global `xicompanion.theme`).
+  Each `html.<theme>` block remaps the whole `--color-slate-*` ramp (and
+  `--color-indigo-*` under slate/charcoal) plus the shadcn tokens
+  (`--card`/`--popover`/`--secondary`/`--muted`/`--accent`/`--border`/
+  `--input`/`--primary`/`--ring`) — views paint content with fixed
+  `bg-slate-*`/`border-slate-*`/`text-slate-*` classes that all resolve
+  through those vars, so cards/buttons/inputs retint without component
+  edits. Panel chrome (`.ffxi-panel`/`.ffxi-panel-title`/`.ffxi-fab`)
+  has separate per-theme rules further down; when adding content
+  colors, use slate-ramp or token classes, never hex/other ramps.
 
 ### Overlay — `overlay/`
 
@@ -401,6 +413,39 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `minimize` → `restore` (frameless+skipTaskbar auto-minimize quirk);
   periodic `moveTop` re-pin; `Esc` hides. Header is the drag region via
   injected CSS.
+
+
+### xicdbg — diagnostic "MCP" addon (installed-side only)
+
+`windower/addons/xicdbg/xicdbg.lua` — a tiny standalone Windower addon that
+exists so agents can **investigate and recover the game/addon state when
+xicompanion itself is down or misbehaving** (the addon's `/api/command`
+bridge dies with it). Loaded before `xicompanion` in
+`windower/scripts/init.txt` (`lua load xicdbg`); deploys by copying the
+folder into `windower/addons/` — it is NOT part of the repo's
+`addon/xicompanion/` tree and deploy.mjs does not sync it.
+
+Not a real MCP server — a minimal LuaSocket HTTP API on `127.0.0.1:17891`
+reachable with plain curl. `GET /tools` returns a machine-readable
+endpoint catalog — fetch it first rather than hardcoding paths:
+
+| Route | Purpose |
+|---|---|
+| `GET /tools` | endpoint catalog (discovery) |
+| `GET /state` | player/zone/logged_in |
+| `GET /keys` | recent keyboard events `{t,dik,down,blocked}` — the "who ate my keys" probe |
+| `GET /chat` | recent incoming-text lines `{ts,mode,text}` |
+| `POST /cmd` | `{"cmd":"..."}` → `send_command` (windower cmd; `input /x` for client cmds) |
+| `POST /bind` | `{"key":"...","cmd":"..."}` → `//bind` |
+| `POST /unbind` | `{"key":"..."}` → `//unbind` |
+| `POST /unbindall` | `//unbind all` — recovers locked keys from persistent binds |
+
+Incident notes: Windower `//bind` keybinds are global state that swallows
+keys and **persists after addon unload** — a bound Escape/Enter shows up
+as "keys locked" even with xicompanion unloaded. A stuck native chat
+input line has the same symptom (only right-click dismisses it; Esc
+should but the line can get wedged). Use `GET /keys` to see events the
+client saw vs. ones a bind/hook ate (blocked flag).
 
 ## Verify / build
 

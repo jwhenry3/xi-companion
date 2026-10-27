@@ -7,6 +7,7 @@
 // its height to the window so it still works in a 64px HUD strip.
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { cn } from '@/lib/utils';
+import { controlClasses } from '@/components/ui/input';
 
 export interface DropdownOption {
   value: string;
@@ -72,7 +73,11 @@ export function Dropdown(props: {
   return (
     <span ref={root} class="relative inline-flex">
       <button
-        class={props.class}
+        class={cn(
+          controlClasses,
+          'cursor-pointer whitespace-nowrap select-none',
+          props.class,
+        )}
         title={props.title}
         onClick={toggle}
       >

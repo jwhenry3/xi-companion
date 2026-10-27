@@ -22,6 +22,16 @@ import type {
 } from '../core/types';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import {
+  PanelShell,
+  PanelSidebar,
+  SidebarBody,
+  SidebarLabel,
+  SidebarFoot,
+  PanelMain,
+  PanelHeader,
+  DetailPane,
+} from '../core/panel';
 
 type Row = AbilityEntry | SpellEntry;
 
@@ -421,7 +431,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
     const m = meta(e);
     const actionBtn = 'mb-2 mr-2 rounded border px-3 py-1 text-xs';
     return (
-      <div class="w-72 shrink-0 overflow-y-auto border-l border-slate-800 bg-slate-950/60 p-4">
+      <DetailPane>
         <div class="flex items-center gap-2 pb-1">
           {(() => {
             const u = iconUrl(this.api, e);
@@ -478,7 +488,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
         <button
           class={cn(
             actionBtn,
-            'border-slate-700 bg-slate-900/60 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
+            'border-slate-700 bg-black/30 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
           )}
           onClick={() => this.copy(cmd, key)}
         >
@@ -487,7 +497,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
         <p class="pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           command
         </p>
-        <code class="block break-all rounded bg-slate-900/80 px-1.5 py-1 text-xs text-sky-200">
+        <code class="block break-all rounded bg-black/60 px-1.5 py-1 text-xs text-sky-200">
           {cmd}
         </code>
         {m && (
@@ -498,7 +508,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
             <p class="text-xs leading-relaxed text-slate-400">{m}</p>
           </div>
         )}
-      </div>
+      </DetailPane>
     );
   }
 
@@ -514,25 +524,21 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
           : 'All Abilities'
         : this.cat.value;
     return (
-      <div class="flex h-full min-h-0 overflow-hidden rounded border border-slate-800 bg-slate-900">
-        <aside class="flex w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60">
-          <div class="flex-1 overflow-y-auto p-2">
-            <p class="px-2 pb-1 pt-1 text-[10px] font-semibold tracking-wider text-slate-500">
-              SPELLS
-            </p>
+      <PanelShell>
+        <PanelSidebar>
+          <SidebarBody>
+            <SidebarLabel class="pt-1">SPELLS</SidebarLabel>
             {this.catRow('spells', 'all', 'All Spells')}
             {this.catsFor('spells').map((c) =>
               this.catRow('spells', c, c),
             )}
-            <p class="px-2 pb-1 pt-3 text-[10px] font-semibold tracking-wider text-slate-500">
-              ABILITIES
-            </p>
+            <SidebarLabel>ABILITIES</SidebarLabel>
             {this.catRow('abilities', 'all', 'All Abilities')}
             {this.catsFor('abilities').map((c) =>
               this.catRow('abilities', c, c),
             )}
-          </div>
-          <div class="border-t border-slate-800 p-2 text-[10px] text-slate-500">
+          </SidebarBody>
+          <SidebarFoot>
             {d?.on === 0 ? (
               <span>log in to see your spellbook</span>
             ) : (
@@ -541,16 +547,16 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
                 {this.catStats('abilities', 'all')} abilities learned
               </span>
             )}
-          </div>
-        </aside>
+          </SidebarFoot>
+        </PanelSidebar>
 
-        <section class="flex min-w-0 flex-1 flex-col">
-          <header class="flex h-10 shrink-0 items-center gap-3 border-b border-slate-800 px-4">
+        <PanelMain>
+          <PanelHeader>
             <span class="min-w-0 flex-1 truncate text-xs font-semibold text-slate-300">
               {groupLabel}
             </span>
             <Input
-              class="h-6 w-48 px-2 text-xs"
+              class="w-48"
               placeholder="search…"
               value={this.query.value}
               onInput={(e) =>
@@ -572,7 +578,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
               learned only
             </label>
             <Dropdown
-              class="h-5 cursor-pointer rounded border border-slate-600/60 bg-transparent px-1 font-mono text-[10px] leading-none text-slate-300"
+              class="h-5 px-1 font-mono text-[10px] leading-none"
               title={`fire with ${this.target.value}`}
               align="right"
               value={this.target.value}
@@ -591,7 +597,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
                 this.setTarget(t as (typeof TARGETS)[number])
               }
             />
-          </header>
+          </PanelHeader>
           <div class="min-h-0 flex-1 overflow-y-auto p-2">
             {(() => {
               // 'all' shows group headers as categories change (sorted
@@ -626,10 +632,10 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
               </p>
             )}
           </div>
-        </section>
+        </PanelMain>
 
         {openRow && this.detail(openRow)}
-      </div>
+      </PanelShell>
     );
   }
 }

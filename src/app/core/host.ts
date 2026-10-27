@@ -208,16 +208,13 @@ if (inWebView()) {
 }
 
 // ---------- theme ----------
-// the app is styled exclusively in Tailwind's slate ramp, so light mode
-// flips the ramp (styles.css html.light) — no per-component work.
 // 'slate' is a translucent-black square-edged skin for detached panels.
 // Each detached window can pick its own theme — the per-route key
 // shadows the global one for that window only.
 
-export type Theme = 'classic' | 'light' | 'slate' | 'charcoal' | 'bare';
+export type Theme = 'classic' | 'slate' | 'charcoal' | 'bare';
 export const THEMES: Theme[] = [
   'classic',
-  'light',
   'slate',
   'charcoal',
   'bare',
@@ -225,7 +222,7 @@ export const THEMES: Theme[] = [
 // renames — normalize stored picks from older builds
 // ('dark' → 'classic', 'glass' → 'slate')
 const normTheme = (v: string | null): Theme | null =>
-  v === 'dark'
+  v === 'dark' || v === 'light'
     ? 'classic'
     : v === 'glass'
       ? 'slate'
@@ -240,7 +237,7 @@ export const theme = signal<Theme>(
 );
 const applyTheme = (t: Theme) => {
   const cl = document.documentElement.classList;
-  cl.toggle('light', t === 'light');
+  cl.toggle('classic', t === 'classic');
   cl.toggle('slate', t === 'slate');
   cl.toggle('charcoal', t === 'charcoal');
   cl.toggle('bare', t === 'bare');
@@ -524,10 +521,9 @@ function dragRegionOf(t: HTMLElement | null): 'drag' | 'no-drag' | null {
 
 // Wires the frameless chrome affordances for the wails shell (full mode
 // only — the fab handles its own drag/click):
-//  - drag regions win over the resize border — the title bar's top 8px
-//    would otherwise be an n-resize sliver that makes the bar nearly
-//    ungrabbable, and the × button inside the corner zone would resize
-//    instead of clicking
+//  - no-drag wins over the resize border so buttons inside edge zones
+//    (× in the corner) still click; resize edges win over drag so the
+//    title bar's top sliver + corners resize rather than move
 //  - edges: mousemove shows the resize cursor; mousedown starts the
 //    Go-driven size loop via "xicompanion:resize:<cursor>"
 //  - drag: mousedown on a --wails-draggable:drag element (honoring
@@ -537,16 +533,43 @@ export function installWindowChrome() {
   updateFabMode();
   window.addEventListener('resize', updateFabMode);
 
-  document.addEventListener('mousemove', (e) => {
-    if (e.buttons !== 0 || fabMode.value || tooltipMode) return; // no churn mid-drag / no edges on fab/tooltip
-    const cursor =
-      dragRegionOf(e.target as HTMLElement) !== null
-        ? ''
-        : edgeAt(e.clientX, e.clientY) ?? '';
+  // hovered resize edge → bright border hint, overlay-only so content
+  // doesn't reflow; the 'rc' class forces the resize cursor past
+  // per-element cursor rules (buttons would otherwise keep 'pointer')
+  let hlEl: HTMLDivElement | null = null;
+  const edgeHl = (edge: string | null) => {
+    if (!edge) {
+      hlEl?.remove();
+      hlEl = null;
+      return;
+    }
+    if (!hlEl) {
+      hlEl = document.createElement('div');
+      hlEl.style.cssText =
+        'position:fixed;inset:0;pointer-events:none;z-index:9999;' +
+        'border:0 solid rgba(56,189,248,.85);';
+      document.body.appendChild(hlEl);
+    }
+    hlEl.style.borderWidth =
+      (edge[0] === 'n' ? '2px ' : '0 ') +
+      (edge.includes('e') ? '2px ' : '0 ') +
+      (edge[0] === 's' || edge === 'sw-resize' || edge === 'se-resize' || edge === 's-resize' ? '2px ' : '0 ') +
+      (edge.includes('w') ? '2px' : '0');
+  };
+  const setEdge = (edge: string | null) => {
+    const cursor = edge ?? '';
     if (document.documentElement.style.cursor !== cursor) {
       document.documentElement.style.cursor = cursor;
     }
+    document.documentElement.classList.toggle('rc', edge !== null);
+    edgeHl(edge);
+  };
+  document.addEventListener('mousemove', (e) => {
+    if (e.buttons !== 0 || fabMode.value || tooltipMode) return; // no churn mid-drag / no edges on fab/tooltip
+    const region = dragRegionOf(e.target as HTMLElement);
+    setEdge(region === 'no-drag' ? null : edgeAt(e.clientX, e.clientY));
   });
+  document.addEventListener('mouseleave', () => setEdge(null));
 
   document.addEventListener(
     'mousedown',
@@ -555,21 +578,21 @@ export function installWindowChrome() {
       // touched window to band-top on our behalf (z-order, not focus)
       if (e.button === 0) tell('xicompanion:raise');
       if (e.button !== 0 || fabMode.value) return;
-      switch (dragRegionOf(e.target as HTMLElement)) {
-        case 'no-drag':
-          return;
-        case 'drag':
-          e.preventDefault(); // no text selection while dragging
-          e.stopPropagation();
-          tell('xicompanion:drag');
-          return;
-      }
+      if (dragRegionOf(e.target as HTMLElement) === 'no-drag') return;
+      // resize edges win over the drag region — the title bar's top
+      // 8px sliver + corners resize instead of moving the window
       const edge =
         tooltipMode || menuMode ? null : edgeAt(e.clientX, e.clientY);
       if (edge) {
         e.preventDefault();
         e.stopPropagation();
         tell(`xicompanion:resize:${edge}`);
+        return;
+      }
+      if (dragRegionOf(e.target as HTMLElement) === 'drag') {
+        e.preventDefault(); // no text selection while dragging
+        e.stopPropagation();
+        tell('xicompanion:drag');
       }
     },
     true,

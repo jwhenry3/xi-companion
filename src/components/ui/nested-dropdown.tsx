@@ -175,7 +175,7 @@ export function NestedDropdown({
         data-slot="nested-dropdown-trigger"
         aria-expanded={open}
         className={cn(
-          'flex h-8 w-full items-center justify-between gap-1.5 whitespace-nowrap rounded-lg border border-input bg-transparent py-2 pl-2.5 pr-2 text-sm outline-none transition-colors select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+          'flex h-8 w-full items-center justify-between gap-1.5 whitespace-nowrap rounded-lg border border-input bg-card py-2 pl-2.5 pr-2 text-sm outline-none transition-colors select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
           !value && 'text-muted-foreground',
         )}
         onClick={() => setOpen((o) => !o)}

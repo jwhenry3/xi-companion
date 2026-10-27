@@ -95,7 +95,7 @@ export class AddonApi {
     const bump = () => (this.lastEventAt = Date.now());
     for (const e of [
       'ping', 'state', 'chat', 'journal', 'recasts', 'map', 'party',
-      'macrosel',
+      'macrosel', 'macros',
     ]) {
       es.addEventListener(e, (ev) => {
         bump();
@@ -235,6 +235,11 @@ export class AddonApi {
           break;
         case 'macrosel':
           this.macroSel.value = JSON.parse(d);
+          break;
+        case 'macros':
+          // macro files changed addon-side (editor PUT, in-game
+          // book/page switch, external edit) — refetch palettes
+          void this.refreshMacros();
           break;
         case 'chatfocus':
           this.chatFocus.value = this.chatFocus.value + 1;
@@ -417,7 +422,7 @@ export class AddonApi {
   /** unified chat log (bounded client-side mirror of the addon's ring buffer) */
   readonly chat = signal<ChatMessage[]>([]);
   /** active thread key the chat view is looking at: channel name or tell:<peer> */
-  readonly activeChat = signal('party');
+  readonly activeChat = signal('all');
   /** unread counts per thread key */
   readonly chatUnread = signal<Record<string, number>>({});
   /** unread flagged (kind) messages per thread — the sidebar ★ badge */

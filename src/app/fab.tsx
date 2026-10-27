@@ -295,7 +295,7 @@ export function FabMenu() {
   const open = openWindows.value;
   return (
     <div class="h-screen w-screen cursor-default overflow-hidden bg-transparent p-1">
-      <div class="w-full rounded border border-slate-600 bg-[#0d1338]/95 py-1 shadow-lg">
+      <div class="w-full rounded border border-slate-600 bg-popover/95 py-1 shadow-lg">
         <p class="px-2 pb-0.5 pt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400/70">
           {g.label}
         </p>

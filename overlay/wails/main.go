@@ -78,29 +78,17 @@ var (
 	pGetWindowRect       = user32.NewProc("GetWindowRect")
 	pDwmSetWindowAttr    = dwmapi.NewProc("DwmSetWindowAttribute")
 	pDwmExtendFrame      = dwmapi.NewProc("DwmExtendFrameIntoClientArea")
-	pRegisterClassEx     = user32.NewProc("RegisterClassExW")
-	pCreateWindowEx      = user32.NewProc("CreateWindowExW")
-	pDestroyWindow       = user32.NewProc("DestroyWindow")
 	pDefWindowProc       = user32.NewProc("DefWindowProcW")
 	pGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
-	pGetDC               = user32.NewProc("GetDC")
-	pUpdateLayeredWindow = user32.NewProc("UpdateLayeredWindow")
-	pPeekMessage         = user32.NewProc("PeekMessageW")
+	pGetMessage          = user32.NewProc("GetMessageW")
 	pSetWinEventHook     = user32.NewProc("SetWinEventHook")
 	pUnhookWinEvent      = user32.NewProc("UnhookWinEvent")
 	pTranslateMsg        = user32.NewProc("TranslateMessage")
 	pDispatchMsg         = user32.NewProc("DispatchMessageW")
 	pBeginPaint          = user32.NewProc("BeginPaint")
 	pEndPaint            = user32.NewProc("EndPaint")
-	pSetDisplayAff       = user32.NewProc("SetWindowDisplayAffinity")
 
 	gdi32               = syscall.NewLazyDLL("gdi32.dll")
-	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
-	pCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
-	pSelectObject       = gdi32.NewProc("SelectObject")
-	pStretchBlt         = gdi32.NewProc("StretchBlt")
-	pSetStretchBltMode  = gdi32.NewProc("SetStretchBltMode")
-	pDeleteObject       = gdi32.NewProc("DeleteObject")
 
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
@@ -131,8 +119,8 @@ const (
 	gwlpOwner       = ^uint32(7)  // GWLP_HWNDPARENT (-8)
 	gwHwndNext      = 2           //nolint:unused — kept with the GW_* family
 	wsExLayered     = 0x00080000
-	wsExNoActivate  = 0x08000000
 	wsExTransparent = 0x00000020
+	wsExNoActivate  = 0x08000000
 
 	vkLButton = 0x01
 
@@ -146,28 +134,18 @@ const (
 	htBottomLeft  = 16
 	htBottomRight = 17
 
-	// capture-blur backing windows — no DWM blur path renders on the
-	// NOREDIRECTIONBITMAP webview hosts (verified in the sandbox), so
-	// glass parks a WS_EX_LAYERED popup directly beneath each blurred
-	// window and paints it with a blurred copy of whatever is behind
-	wsPopup        = 0x80000000
-	wsExToolWindow = 0x00000080
 	wsExTopmost    = 0x00000008
-	wdaExclude     = 0x11 // WDA_EXCLUDEFROMCAPTURE — keeps backing+overlay
 	// out of the BitBlt so only real desktop content frosts
-	srccopy       = 0x00CC0020
-	ulwAlpha      = 0x02
-	halftone      = 4 // SetStretchBltMode — quality half-res downsample
-	biRGB         = 0
-	dibRGB        = 0
-	pmRemove      = 0x0001
-	swpHideWindow = 0x0080
 
 	// EVENT_OBJECT_LOCATIONCHANGE + out-of-context queue delivery —
 	// the backing follows overlay moves at event speed instead of the
 	// 16ms paint cadence (kills drag jitter)
-	evtLocationChange = 0x800B
-	objidWindow       = 0
+
+	// EVENT_SYSTEM_FOREGROUND — instant topmost refresh on focus flips
+	// (the 300ms poll stays as a drift fallback, but the flicker window
+	// was its latency)
+	evtForeground  = 0x0003
+	wineventSkipOwn = 0x0002
 )
 
 // edge hit-test codes (same values WM_NCHITTEST reports)
@@ -305,25 +283,87 @@ func applyFocusTopmost(hwnd uintptr, want bool) {
 		swpNoMove|swpNoSize|swpNoActivate)
 }
 
-func focusTopmostLoop() {
-	for range time.Tick(300 * time.Millisecond) {
-		fg, _, _ := pGetForegroundWindow.Call()
-		ffxi := ffxiHwnd.Load()
-		if r, _, _ := pIsWindow.Call(ffxi); ffxi == 0 || r == 0 {
-			ffxi = findFFXIWindow()
-			ffxiHwnd.Store(ffxi)
-		}
-		want := fg != 0 && (fg == ffxi || ourHwnd(fg) || isFFXIProcess(fg))
-		applyFocusTopmost(windowHwnd.Load(), want)
-		applyFocusTopmost(tooltipHwnd.Load(), want)
-		applyFocusTopmost(fabMenuHwnd.Load(), want)
-		spawnMu.Lock()
+func refreshTopmost() {
+	fg, _, _ := pGetForegroundWindow.Call()
+	ffxi := ffxiHwnd.Load()
+	if r, _, _ := pIsWindow.Call(ffxi); ffxi == 0 || r == 0 {
+		ffxi = findFFXIWindow()
+		ffxiHwnd.Store(ffxi)
+	}
+	want := fg != 0 && (fg == ffxi || ourHwnd(fg) || isFFXIProcess(fg))
+	// Snapshot our hwnds first — TryLock like the old loop: this runs
+	// inside the WinEvent callback where blocking on spawnMu can stall
+	// the hook thread (a held spawn lock + hook-thread wait = the
+	// focus path freezing and game keys dying).
+	ours := map[uintptr]bool{
+		windowHwnd.Load(): true,
+		tooltipHwnd.Load(): true,
+		fabMenuHwnd.Load(): true,
+	}
+	if spawnMu.TryLock() {
 		for _, sw := range spawned {
 			if sw.NativeWindow() != nil {
-				applyFocusTopmost(hwndOf(sw), want)
+				ours[hwndOf(sw)] = true
 			}
 		}
 		spawnMu.Unlock()
+	}
+	// Re-asserting TOPMOST moves a window to the top of the topmost
+	// band — iterating spawn order let the last entry (e.g. skillchain)
+	// jump over windows the user just raised. EnumWindows walks the
+	// desktop in z-order; filtering to ours and applying bottom→top
+	// keeps the user's stacking through the transition.
+	var order []uintptr
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		if ours[hwnd] {
+			order = append(order, hwnd)
+		}
+		return 1
+	})
+	pEnumWindows.Call(cb, 0)
+	for i := len(order) - 1; i >= 0; i-- {
+		applyFocusTopmost(order[i], want)
+	}
+}
+
+func focusTopmostLoop() {
+	// the WinEvent hook reacts to foreground changes instantly — this
+	// stays as a low-rate safety net for drift the events don't cover
+	for range time.Tick(500 * time.Millisecond) {
+		refreshTopmost()
+	}
+}
+
+// fires on EVENT_SYSTEM_FOREGROUND — out-of-context queue delivery like
+// the location hook; refreshes topmost at event speed instead of poll
+// cadence, which is what made the on-top flip visibly flicker
+var foregroundHookProc = syscall.NewCallback(
+	func(hook, event, hwnd, idObject, idChild, tid, ms uintptr) uintptr {
+		refreshTopmost()
+		return 0
+	})
+
+func topmostHookThread() {
+	runtime.LockOSThread()
+	// no SKIPOWNPROCESS — an event from our own windows (fab menu
+	// activating, a panel stealing focus mid-drag) is exactly the
+	// refresh we need; recomputing want is cheap anyway
+	pSetWinEventHook.Call(evtForeground, evtForeground, 0,
+		foregroundHookProc, 0, 0, 0)
+	var msg struct {
+		Hwnd uintptr
+		Msg  uint32
+		W, L uintptr
+		Time uint32
+		X, Y int32
+	}
+	for {
+		r, _, _ := pGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+		if int32(r) <= 0 {
+			return
+		}
+		pTranslateMsg.Call(uintptr(unsafe.Pointer(&msg)))
+		pDispatchMsg.Call(uintptr(unsafe.Pointer(&msg)))
 	}
 }
 
@@ -448,6 +488,7 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 	tEdge := hitTest == htTop || hitTest == htTopLeft || hitTest == htTopRight
 	bEdge := hitTest == htBottom || hitTest == htBottomLeft || hitTest == htBottomRight
 
+	l, t, r, b := x0, y0, x0+w0, y0+h0
 	for {
 		time.Sleep(15 * time.Millisecond)
 		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
@@ -456,7 +497,7 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 		var p wPoint
 		pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
 		dx, dy := p.x-p0.x, p.y-p0.y
-		l, t, r, b := x0, y0, x0+w0, y0+h0
+		l, t, r, b = x0, y0, x0+w0, y0+h0
 		if hitTest == htCaption {
 			l, t = x0+dx, y0+dy
 			r, b = l+w0, t+h0
@@ -495,6 +536,14 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 			uintptr(int64(r-l)), uintptr(int64(b-t)),
 			swpNoActivate|swpNoZOrder)
 	}
+	// drop-snap: pin the final rect to 4px intervals — edges AND size
+	// (snapping both edges keeps the delta a multiple of 4)
+	snap := func(v int32) int32 { return (v + 2) &^ 3 }
+	sl, st, sr, sb := snap(l), snap(t), snap(r), snap(b)
+	pSetWindowPos.Call(hwnd, 0,
+		uintptr(int64(sl)), uintptr(int64(st)),
+		uintptr(int64(sr-sl)), uintptr(int64(sb-st)),
+		swpNoActivate|swpNoZOrder)
 	refocusGame()
 }
 
@@ -547,7 +596,6 @@ func setClickable(hwnd uintptr, clickable bool) {
 	}
 }
 
-// WNDCLASSEXW + DIB/ULW payloads for the capture-blur backings
 type wndClassEx struct {
 	CbSize, Style                    uint32
 	LpfnWndProc                      uintptr
@@ -567,300 +615,17 @@ type bitmapInfoHeader struct {
 	ClrUsed       uint32
 	ClrImportant  uint32
 }
-type winPt struct{ X, Y int32 }
-type winSz struct{ CX, CY int32 }
-type blendFn struct{ Op, Flags, Alpha, Format byte }
 
-// applyBlur is the glass-theme switch: a capture-blur layered backing
-// window is parked under the overlay hwnd while it's on and destroyed
-// when it isn't. All backing windows live on one dedicated thread.
-func applyBlur(hwnd uintptr, on bool) {
-	return // capture-blur backing disabled for now — keep the plumbing
-	if hwnd == 0 || hwnd == tooltipHwnd.Load() {
-		return // the tooltip's click-through rides WS_EX_LAYERED — leave it
-	}
-	blurThreadOnce.Do(func() { go blurThread() })
-	blurRequests <- blurReq{hwnd, on}
-}
 
-type blurReq struct {
-	hwnd uintptr
-	on   bool
-}
 
-var (
-	blurRequests   = make(chan blurReq, 64)
-	blurThreadOnce sync.Once
-)
 
-// blurThread creates every backing window and runs its per-frame
-// capture→blur→present loop, plus the thread's message pump. Spawned
-// lazily the first time glass is picked.
-func blurThread() {
-	runtime.LockOSThread()
-	hinst, _, _ := pGetModuleHandle.Call(0)
 
-	// WndProc: validate WM_PAINT (ULW drives content), default the rest
-	paintProc := syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
-		if msg == 0x000f {
-			var ps [72]byte
-			pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps[0])))
-			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps[0])))
-			return 0
-		}
-		r, _, _ := pDefWindowProc.Call(hwnd, msg, wp, lp)
-		return r
-	})
-	cname, _ := syscall.UTF16PtrFromString("XICBlurBacking")
-	wc := wndClassEx{
-		CbSize:        uint32(unsafe.Sizeof(wndClassEx{})),
-		LpfnWndProc:   paintProc,
-		HInstance:     hinst,
-		LpszClassName: cname,
-	}
-	if atom, _, err := pRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
-		log.Printf("blurBacking: RegisterClassEx failed err=%v", err)
-		return
-	}
 
-	screen, _, _ := pGetDC.Call(0)
-	type bk struct {
-		hwnd, hook   uintptr
-		memLo, dibLo uintptr
-		bitsLo       uintptr
-		memHi, dibHi uintptr
-		cw, ch       int32
-	}
-	live := map[uintptr]*bk{} // overlay hwnd → backing
 
-	// event-driven follow: overlay moves → backing tracks the rect in
-	// the same frame (the 16ms capture loop only repaints content)
-	follow := syscall.NewCallback(func(hook, event, hwnd, obj, child, tid, ts uintptr) uintptr {
-		if obj == objidWindow {
-			if b := live[hwnd]; b != nil {
-				var r [4]int32
-				pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-				pSetWindowPos.Call(b.hwnd, hwnd,
-					uintptr(r[0]), uintptr(r[1]),
-					uintptr(r[2]-r[0]), uintptr(r[3]-r[1]),
-					swpNoActivate|swpShowWindow)
-			}
-		}
-		return 0
-	})
 
-	prep := func(b *bk, w, h int32) {
-		if b.cw == w && b.ch == h && b.dibHi != 0 {
-			return
-		}
-		if b.dibLo != 0 {
-			pDeleteObject.Call(b.dibLo)
-		}
-		if b.dibHi != 0 {
-			pDeleteObject.Call(b.dibHi)
-		}
-		if b.memLo == 0 {
-			b.memLo, _, _ = pCreateCompatibleDC.Call(screen)
-			b.memHi, _, _ = pCreateCompatibleDC.Call(screen)
-			pSetStretchBltMode.Call(b.memLo, halftone)
-			pSetStretchBltMode.Call(b.memHi, halftone)
-		}
-		mkDIB := func(w, h int32) (dib, bits uintptr) {
-			bih := bitmapInfoHeader{Size: 40, Width: w, Height: -h,
-				Planes: 1, BitCount: 32, Compression: biRGB}
-			dib, _, _ = pCreateDIBSection.Call(0, uintptr(unsafe.Pointer(&bih)),
-				dibRGB, uintptr(unsafe.Pointer(&bits)), 0, 0)
-			return
-		}
-		b.dibLo, b.bitsLo = mkDIB(w/2, h/2)
-		b.dibHi, _ = mkDIB(w, h)
-		pSelectObject.Call(b.memLo, b.dibLo)
-		pSelectObject.Call(b.memHi, b.dibHi)
-		b.cw, b.ch = w, h
-	}
 
-	var msg struct {
-		Hwnd uintptr
-		Msg  uint32
-		W, L uintptr
-		Time uint32
-		X, Y int32
-	}
-	for {
-		// drain requests — create/destroy backings
-	drain:
-		for {
-			select {
-			case rq := <-blurRequests:
-				if rq.on {
-					if live[rq.hwnd] == nil {
-						b, _, _ := pCreateWindowEx.Call(
-							wsExLayered|wsExNoActivate|wsExTransparent|wsExToolWindow|wsExTopmost,
-							uintptr(unsafe.Pointer(cname)), 0, wsPopup,
-							0, 0, 10, 10, 0, 0, hinst, 0)
-						if b != 0 {
-							pSetDisplayAff.Call(b, wdaExclude)
-							pSetDisplayAff.Call(rq.hwnd, wdaExclude)
-							ent := &bk{hwnd: b}
-							var pid uint32
-							tid, _, _ := pGetWindowThreadProcessId.Call(
-								rq.hwnd, uintptr(unsafe.Pointer(&pid)))
-							ent.hook, _, _ = pSetWinEventHook.Call(
-								evtLocationChange, evtLocationChange,
-								0, follow, 0, tid, 0)
-							live[rq.hwnd] = ent
-							log.Printf("blur backing %#x under %#x", b, rq.hwnd)
-						}
-					}
-				} else if b := live[rq.hwnd]; b != nil {
-					pSetDisplayAff.Call(rq.hwnd, 0)
-					if b.hook != 0 {
-						pUnhookWinEvent.Call(b.hook)
-					}
-					pDestroyWindow.Call(b.hwnd)
-					delete(live, rq.hwnd)
-				}
-			default:
-				break drain
-			}
-		}
 
-		// per-frame: follow overlay rect/z/visibility, paint the blur
-		for ow, b := range live {
-			ok, _, _ := pIsWindow.Call(ow)
-			if ok == 0 {
-				if b.hook != 0 {
-					pUnhookWinEvent.Call(b.hook)
-				}
-				pDestroyWindow.Call(b.hwnd)
-				delete(live, ow)
-				continue
-			}
-			var r [4]int32
-			pGetWindowRect.Call(ow, uintptr(unsafe.Pointer(&r)))
-			wx, wy, w, h := r[0], r[1], r[2]-r[0], r[3]-r[1]
-			vis, _, _ := pIsWindowVisible.Call(ow)
-			flags := uintptr(swpNoActivate | swpShowWindow)
-			if vis == 0 {
-				flags = swpNoActivate | swpHideWindow
-			}
-			pSetWindowPos.Call(b.hwnd, ow,
-				uintptr(wx), uintptr(wy), uintptr(w), uintptr(h), flags)
-			if vis == 0 {
-				continue
-			}
-			prep(b, w, h)
-			w2, h2 := w/2, h/2
-			pStretchBlt.Call(b.memLo, 0, 0, uintptr(w2), uintptr(h2),
-				screen, uintptr(wx), uintptr(wy), uintptr(w), uintptr(h), srccopy)
-			pix := unsafe.Slice((*byte)(unsafe.Pointer(b.bitsLo)), w2*h2*4)
-			blurBox(pix, int(w2), int(h2), 18)
-			// darken toward black — the blurred desktop alone reads too
-			// bright; ~45% luminance gives the frosted-dark glass look
-			for i := 0; i < len(pix); i += 4 {
-				pix[i] = pix[i] * 1 / 2
-				pix[i+1] = pix[i+1] * 1 / 2
-				pix[i+2] = pix[i+2] * 1 / 2
-			}
-			pStretchBlt.Call(b.memHi, 0, 0, uintptr(w), uintptr(h),
-				b.memLo, 0, 0, uintptr(w2), uintptr(h2), srccopy)
-			dst := winPt{wx, wy}
-			size := winSz{w, h}
-			srcPt := winPt{0, 0}
-			blend := blendFn{0, 0, 210, 0}
-			pUpdateLayeredWindow.Call(b.hwnd, screen,
-				uintptr(unsafe.Pointer(&dst)), uintptr(unsafe.Pointer(&size)),
-				b.memHi, uintptr(unsafe.Pointer(&srcPt)), 0,
-				uintptr(unsafe.Pointer(&blend)), ulwAlpha)
-		}
 
-		for {
-			pm, _, _ := pPeekMessage.Call(uintptr(unsafe.Pointer(&msg)),
-				0, 0, 0, pmRemove)
-			if pm == 0 {
-				break
-			}
-			pTranslateMsg.Call(uintptr(unsafe.Pointer(&msg)))
-			pDispatchMsg.Call(uintptr(unsafe.Pointer(&msg)))
-		}
-		time.Sleep(16 * time.Millisecond)
-	}
-}
-
-// blurBox — 2 sliding-window box passes ≈ gaussian. In-place on BGRA.
-func blurBox(p []byte, w, h, r int) {
-	tmp := make([]byte, len(p))
-	clamp := func(v, hi int) int {
-		if v < 0 {
-			return 0
-		}
-		if v >= hi {
-			return hi - 1
-		}
-		return v
-	}
-	for i := 0; i < 3; i++ {
-		for y := 0; y < h; y++ { // horizontal
-			row := y * w
-			var sb, sg, sr, sa int
-			for x := -r; x <= r; x++ {
-				i4 := (row + clamp(x, w)) * 4
-				sb += int(p[i4])
-				sg += int(p[i4+1])
-				sr += int(p[i4+2])
-				sa += int(p[i4+3])
-			}
-			n := 2*r + 1
-			for x := 0; x < w; x++ {
-				i4 := (row + x) * 4
-				tmp[i4] = byte(sb / n)
-				tmp[i4+1] = byte(sg / n)
-				tmp[i4+2] = byte(sr / n)
-				tmp[i4+3] = byte(sa / n)
-				lo, hi := (row+clamp(x-r, w))*4, (row+clamp(x+r+1, w))*4
-				sb += int(p[hi]) - int(p[lo])
-				sg += int(p[hi+1]) - int(p[lo+1])
-				sr += int(p[hi+2]) - int(p[lo+2])
-				sa += int(p[hi+3]) - int(p[lo+3])
-			}
-		}
-		for x := 0; x < w; x++ { // vertical
-			var sb, sg, sr, sa int
-			for y := -r; y <= r; y++ {
-				i4 := (clamp(y, h)*w + x) * 4
-				sb += int(tmp[i4])
-				sg += int(tmp[i4+1])
-				sr += int(tmp[i4+2])
-				sa += int(tmp[i4+3])
-			}
-			n := 2*r + 1
-			for y := 0; y < h; y++ {
-				i4 := (y*w + x) * 4
-				p[i4] = byte(sb / n)
-				p[i4+1] = byte(sg / n)
-				p[i4+2] = byte(sr / n)
-				p[i4+3] = byte(sa / n)
-				lo, hi := (clamp(y-r, h)*w+x)*4, (clamp(y+r+1, h)*w+x)*4
-				sb += int(tmp[hi]) - int(tmp[lo])
-				sg += int(tmp[hi+1]) - int(tmp[lo+1])
-				sr += int(tmp[hi+2]) - int(tmp[lo+2])
-				sa += int(tmp[hi+3]) - int(tmp[lo+3])
-			}
-		}
-	}
-}
-
-// blurFor applies/clears blur-behind once the window's hwnd exists —
-// a page posts its theme pick at load, possibly before NativeWindow
-// materializes
-func blurFor(w application.Window, on bool) {
-	for i := 0; i < 60 && hwndOf(w) == 0; i++ {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if hwnd := hwndOf(w); hwnd != 0 {
-		applyBlur(hwnd, on)
-	}
-}
 
 func isIconic(hwnd uintptr) bool {
 	r, _, _ := pIsIconic.Call(hwnd)
@@ -2187,6 +1952,7 @@ func fabMenuHide() {
 func watchBackend(target string) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	misses := 0
+	lastBoot := 0 // addon reload marker from /api/status
 	hidden := false        // currently applied fab-visibility, not the raw flag
 	spawnedHidden := false // fab-layer spawned windows during the blackout
 	for {
@@ -2204,9 +1970,21 @@ func watchBackend(target string) {
 		misses = 0
 		var st struct {
 			Hidden bool `json:"hidden"`
+			Boot   int  `json:"boot"`
 		}
 		json.NewDecoder(resp.Body).Decode(&st)
 		resp.Body.Close()
+		// addon reload: the server only blips for a second — too short
+		// for the misses counter — but it comes back with a new boot
+		// marker. Quit so the fresh deploy (and its fixes) launches.
+		if st.Boot != 0 && lastBoot != 0 && st.Boot != lastBoot {
+			log.Print("addon reloaded, quitting")
+			app.Quit()
+			return
+		}
+		if st.Boot != 0 {
+			lastBoot = st.Boot
+		}
 		backendHidden.Store(st.Hidden)
 		// recomputed every poll so mode transitions during a blackout
 		// self-correct: hide during a cutscene, restore after
@@ -2381,9 +2159,6 @@ func main() {
 				go startMoveLoop(hwndOf(w), htCaption)
 			case strings.HasPrefix(message, "xicompanion:resize:"):
 				go startMoveLoop(hwndOf(w), edgeHT[strings.TrimPrefix(message, "xicompanion:resize:")])
-			case strings.HasPrefix(message, "xicompanion:blur:"):
-				// the page's glass-theme pick — on|off per window
-				go blurFor(w, strings.TrimPrefix(message, "xicompanion:blur:") == "on")
 			}
 		},
 		Windows: application.WindowsOptions{
@@ -2432,6 +2207,7 @@ func main() {
 	go resolveHwnd(win, &windowHwnd)
 	go trackGeometry()
 	go focusTopmostLoop()
+	go topmostHookThread()
 	navigateWhenReady(win, func() string {
 		addonTarget = probeTarget()
 		// restore windows the user left open — same persistence path as

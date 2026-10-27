@@ -26,7 +26,7 @@ const NAV = [
 function ThemePicker() {
   return (
     <Dropdown
-      class="h-5 shrink-0 cursor-pointer rounded border border-indigo-300/30 bg-transparent px-1 text-[10px] capitalize leading-none"
+      class="h-5 shrink-0 px-1 text-[10px] capitalize leading-none"
       title="theme for this window only"
       align="right"
       value={theme.value}
@@ -95,7 +95,7 @@ export class AppShell extends View {
         )?.label ??
         path;
       return (
-        <div class="ffxi-panel flex h-screen flex-col overflow-hidden text-slate-200">
+        <div class="ffxi-panel main-window flex h-screen flex-col overflow-hidden text-slate-200">
           <header class="ffxi-panel-title flex h-7 shrink-0 cursor-grab items-center gap-2 pl-2 pr-1">
             <span class="min-w-0 flex-1 truncate text-[10px] font-medium leading-7 text-indigo-100">
               {title}
@@ -109,8 +109,18 @@ export class AppShell extends View {
               ×
             </button>
           </header>
+          {/* PanelShell views run edge-to-edge — their own layout
+              supplies the spacing; the p-3 frame was an un-themed seam
+              showing around them */}
           <main
-            class={`min-h-0 flex-1 overflow-hidden ${panelMode ? 'p-1' : 'p-3'}`}
+            class={`min-h-0 flex-1 overflow-hidden ${
+              panelMode
+                ? 'p-1'
+                : ['/chat', '/journal', '/abilities', '/macros', '/map'].includes(path) ||
+                    path.startsWith('/profile')
+                  ? ''
+                  : 'p-3'
+            }`}
           >
             <RouterOutlet />
           </main>
@@ -124,7 +134,7 @@ export class AppShell extends View {
       0,
     );
     return (
-      <div class="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-200">
+      <div class="ffxi-panel main-window flex h-screen flex-col overflow-hidden text-slate-200">
         <header class="flex h-14 items-center gap-4 border-b border-slate-800 px-5">
           <strong class="font-logo translate-y-px text-base leading-none tracking-wide">
             {this.title}

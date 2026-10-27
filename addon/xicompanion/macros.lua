@@ -370,6 +370,7 @@ end
 -- nil when the file is absent/malformed.
 function M.read_sys_index(dir)
     local data = read_file(join(dir, 'mcr.sys'))
+    -- 28B file: the u32 LE palette index sits at offset 24 (bytes 25-28)
     if not data or #data < 28 or data:byte(1) ~= 1 then return nil end
     return data:byte(25)
         + data:byte(26) * 256

@@ -29,12 +29,21 @@ export interface ButtonProps
   extends ComponentProps<'button'>,
     VariantProps<typeof buttonVariants> {}
 
-export function Button({ className, variant, size, type, ...props }: ButtonProps) {
+export function Button({
+  class: cls,
+  className,
+  variant,
+  size,
+  type,
+  ...props
+}: ButtonProps) {
   return (
     <button
       type={type ?? 'button'}
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      // `class` must merge too — in preact it spreads onto the element
+      // after className and silently replaces the variant classes
+      className={cn(buttonVariants({ variant, size }), cls, className)}
       {...props}
     />
   );

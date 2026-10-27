@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { PanelShell, PanelSidebar } from '../core/panel';
 
 const NUM_MACROS = 20;
 const NUM_LINES = 6;
@@ -243,10 +244,10 @@ export class MacrosView extends View implements OnInit {
 
     const sel = this.cell.value;
     return (
-      <div class="flex h-full gap-4 overflow-hidden">
+      <PanelShell>
         {/* sidebar: char + vertical book list (same shape as the journal's
             group column) */}
-        <aside class="flex w-52 shrink-0 flex-col gap-2">
+        <PanelSidebar class="w-52 gap-2 p-2">
           {this.chars.value.length > 1 && (
             <Select
               value={c?.id ?? ''}
@@ -282,10 +283,10 @@ export class MacrosView extends View implements OnInit {
               );
             })}
           </div>
-        </aside>
+        </PanelSidebar>
 
         {/* main pane */}
-        <div class="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+        <div class="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-3">
         {/* header row: book title rename + in-game switch */}
         <div class="flex flex-wrap items-center gap-3">
           <strong class="text-sm">Book {this.book.value}</strong>
@@ -405,7 +406,7 @@ export class MacrosView extends View implements OnInit {
                 <div class="flex items-center gap-2" key={i}>
                   <span class="w-4 text-right text-xs text-slate-600">{i + 1}</span>
                   <Input
-                    className={cn('font-mono text-xs', over && 'border-rose-500')}
+                    className={cn('font-mono', over && 'border-rose-500')}
                     value={line}
                     placeholder="/command"
                     onInput={(e) =>
@@ -474,7 +475,7 @@ export class MacrosView extends View implements OnInit {
           )}
         </div>
         </div>
-      </div>
+      </PanelShell>
     );
   }
 }

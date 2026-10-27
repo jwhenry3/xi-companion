@@ -42,6 +42,7 @@ const EVENTS = new Set([
   'map',
   'party',
   'macrosel',
+  'macros',
 ]);
 
 let sseAbort: AbortController | null = null;

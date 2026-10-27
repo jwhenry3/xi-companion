@@ -124,7 +124,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
       <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
         <span class="w-44 shrink-0">{label}</span>
         <Input
-          class="h-6 w-32 px-2 font-mono text-xs"
+          class="w-32 font-mono"
           value={String(s[key] ?? '')}
           onChange={(e) =>
             void this.save({ [key]: e.currentTarget.value })
@@ -141,7 +141,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
       <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
         <span class="w-44 shrink-0">{label}</span>
         <Input
-          class="h-6 w-24 px-2 text-xs"
+          class="w-24"
           value={String(s[key] ?? '')}
           onChange={(e) => {
             const v = Number(e.currentTarget.value);
@@ -158,7 +158,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
   private posInput(v: string, set: (s: string) => void, ph: string) {
     return (
       <Input
-        class="h-6 w-16 px-1.5 text-center text-xs"
+        class="w-16 text-center"
         placeholder={ph}
         value={v}
         onInput={(e) => set(e.currentTarget.value)}
@@ -379,7 +379,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                     >
                       <span class="w-28 shrink-0">{label}</span>
                       <Dropdown
-                        class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs capitalize text-slate-200"
+                        class="capitalize"
                         value={this.winThemes.value[route] ?? ''}
                         formatValue={(v) => v || 'default'}
                         options={[

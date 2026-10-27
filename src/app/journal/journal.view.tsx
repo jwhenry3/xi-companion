@@ -23,6 +23,16 @@ import {
 } from './activity';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import {
+  PanelShell,
+  PanelSidebar,
+  SidebarBody,
+  SidebarLabel,
+  SidebarFoot,
+  PanelMain,
+  PanelHeader,
+  DetailPane,
+} from '../core/panel';
 
 type Section = { kind: 'mission' | 'quest' | 'roe'; key: string };
 
@@ -253,6 +263,35 @@ export class JournalView extends View implements OnInit, OnDestroy {
     return out;
   });
 
+  /** RoE availability: within a subcategory the objectives form a
+   *  chain ordered by log id — each unlocks only when the previous one
+   *  completes (that's how the native menu gates them), and the first
+   *  in a chain is always selectable. Available = first, predecessor
+   *  done, or already active/done. Uncategorized ids get a chain of
+   *  their own so nothing we can't classify is hidden. */
+  private roeAvailable = computed<Set<number>>(() => {
+    const names = this.names.value;
+    const j = this.api.journal.value;
+    const done = new Set(j?.roe?.done ?? []);
+    const active = new Set((j?.roe?.active ?? []).map((a) => a.id));
+    const bySub = new Map<number, number[]>();
+    for (const idStr of Object.keys(names?.roe ?? {})) {
+      const id = Number(idStr);
+      const c = names!.roe[idStr].c ?? id; // uncat → own chain → always avail
+      (bySub.get(c) ?? bySub.set(c, []).get(c)!).push(id);
+    }
+    const out = new Set<number>();
+    for (const ids of bySub.values()) {
+      ids.sort((a, b) => a - b);
+      let nextOk = true; // first in the chain is always offered
+      for (const id of ids) {
+        if (nextOk || done.has(id) || active.has(id)) out.add(id);
+        nextOk = done.has(id);
+      }
+    }
+    return out;
+  });
+
   private filtered = computed<Entry[]>(() => {
     const q = this.query.value.trim().toLowerCase();
     let list = this.entries.value;
@@ -266,6 +305,12 @@ export class JournalView extends View implements OnInit, OnDestroy {
       // default view is in-progress only — "show all" (or a search)
       // reveals untouched and completed entries
       list = list.filter((e) => e.status === 'current');
+    }
+    // RoE: never show objectives the game wouldn't offer — entries
+    // behind unearned chain links are noise, not "all"
+    if (this.sel.value.kind === 'roe') {
+      const avail = this.roeAvailable.value;
+      list = list.filter((e) => avail.has(e.id));
     }
     return list;
   });
@@ -518,7 +563,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
     const setGroupTracked = (tracked: boolean) =>
       void this.api.setTracked(kind, key, undefined, tracked).catch(trackErr);
     return (
-      <div class="w-96 shrink-0 overflow-y-auto border-l border-slate-800 bg-slate-950/60 p-4">
+      <DetailPane class="w-96">
         <h3 class="text-sm font-semibold text-slate-100">{e.name}</h3>
         <p class="pb-2 text-[10px] uppercase tracking-wider text-slate-500">
           {e.status === 'done'
@@ -554,7 +599,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
           <button
             class={cn(
               actionBtn,
-              'border-slate-700 bg-slate-900/60 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
+              'border-slate-700 bg-black/30 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
             )}
             title={
               groupHidden && !entryHidden
@@ -571,7 +616,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
         <button
           class={cn(
             actionBtn,
-            'border-slate-700 bg-slate-900/60 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
+            'border-slate-700 bg-black/30 text-slate-300 hover:bg-slate-800 hover:text-slate-100',
           )}
           onClick={() => setGroupTracked(groupHidden)}
         >
@@ -633,7 +678,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
             )}
           </div>
         )}
-      </div>
+      </DetailPane>
     );
   }
 
@@ -705,8 +750,8 @@ export class JournalView extends View implements OnInit, OnDestroy {
     );
 
     return (
-      <div class="flex h-full min-h-0 overflow-hidden rounded border border-slate-800 bg-slate-900">
-        <aside class="flex w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60">
+      <PanelShell>
+        <PanelSidebar>
           <label class="flex shrink-0 items-center gap-1.5 border-b border-slate-800 px-3 py-1.5 text-[10px] text-slate-400">
             <input
               type="checkbox"
@@ -717,10 +762,8 @@ export class JournalView extends View implements OnInit, OnDestroy {
             />
             active only
           </label>
-          <div class="flex-1 overflow-y-auto p-2">
-            <p class="px-2 pb-1 pt-1 text-[10px] font-semibold tracking-wider text-slate-500">
-              MISSIONS
-            </p>
+          <SidebarBody>
+            <SidebarLabel class="pt-1">MISSIONS</SidebarLabel>
             {missionGroups.map((k) =>
               this.groupRow(
                 'mission',
@@ -732,9 +775,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
             {missionGroups.length === 0 && (
               <p class="px-2 text-[10px] text-slate-600">none active</p>
             )}
-            <p class="px-2 pb-1 pt-3 text-[10px] font-semibold tracking-wider text-slate-500">
-              QUESTS
-            </p>
+            <SidebarLabel>QUESTS</SidebarLabel>
             {questGroups.map((k) =>
               this.groupRow(
                 'quest',
@@ -746,16 +787,14 @@ export class JournalView extends View implements OnInit, OnDestroy {
             {questGroups.length === 0 && (
               <p class="px-2 text-[10px] text-slate-600">none active</p>
             )}
-            <p class="px-2 pb-1 pt-3 text-[10px] font-semibold tracking-wider text-slate-500">
-              RECORDS OF EMINENCE
-            </p>
+            <SidebarLabel>RECORDS OF EMINENCE</SidebarLabel>
             {(!activeOnly || hasActivity(j, names, 'roe', 'roe')) &&
               this.groupRow('roe', 'roe', 'Objectives', this.roeHint())}
             {activeOnly && !hasActivity(j, names, 'roe', 'roe') && (
               <p class="px-2 text-[10px] text-slate-600">none active</p>
             )}
-          </div>
-          <div class="border-t border-slate-800 p-2 text-[10px] text-slate-500">
+          </SidebarBody>
+          <SidebarFoot>
             {j?.char ? (
               <span>
                 {j.char} · updated{' '}
@@ -764,11 +803,11 @@ export class JournalView extends View implements OnInit, OnDestroy {
             ) : (
               <span>log in to populate the journal</span>
             )}
-          </div>
-        </aside>
+          </SidebarFoot>
+        </PanelSidebar>
 
-        <section class="flex min-w-0 flex-1 flex-col">
-          <header class="flex h-10 shrink-0 items-center gap-3 border-b border-slate-800 px-4">
+        <PanelMain>
+          <PanelHeader>
             {(() => {
               // the selected category's tracker visibility — same group
               // key ('kind:key') the sidebar 'hidden' marker reports on
@@ -791,7 +830,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
                       'rounded border px-1.5 py-0.5 text-[10px]',
                       groupHidden
                         ? 'border-sky-800/60 bg-sky-950/40 text-sky-300 hover:bg-sky-900/40'
-                        : 'border-slate-700 bg-slate-900/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200',
+                        : 'border-slate-700 bg-black/30 text-slate-400 hover:bg-slate-800 hover:text-slate-200',
                     )}
                     title={
                       groupHidden
@@ -812,7 +851,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
               );
             })()}
             <Input
-              class="h-6 w-48 px-2 text-xs"
+              class="w-48"
               placeholder="search…"
               value={this.query.value}
               onInput={(e) => (this.query.value = e.currentTarget.value)}
@@ -836,7 +875,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
                 <ListTodo size={13} />
               </button>
             )}
-          </header>
+          </PanelHeader>
           {this.roeError.value && (
             <p class="border-b border-slate-800 bg-rose-950/40 px-4 py-1 text-[11px] text-rose-300">
               {this.roeError.value}
@@ -856,10 +895,10 @@ export class JournalView extends View implements OnInit, OnDestroy {
               ? this.roeGroups.value.map((cat) => this.roeCat(cat))
               : this.filtered.value.map((e) => this.entryRow(e))}
           </div>
-        </section>
+        </PanelMain>
 
         {selEntry && this.detail(selEntry)}
-      </div>
+      </PanelShell>
     );
   }
 }

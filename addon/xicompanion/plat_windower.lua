@@ -11,17 +11,20 @@ P.dir_exists  = windower.dir_exists
 P.create_dir  = windower.create_dir
 P.get_dir     = windower.get_dir
 
--- {name -> stamp} for files matching a glob — the client writes palette
--- files on page departure, so a changed stamp marks the palette just
--- left. Content-Hashed rather than mtime'd: forfiles/io.popen spawns a
+-- {name -> stamp} for files matching a glob — the client rewrites
+-- mcr.sys + the departing palette on every in-game book/page switch.
+-- Content-Hashed rather than mtime'd: forfiles/io.popen spawns a
 -- console window per call — visible flash + focus flicker at poll rate.
 local function content_mtimes(dir, glob)
     local files = P.get_dir(dir)
     if type(files) ~= 'table' then return nil end
-    local prefix = (glob or '*'):gsub('%.dat$', ''):gsub('%*$', '')
+    local g = glob or '*'
+    local prefix = g:match('^([^*]*)') or ''
+    local suffix = g:match('%*([^*]*)$') or ''
     local out = {}
     for _, name in ipairs(files) do
-        if name:sub(1, #prefix) == prefix and name:sub(-4) == '.dat' then
+        if name:sub(1, #prefix) == prefix
+            and (suffix == '' or name:sub(-#suffix) == suffix) then
             local f = io.open(dir .. '\\' .. name, 'rb')
             if f then
                 local body = f:read('*a') or ''

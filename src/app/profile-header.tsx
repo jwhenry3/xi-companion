@@ -18,7 +18,7 @@ export class ProfileHeader extends View {
     const store = this.store;
     const files = this.api.files.value;
     return (
-      <div class="mb-4 flex items-center gap-3">
+      <div class="mb-1 flex items-center gap-3 px-3 pt-2">
         <Select
           className="w-72"
           value={store.activeFile.value ?? ''}

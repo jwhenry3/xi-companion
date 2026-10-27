@@ -16,6 +16,7 @@ import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PencilIcon, Trash2Icon } from 'lucide-preact';
+import { PanelShell, PanelSidebar } from '../core/panel';
 
 import { host, detachedMode, tipAnchorOutside, tooltipPinned, TooltipRef } from '../core/host';
 
@@ -241,11 +242,11 @@ export class SetsView extends View implements OnInit {
     const sel = this.slotDef(this.selectedSlot.value);
     const connected = this.api.connected.value;
     return (
-      <div class="flex h-full min-h-0 flex-col">
+      <PanelShell>
 
-        <div class="flex min-h-0 flex-1 gap-4">
+        <div class="flex min-h-0 flex-1 gap-4 pr-3">
           {/* left: set list */}
-          <div class="flex min-h-0 w-44 shrink-0 flex-col rounded border border-slate-800 bg-slate-900">
+          <PanelSidebar class="w-44">
             <div class="flex items-center justify-between border-b border-slate-800 px-2 py-1">
               <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 sets
@@ -315,10 +316,10 @@ export class SetsView extends View implements OnInit {
                 <p class="px-2 py-1 text-xs text-slate-600">no sets yet</p>
               )}
             </div>
-          </div>
+          </PanelSidebar>
 
           {/* middle: rename/actions + grid */}
-          <div class="min-h-0 w-80 shrink-0 overflow-y-auto pr-1">
+          <div class="min-h-0 w-80 shrink-0 overflow-y-auto pr-3">
             {set ? (
               <div class="mb-2 flex items-center gap-1">
                 <span class="min-w-0 flex-1 truncate px-1 text-xs font-semibold text-slate-200">
@@ -348,8 +349,8 @@ export class SetsView extends View implements OnInit {
           <div class="flex min-h-0 min-w-0 flex-1 flex-col">
             <div class="mb-2 flex items-center gap-2">
               <span class="flex-1" />
-              <input
-                class="w-40 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs placeholder:text-slate-600"
+              <Input
+                class="w-40"
                 placeholder="filter…"
                 value={this.pickerQuery.value}
                 onInput={(e) => (this.pickerQuery.value = (e.target as HTMLInputElement).value)}
@@ -537,7 +538,7 @@ export class SetsView extends View implements OnInit {
             </div>
           </div>
         )}
-      </div>
+      </PanelShell>
     );
   }
 }
