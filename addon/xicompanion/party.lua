@@ -111,6 +111,126 @@ local me_ix = nil             -- cached player entity index
 local own_until = 0
 local out_seen = 0            -- 0x01A count for dbg
 
+-- /check + Treasure Hunter: replies and procs ride the rendered text
+-- stream (M.log_line, fed by xicompanion.lua's 'incoming text'). The
+-- autocheck below fires `input /check` once per new mob target; the
+-- reply then attaches to that target's index.
+local checked_ix = {}         -- mob index -> checked already
+local last_check_cmd = 0      -- rate limit on auto /check
+local pending_check = nil     -- {ix, name} the issued check is about
+local last_check = nil        -- {ix?, name?, con?, lv?, at}
+local last_t_ix = nil         -- target index last scan saw
+local pending_th = nil        -- {n, at} TH proc awaiting a target row
+local th_by_ix = {}           -- target index -> observed TH level
+-- names seen on linkshell channels (0x017 senders) — the client
+-- exposes no LS roster, so a speaking member is how we learn one
+local ls_names = {}
+
+function M.ls_seen(n)
+    if type(n) == 'string' and n ~= '' then ls_names[n] = true end
+end
+
+-- combat meter: damage/heal totals per actor from 0x028 action
+-- packets — first-target first-action param (covers melee/WS/spell
+-- hits; multi-target overflow reads the listed target only)
+local meter = {}              -- actor key -> {n, d(dmg), h(heal), hits}
+local meter_t0 = nil          -- session start (first seen action)
+local meter_dirty = false
+local member_names = {}       -- current party/alliance names (scan-built)
+local actor_name              -- fwd: declared below with the cast helpers
+
+-- the meter is inclusionary: only our side counts — player, party,
+-- alliance, trusts/fellows (they set in_party), and anything mastered
+-- by one of those (pets, charmed mobs)
+local function actor_friendly(actor, an)
+    local ix = wire_ix(actor)
+    if ix then
+        if me_ix and ix == me_ix then return true end
+        local ok, mob = pcall(plat.ffxi.get_mob_by_index, ix)
+        if ok and type(mob) == 'table' then
+            if mob.in_party or mob.in_alliance then return true end
+            local mi = mob.master_index
+            if mi then
+                if me_ix and mi == me_ix then return true end
+                local okm, own = pcall(plat.ffxi.get_mob_by_index, mi)
+                if okm and type(own) == 'table'
+                    and (own.in_party or own.in_alliance) then
+                    return true
+                end
+            end
+        end
+    end
+    -- unresolved wire id — fall back on the member-name list
+    return an ~= nil and member_names[an] == true
+end
+
+local function meter_add(cat, actor, spell_id, param, msg)
+    if not param or param <= 0 then return end
+    -- heal vs dmg is decided by the action message, not the category:
+    -- a "recovers" template marks a heal whether it came from a cure
+    -- spell (cat 4), a healing JA (6), or a pet move (11/13) — and the
+    -- spell-id field can sit in different bit ranges server-to-server
+    local kind = nil
+    if msg and msg ~= 0 then
+        local am = ctx.res and ctx.res.action_messages
+            and ctx.res.action_messages[msg]
+        local mt = am and (am.en or am.enl) or ''
+        if mt:lower():find('recover') then kind = 'heal' end
+    end
+    if not kind then
+        if cat == 4 then
+            local sp = ctx.res and ctx.res.spells
+                and ctx.res.spells[spell_id]
+            local sn = sp and (sp.en or sp.enl) or ''
+            kind = (sn:match('^Cure') or sn:match('^Cura')
+                or sn:match('^Raise') or sn:match('^Reraise')
+                or sn:match('^Regen') or sn:match('^Sacrifice'))
+                and 'heal' or 'dmg'
+        elseif cat == 1 or cat == 2 or cat == 3 or cat == 6
+            or cat == 11 or cat == 13 or cat == 14 then
+            kind = 'dmg'
+        else
+            return
+        end
+    end
+    local an = actor_name(actor) or '???'
+    if not actor_friendly(actor, an) then return end
+    -- key on the resolved entity index — the same actor shows up under
+    -- both packed and unpacked 0x028 id forms, so keying on the raw id
+    -- split one member/trust into two rows
+    local key = wire_ix(actor) or an
+    local e = meter[key]
+    if not e then
+        e = { n = an, d = 0, h = 0, hits = 0 }
+        meter[key] = e
+    end
+    if not meter_t0 then meter_t0 = os.clock() end
+    e[kind == 'heal' and 'h' or 'd'] =
+        (kind == 'heal' and e.h or e.d) + param
+    e.hits = e.hits + 1
+    meter_dirty = true
+end
+
+function M.meter_reset()
+    meter = {}
+    meter_t0 = nil
+    meter_dirty = true
+end
+
+-- sorted rows for the payload: {n, d, h, hits, own}
+local function meter_json(me_ix)
+    local out = {}
+    for k, e in pairs(meter) do
+        out[#out + 1] = {
+            n = e.n, d = e.d, h = e.h, hits = e.hits,
+            -- k is the resolved entity index (or a name fallback)
+            own = type(k) == 'number' and me_ix == k and 1 or nil,
+        }
+    end
+    table.sort(out, function(a, b) return a.d > b.d end)
+    return out
+end
+
 local MEMBER_KEYS = {
     { 'p0', 'p1', 'p2', 'p3', 'p4', 'p5' },
     { 'a10', 'a11', 'a12', 'a13', 'a14', 'a15' },
@@ -194,7 +314,7 @@ end
 -- cast→target matching falls back on the actor's name: resolve the
 -- packet actor via get_mob_by_id, and if that's unavailable try the
 -- entity index packed in the low bits of the id
-local function actor_name(id)
+actor_name = function(id)
     if not id then return nil end
     local ok, m = pcall(plat.ffxi.get_mob_by_id, id)
     if ok and type(m) == 'table' and m.name then return m.name end
@@ -259,6 +379,18 @@ local function member_row(key, m, my_zone, leaders)
     else
         jr = (mid and member_jobs[mid]) or member_jobs_name[m.name]
     end
+    -- Treasure Hunter estimate from job traits alone (gear TH isn't
+    -- visible for other members): THF main gets the trait at 10 and
+    -- TH II at 40; a THF sub caps at TH I
+    local th = nil
+    if jr then
+        if jr.j == 6 then
+            local jl = jr.jl or 0
+            th = jl >= 40 and 2 or (jl >= 10 and 1 or nil)
+        elseif jr.sj == 6 then
+            th = 1
+        end
+    end
     return {
         n = m.name or '',
         hp = m.hpp or 0, mp = m.mpp or 0, tp = m.tp or 0,
@@ -267,6 +399,7 @@ local function member_row(key, m, my_zone, leaders)
         jl = jr and jr.jl or nil,
         sj = jr and jr.sj and jr.sj > 0 and job_ens(jr.sj) or nil,
         sjl = jr and jr.sjl or nil,
+        th = th,
         tr = key ~= 'p0' and trust_role(m.name) or nil,
         o = (m.zone and m.zone ~= my_zone) and 1 or nil,
         l = (mid and leaders[key]) and 1 or nil,
@@ -504,6 +637,7 @@ local function scan(now)
 
     local s = { on = 1, p = ctx.json_array({}), a1 = ctx.json_array({}), a2 = ctx.json_array({}) }
     local okp, party = pcall(plat.ffxi.get_party)
+    member_names = {}
     if okp and type(party) == 'table' then
         local leaders = {}
         for gi, key in ipairs({ 'p0', 'a10', 'a20' }) do
@@ -515,6 +649,7 @@ local function scan(now)
             for _, key in ipairs(keys) do
                 local m = party[key]
                 if type(m) == 'table' and m.name then
+                    member_names[m.name] = true
                     local row = member_row(key, m, my_zone, leaders)
                     row.l = (row.l and leaders[key] == member_id(m)) and 1 or nil
                     groups[gi][#groups[gi] + 1] = row
@@ -537,6 +672,15 @@ local function scan(now)
     local c = cast_now()
     s.cast = c
     s.sc = sc_json(nowc)
+    -- combat meter rows — sorted by damage; rides the party payload so
+    -- the /meter window needs no separate stream
+    s.mt = ctx.json_array(meter_json(me_ix))
+    if meter_dirty then
+        meter_dirty = false
+        s.mtt = math.floor(os.clock() - (meter_t0 or os.clock()))
+    else
+        s.mtt = meter_t0 and math.floor(os.clock() - meter_t0) or 0
+    end
     local okm, me = pcall(plat.ffxi.get_mob_by_target, 'me')
     if okm and type(me) == 'table' then
         s.me = me.id
@@ -605,9 +749,57 @@ local function scan(now)
                 if cl == 0 then cl = 3 end
             end
         end
+        -- mob target: /check it once per instance (autocheck), then
+        -- surface the reply + any TH proc seen on this index
+        local ismob = t.spawn_type == 16
+            or (t.spawn_type == nil and t.is_npc == false)
+        if ismob then
+            if t.index and t.index ~= last_t_ix then
+                last_t_ix = t.index
+                local now = os.clock()
+                if (not ctx.autocheck or ctx.autocheck())
+                    and not checked_ix[t.index]
+                    and now - last_check_cmd > 1.2 then
+                    last_check_cmd = now
+                    checked_ix[t.index] = now
+                    pending_check = { ix = t.index, name = t.name }
+                    plat.send_command('input /check')
+                end
+            end
+            if pending_th and t.index then
+                if os.clock() - pending_th.at < 4 then
+                    th_by_ix[t.index] = pending_th.n
+                end
+                pending_th = nil
+            end
+        end
+        -- relationship for non-mob targets: self > party > alliance >
+        -- linkshell > other player — drives the name color
+        local rel = nil
+        if not ismob then
+            if me_ix and t.index == me_ix then
+                rel = 'self'
+            elseif (mi and mi.in_party) or t.in_party then
+                rel = 'party'
+            elseif (mi and mi.in_alliance) or t.in_alliance then
+                rel = 'alliance'
+            elseif t.name and ls_names[t.name] then
+                rel = 'ls'
+            elseif t.spawn_type == 1 or t.is_npc == false then
+                rel = 'pc'
+            end
+        end
+        local check = last_check and os.clock() - last_check.at < 60
+            and (last_check.name == t.name
+                 or (last_check.ix and last_check.ix == t.index))
+            and last_check or nil
         s.t = {
             i = t.id, n = t.name or '',
             hpp = t.hpp, tp = t.tp, cl = cl,
+            lv = check and check.lv or nil,
+            con = check and check.con or nil,
+            rel = rel,
+            th = t.index and th_by_ix[t.index] or nil,
             cast = tc and rec_json(tc) or nil,
         }
     end
@@ -635,6 +827,39 @@ function M.poll()
     if payload ~= last_payload then
         last_payload = payload
         ctx.sse_broadcast('party', payload)
+    end
+end
+
+-- rendered log lines, fed from xicompanion.lua's 'incoming text'
+-- handler: /check replies and Treasure Hunter procs
+function M.log_line(text)
+    -- "The Goblin Thug seems to be a decent challenge." — the generic
+    -- match also covers NM replies ("seems to be an impossibility to
+    -- gauge", "far too strong for you to handle alone")
+    local nm, con = text:match('^The (.-) seems to be (.+)%.?%s*$')
+        or text:match('^(.-) seems to be (.+)%.?%s*$')
+    if con then
+        last_check = { name = nm, con = con, at = os.clock(),
+                       ix = pending_check and pending_check.ix }
+        pending_check = nil
+        return
+    end
+    -- exact-level replies: "X's level is 75" (players + private
+    -- servers that report the mob's real level)
+    local pnm, lv = text:match("^(.-)'s level is (%d+)")
+    if not lv then pnm, lv = text:match('^(.-) is level (%d+)') end
+    if lv then
+        last_check = { name = pnm, lv = tonumber(lv), at = os.clock(),
+                       ix = pending_check and pending_check.ix }
+        pending_check = nil
+        return
+    end
+    -- "Treasure Hunter ... level N" proc lines — the next scan row
+    -- credits them to the current target
+    if text:lower():find('treasure hunter', 1, true) then
+        local n = tonumber(text:match('level (%d+)')
+            or text:match('(%d+)'))
+        if n then pending_th = { n = n, at = os.clock() } end
     end
 end
 
@@ -720,11 +945,16 @@ function M.handle_incoming(id, data)
         action_log[#action_log + 1] = {
             c = cat, a = actor, w = wire_ix(actor),
             p = bits(data, 86, 16), s = bits(data, 213, 17),
+            m = bits(data, 230, 10),
             tg = bits(data, 150, 32),
             an = actor_name(actor),
             lx = wire_r[actor % 0x1000],
         }
         if #action_log > 8 then table.remove(action_log, 1) end
+        -- combat meter: first-listed target's first action param is the
+        -- damage/heal figure for the categories that carry one
+        meter_add(cat, actor, bits(data, 86, 16), bits(data, 213, 17),
+                  bits(data, 230, 10))
         if cat == 8 or cat == 7 then
             -- ownness: a packed actor that resolves to a mapped entity
             -- is whoever that entity is (packed ids were ALWAYS unmapped

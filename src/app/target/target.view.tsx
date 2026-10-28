@@ -69,7 +69,17 @@ export class TargetView extends View implements OnInit, OnDestroy {
  <span
  class={cn(
  'min-w-0 flex-1 truncate text-sm font-medium',
- t!.cl === 1 || t!.cl === 2
+ t!.rel === 'self'
+ ? 'text-sky-200'
+ : t!.rel === 'party'
+ ? 'text-emerald-300'
+ : t!.rel === 'alliance'
+ ? 'text-teal-300'
+ : t!.rel === 'ls'
+ ? 'text-blue-300'
+ : t!.rel === 'pc'
+ ? 'text-violet-300'
+ : t!.cl === 1 || t!.cl === 2
  ? 'text-emerald-300'
  : t!.cl === 3
  ? 'text-rose-400'
@@ -86,6 +96,18 @@ export class TargetView extends View implements OnInit, OnDestroy {
  {t!.tp != null && (
  <span class="shrink-0 text-[11px] tabular-nums text-teal-300">
  tp {t!.tp}
+ </span>
+ )}
+ {(t!.lv != null || t!.con) && (
+ <span class="shrink-0 text-[11px] text-amber-300" title="/check result">
+ {t!.lv != null ? `lv ${t.lv}` : ''}
+ {t!.lv != null && t!.con ? ' · ' : ''}
+ {t!.con ?? ''}
+ </span>
+ )}
+ {t!.th != null && (
+ <span class="shrink-0 text-[11px] font-semibold text-amber-300">
+ TH {t!.th}
  </span>
  )}
  {t!.n && (

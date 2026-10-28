@@ -67,6 +67,9 @@ local defaults = {
     party = true,
     -- auto-launch the target HP/cast bar; //xicompanion target off
     target = true,
+    -- auto-/check new mob targets so the target panel can show level
+    -- + difficulty; //xicompanion check off
+    target_check = true,
     -- auto-launch the skillchain/burst tracker; //xicompanion skillchain off
     skillchain = true,
     poll_interval = 1.5,
@@ -826,6 +829,8 @@ local recent_packet_text = {}
 local tell_thread_order = {} -- FIFO of tell-peer keys for LRU eviction
 -- per-load marker so clients can detect a reload and resync their seq
 local chat_boot = math.random(0x7fffffff)
+local ls_names = {}
+local ls_poll_n = 0
 
 -- mode byte -> channel key (res/chat.lua). Anything outside the named
 -- set still lands in 'system' — 0x017 is always chat-log text, so an
@@ -836,11 +841,23 @@ local CHAT_CHANNELS = {
     [12] = 'system', [26] = 'yell', [27] = 'linkshell2', [33] = 'unity',
     [34] = 'assistj', [35] = 'assiste',
 }
--- channel -> chat-line command for sending (system/assist are read-only)
+-- channel -> chat-line command for sending (system/assist are read-only).
+-- linkshell3 + the !channels are private-server extras — harmless on
+-- retail, only reachable if the server offers them
 local CHAT_SEND = {
     say = '/say', shout = '/shout', yell = '/yell', emote = '/emote',
     party = '/party', linkshell = '/linkshell', linkshell2 = '/linkshell2',
-    unity = '/unity',
+    linkshell3 = '/linkshell3', unity = '/unity',
+    global = '!global', lfp = '!lfp', market = '!market',
+    general = '!general', crafting = '!crafting', help = '!help',
+    politics = '!politics',
+}
+-- private-server custom channels: rendered lines carry a [Tag] prefix
+-- ('[Global] Name: msg') — tag -> channel key
+local CUSTOM_TAGS = {
+    global = 'global', lfp = 'lfp', market = 'market',
+    general = 'general', crafting = 'crafting', help = 'help',
+    politics = 'politics',
 }
 
 local function chat_thread_key(m)
@@ -1265,7 +1282,12 @@ end
 
 local function handle_chat_packet(data)
     if type(data) ~= 'string' or #data < 0x17 then return end
-    local channel = CHAT_CHANNELS[data:byte(5)] or 'system'
+    local channel = CHAT_CHANNELS[data:byte(5)]
+    -- unknown channel id (private-server extras like a third linkshell):
+    -- don't push as 'system' — the rendered log line carries the same
+    -- text and classifies it properly (linkshell3, [Tag] channels);
+    -- pushing here would mislabel it and dedupe the real one
+    if not channel then return end
     local sender = sanitize_name(read_cstr(data, 9, 23)) -- char[0xF], may lack a terminator
     if sender == '' then sender = nil end
     local text = sanitize_chat(read_cstr(data, 24))
@@ -1299,6 +1321,12 @@ local function handle_chat_packet(data)
         end
     end
     if channel == 'tell' then m.peer = sender end
+    -- linkshell senders build the LS-member roster the target window
+    -- uses for name coloring (no LS roster API exists)
+    if sender and (channel == 'linkshell' or channel == 'linkshell2')
+        and party then
+        pcall(party.ls_seen, sender)
+    end
     push_chat(m)
     recent_packet_text[text] = os.time()
 end
@@ -1378,6 +1406,9 @@ end
 for _, m in ipairs({ 121, 142, 148, 150, 151, 152, 190, 210 }) do
     DISPLAY_CHANNEL[m] = 'system'
 end
+-- third linkshell: res.chat stops at two, so the render mode is
+-- hardcoded (LS2 renders at 214)
+DISPLAY_CHANNEL[215] = 'linkshell3'
 
 -- rendered log lines carry FFXI color controls (0x1E/0x1F + param byte);
 -- strip those, then run the same byte-walker as packet text (decodes FD
@@ -1435,11 +1466,21 @@ local function packet_recent(text)
     return false
 end
 
+-- forward-declared so the text handler below can feed party's
+-- /check+TH parser; assigned when the module loads further down
+local party = nil
+
 plat.on('incoming text', function(original, modified, original_mode, modified_mode, blocked)
     if blocked then return end -- another addon hid the line — it's invisible
     local mode = modified_mode or original_mode or 0
     local text = sanitize_log_text(modified or original or '')
     if text == '' then return end
+    -- /check replies + TH procs feed party's target tracking — parse
+    -- before the packet-dedupe below could skip the line
+    if party then
+        local okp, e = pcall(party.log_line, text)
+        if not okp then log_err('party logline: ' .. tostring(e)) end
+    end
     -- client-rendered unknown ATs show as {@id} markers — at_names.lua
     -- maps id -> marker (the DAT's own placeholder, e.g. [5297]='@A25'),
     -- so invert it and resolve the real name via res.auto_translates
@@ -1456,9 +1497,15 @@ plat.on('incoming text', function(original, modified, original_mode, modified_mo
     -- same packet-edge filter for machine hex dumps rendered as lines
     if text:match('^%x+,%x+,%x+') then return end
     local own = text:sub(1, #OWN_CHAT_PREFIX) == OWN_CHAT_PREFIX
+    -- private-server custom channels render '[Tag] Name: msg' — the tag
+    -- outranks the color-mode guess since it's the channel's own marker
+    local tagch, tagrest = text:match('^%[([%a]+)%]%s*(.*)$')
+    tagch = tagch and CUSTOM_TAGS[tagch:lower()] or nil
     local channel
     if own then
         channel = 'echo' -- our own log() lines — surface, don't drop
+    elseif tagch then
+        channel = tagch
     elseif DISPLAY_CHANNEL[mode] then
         channel = DISPLAY_CHANNEL[mode]
     elseif BATTLE_MODES[mode] then
@@ -1468,6 +1515,11 @@ plat.on('incoming text', function(original, modified, original_mode, modified_mo
     end
     local m = { channel = channel, text = text, self = own or nil,
                 mode = mode }
+    if tagch then
+        -- '[Tag] Speaker: body' — grab the speaker for grouping
+        local sp = tagrest and tagrest:match('^([^:]+):%s*') or nil
+        if sp and sp ~= '' then m.sender = sp end
+    end
     -- learn notices flag for the ★ badge — mode 81/91 colors are shared
     -- with unrelated lines, so it's a text match not a mode check
     if text:lower():find('learn', 1, true) then
@@ -1502,9 +1554,9 @@ do
 end
 
 -- forward-declared so the packet handlers below close over it; the
--- module itself loads later (after logged_in exists) in the recasts do
+-- module itself loads later (after logged_in exists) in the recasts do.
+-- `party` itself is declared above the 'incoming text' handler.
 local map = nil
-local party = nil
 
 plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if injected or blocked or not journal then return end
@@ -1846,6 +1898,7 @@ do
             res = res,
             join = join,
             data_dir = join(plat.addon_path, 'data'),
+            autocheck = function() return settings.target_check end,
         })
     else
         log_err('party.lua failed to load: ' .. tostring(mod))
@@ -2246,6 +2299,44 @@ routes['GET /api/menuicon'] = function(conn, req)
     send_and_close(conn, 200, bmp, 'image/bmp')
 end
 
+-- FFXI window-skin textures — PNGs extracted by scripts/extract-winskin.py
+-- into themes/<dat>/<nn>_<name>.png (client menu DAT chrome pieces).
+routes['GET /api/theme'] = function(conn, req)
+    local f = req.query.f
+    -- path must stay inside themes/ — reject traversal outright
+    if not f or f:find('%.%.') or not f:match('^[%w_%-%/]+%.png$') then
+        return send_json(conn, 400, { error = 'bad path' })
+    end
+    local path = join(plat.addon_path, 'themes') .. '\\' .. f:gsub('/', '\\')
+    local fh = io.open(path, 'rb')
+    if not fh then return send_json(conn, 404, { error = 'no theme file' }) end
+    local png = fh:read('*a')
+    fh:close()
+    send_and_close(conn, 200, png, 'image/png')
+end
+
+-- Foreign-UI obstacle rects (ImagineXI's autolayout idea): other
+-- addons' saved window positions + retail chat/menu zones, so the
+-- settings page can place our windows where they don't overlap.
+-- ?w=&h= is the caller's screen size (the addon can't see the display).
+local obstacles_mod
+routes['GET /api/layout'] = function(conn, req)
+    if obstacles_mod == nil then
+        local ok, m = pcall(dofile, join(plat.addon_path, 'obstacles.lua'))
+        obstacles_mod = (ok and type(m) == 'table') and m or false
+    end
+    if not obstacles_mod then
+        return send_json(conn, 500, { error = 'obstacles.lua failed to load' })
+    end
+    local obs = obstacles_mod.scan({
+        windower_path = plat.windower_path,
+        player_name = player_name(),
+        screen_w = tonumber(req.query.w) or 1920,
+        screen_h = tonumber(req.query.h) or 1080,
+    })
+    send_json(conn, 200, { obstacles = json_array(obs) })
+end
+
 -- status-effect icons (buffs/debuffs) — ROM/119/57.DAT via buff_by_id.
 -- Ids ≥640 live in the second store (ROM/324/95: Trust faces, SP
 -- abilities, mounts, emotes) — pre-extracted by name under
@@ -2633,8 +2724,11 @@ end
 -- channel; membership is resolved client-side.
 local CUSTOM_CHANNELS_VALID = {
     say = true, shout = true, yell = true, emote = true, party = true,
-    linkshell = true, linkshell2 = true, unity = true, tell = true,
-    battle = true, system = true, echo = true, assistj = true, assiste = true,
+    linkshell = true, linkshell2 = true, linkshell3 = true, unity = true,
+    tell = true, battle = true, system = true, echo = true,
+    assistj = true, assiste = true,
+    global = true, lfp = true, market = true, general = true,
+    crafting = true, help = true, politics = true,
 }
 
 routes['GET /api/chat/channels'] = function(conn)
@@ -2940,6 +3034,23 @@ local function pump()
             end
         end
     end
+    -- linkpearl names: equipped pearls change on equip/zone — poll
+    -- ~every 2s of pump ticks and broadcast so the chat sidebar can
+    -- label ls1/ls2/ls3 with the real linkshell names
+    ls_poll_n = ls_poll_n + 1
+    if logged_in() and ls_poll_n % 60 == 0 then
+        local okp, p = pcall(plat.ffxi.get_player)
+        if okp and type(p) == 'table' then
+            local l1, l2, l3 = p.linkshell, p.linkshell2, p.linkshell3
+            if l1 ~= ls_names[1] or l2 ~= ls_names[2] or l3 ~= ls_names[3] then
+                ls_names = { l1, l2, l3 }
+                sse_broadcast('chat', json.encode({
+                    linkshells = { ls_names[1], ls_names[2], ls_names[3] },
+                    boot = chat_boot,
+                }))
+            end
+        end
+    end
     heartbeat()
 end
 
@@ -3123,6 +3234,23 @@ plat.on('addon command', function(cmd, ...)
         else
             log_err('no overlay found (build with npm run build:overlay)')
         end
+    elseif cmd == 'meter' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'reset' then
+            if party then party.meter_reset() end
+            log('combat meter reset')
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /meter') then
+            log('combat meter launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'check' then
+        settings.target_check = not settings.target_check
+        config.save(settings)
+        log('auto-/check on new mob targets ' ..
+            (settings.target_check and 'enabled' or 'disabled'))
     elseif cmd == 'skillchain' or cmd == 'sc' then
         local sub = (args[1] or ''):lower()
         if sub == 'on' or sub == 'off' then

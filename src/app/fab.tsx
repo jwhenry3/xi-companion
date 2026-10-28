@@ -3,6 +3,7 @@
 // window. A click toggles the window (open ↔ close). Open windows glow.
 // Drag anywhere to reposition, right-click quits the overlay process.
 import { host, openWindows, fabMenuOpen } from './core/host';
+import { cn } from '@/lib/utils';
 import {
     ScrollText,
     Keyboard,
@@ -21,6 +22,7 @@ import {
     Users,
     Crosshair,
     ChevronDown,
+    LayoutGrid,
 } from 'lucide-preact';
 import { signal } from '@preact-mvc/core';
 
@@ -90,6 +92,7 @@ const GROUPS: FabGroup[] = [
             { path: '/target', label: 'target', Icon: Crosshair },
             { path: '/cooldowns', label: 'cooldowns', Icon: Timer },
             { path: '/skillchain', label: 'skillchains', Icon: Link2 },
+            { path: '/meter', label: 'meter', Icon: Timer },
             { path: '/abilities', label: 'spell book', Icon: Sparkles },
         ],
     },
@@ -136,6 +139,15 @@ const PAGES: FabItem[] = [
     { path: '/settings', label: 'settings', Icon: Settings },
 ];
 
+// ImagineXI's Panels popup — every window in one flat list, show/hide
+// toggles. The button opens the shared menu in this pseudo-group.
+const PANELS_GROUP: FabGroup = {
+    key: 'panels',
+    label: 'panels',
+    Icon: LayoutGrid,
+    items: [...GROUPS.flatMap((g) => g.items), ...PAGES],
+};
+
 // dropdown rows are ~30px + label header + padding — the menu window
 // sizes itself to this on each show
 const menuHeight = (g: FabGroup) => g.items.length * 30 + 34;
@@ -153,10 +165,16 @@ const groupBtns = new Map<string, HTMLElement>();
 const menuGroup = signal(
     new URLSearchParams(location.search).get('g') ?? 'hud',
 );
+// which side of the bar the menu opened on — the card bottom-anchors
+// when shown above so its edge always sits flush against the buttons
+const menuUp = signal(
+    new URLSearchParams(location.search).get('up') !== '0',
+);
 // set up the shell's hooks once per window context — the menu window
 // gets __xicMenu retargets, the bar window gets __xicMenuClosed nudges
-(window as any).__xicMenu = (g: string) => {
+(window as any).__xicMenu = (g: string, up?: boolean) => {
     menuGroup.value = g;
+    if (up !== undefined) menuUp.value = up;
 };
 (window as any).__xicMenuClosed = () => {
     fabMenuOpen.value = false;
@@ -192,7 +210,7 @@ function toggleMenu(g: FabGroup) {
     const y = Math.round(up ? top - h : top + BAR_H);
     menuKey.value = g.key;
     fabMenuOpen.value = true;
-    host.fabMenuShow(g.key, x, y, MENU_W, h);
+    host.fabMenuShow(g.key, x, y, MENU_W, h, up);
 }
 
 export function Fab() {
@@ -240,6 +258,20 @@ export function Fab() {
                     <Icon size={18} />
                 </button>
             ))}
+            <Sep />
+            <button
+                ref={(el) => {
+                    if (el) groupBtns.set(PANELS_GROUP.key, el);
+                }}
+                class={`${BTN}${menuKey.value === PANELS_GROUP.key ? ' on' : ''}`}
+                title="all panels — show/hide list"
+                {...pressDrag(() => toggleMenu(PANELS_GROUP))}
+            >
+                <span class="flex items-center">
+                    <LayoutGrid size={16} />
+                    <ChevronDown size={10} class="-ml-0.5 opacity-70" />
+                </span>
+            </button>
         </div>
     );
 
@@ -258,10 +290,17 @@ export function Fab() {
 // the bare dropdown, no chrome. The shell retargets an already-open
 // menu over __xicMenu ExecJS instead of navigating.
 export function FabMenu() {
-    const g = GROUPS.find((x) => x.key === menuGroup.value) ?? GROUPS[0];
+    const g =
+        GROUPS.find((x) => x.key === menuGroup.value) ??
+        (menuGroup.value === PANELS_GROUP.key ? PANELS_GROUP : GROUPS[0]);
     const open = openWindows.value;
     return (
-        <div class="h-screen w-screen overflow-hidden bg-transparent">
+        <div
+            class={cn(
+                'flex h-screen w-screen flex-col overflow-hidden bg-transparent',
+                menuUp.value ? 'justify-end' : 'justify-start',
+            )}
+        >
             <div class="w-full rounded border border-slate-600 bg-popover/95 py-1 shadow-lg">
                 <p class="px-2 pb-0.5 pt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400/70">
                     {g.label}

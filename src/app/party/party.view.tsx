@@ -74,10 +74,22 @@ export class PartyView extends View implements OnInit {
     void this.api.refreshParty();
   }
 
-  private memberRow(m: PartyMember) {
+  private memberRow(m: PartyMember, ph: string) {
     const dim = m.o === 1;
+    const sel =
+      !!m.n && this.api.party.value?.t?.n === m.n;
     return (
-      <div class={cn('flex gap-1.5 rounded px-1.5 py-1', dim && 'opacity-45')}>
+      <div
+        class={cn(
+          'flex cursor-pointer gap-1.5 rounded px-1.5 py-1 hover:bg-slate-800/60',
+          dim && 'opacity-45',
+          sel && 'bg-sky-800/40 hover:bg-sky-800/50',
+        )}
+        title={sel ? `${m.n} (targeted)` : `target ${m.n}`}
+        onClick={() =>
+          void this.api.sendCommand(`input /target <${ph}>`)
+        }
+      >
         {/* FFXIV-style job tile — main job+level on top, sub below
             (RDM75 / BLU37); the fixed slot keeps rows aligned while a
             member's job packet hasn't arrived yet. Trusts get just the
@@ -112,6 +124,14 @@ export class PartyView extends View implements OnInit {
             <span class="min-w-0 flex-1 truncate text-xs font-medium text-slate-100">
               {m.n}
             </span>
+            {m.th != null && (
+              <span
+                class="shrink-0 text-[9px] font-semibold text-amber-300/90"
+                title={`Treasure Hunter +${m.th} (from job traits; gear TH not visible)`}
+              >
+                TH+{m.th}
+              </span>
+            )}
             {/* TP colored like the client's gauge: dim until WS-ready,
                 teal from 1000, amber at the 3000 cap */}
             <span
@@ -167,8 +187,16 @@ export class PartyView extends View implements OnInit {
     );
   }
 
-  private section(label: string | undefined, list?: PartyMember[]) {
+  private section(
+    label: string | undefined,
+    list: PartyMember[] | undefined,
+    kind: 'p' | 'a1' | 'a2',
+  ) {
     if (!list || list.length === 0) return null;
+    // rows are contiguous from the get_party() slot list, so array
+    // index == macro placeholder index (p0=self → <me>, a1[0] → <a10>)
+    const ph = (i: number) =>
+      kind === 'p' ? (i === 0 ? 'me' : `p${i}`) : `${kind}${i}`;
     return (
       <div class="mb-1">
         {label && (
@@ -176,7 +204,9 @@ export class PartyView extends View implements OnInit {
             {label}
           </p>
         )}
-        <div class="space-y-0.5">{list.map((m) => this.memberRow(m))}</div>
+        <div class="space-y-0.5">
+          {list.map((m, i) => this.memberRow(m, ph(i)))}
+        </div>
       </div>
     );
   }
@@ -199,9 +229,9 @@ export class PartyView extends View implements OnInit {
           </p>
         ) : (
           <>
-            {this.section(undefined, s!.p)}
-            {this.section('Alliance', s!.a1)}
-            {this.section('Alliance 2', s!.a2)}
+            {this.section(undefined, s!.p, 'p')}
+            {this.section('Alliance', s!.a1, 'a1')}
+            {this.section('Alliance 2', s!.a2, 'a2')}
           </>
         )}
       </div>

@@ -144,6 +144,11 @@ export class SetsView extends View implements OnInit {
  this.selectedSlot.value = key;
  this.tipClick(e, tip);
  }}
+ onContextMenu={(e) => {
+ e.preventDefault();
+ // right-click unequips the live piece in that slot
+ if (ref) void this.api.itemAction({ action: 'unequip', slot: def.res });
+ }}
  class={`group relative aspect-square rounded border p-1 transition-colors ${
  sel
  ? 'border-sky-500 bg-sky-950/50'

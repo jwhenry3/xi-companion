@@ -188,6 +188,51 @@ export class SettingsView extends View implements OnInit, OnDestroy {
     host.refreshGeom();
   }
 
+  // ImagineXI's autolayout: pull the foreign-UI obstacle list, then
+  // slot the fab + every open window into free screen zones (corners
+  // and edges), avoiding xivbar/equipviewer/etc. and the retail chrome
+  private async autolayout() {
+    const W = screen.width;
+    const H = screen.height;
+    let obs: { x: number; y: number; w: number; h: number }[] = [];
+    try {
+      const r = await fetch(`/api/layout?w=${W}&h=${H}`);
+      if (!r.ok) return;
+      obs = ((await r.json()) as { obstacles: typeof obs }).obstacles ?? [];
+    } catch {
+      return; // route missing on an old addon — nothing to route around
+    }
+    const pad = 10;
+    const used = obs.map((o) => ({
+      x: o.x - pad,
+      y: o.y - pad,
+      w: o.w + 2 * pad,
+      h: o.h + 2 * pad,
+    }));
+    const free = (x: number, y: number, w: number, h: number) =>
+      x >= 0 && y >= 0 && x + w <= W && y + h <= H &&
+      used.every((o) => x + w <= o.x || o.x + o.w <= x || y + h <= o.y || o.y + o.h <= y);
+    const slotsFor = (key: string): [number, number][] =>
+      key === 'fab'
+        ? [[(W - 560) / 2, H - 140], [10, H - 130], [W - 570, H - 130], [(W - 560) / 2, 10]]
+        : [
+            [W - 350, 10], [10, 10], [10, H - 230], [W - 350, H - 230],
+            [(W - 340) / 2, 10], [10, (H - 220) / 2], [W - 350, (H - 220) / 2],
+          ];
+    const rects = this.winRects.value;
+    for (const key of ['fab', ...Object.keys(rects).sort()]) {
+      const r =
+        key === 'fab'
+          ? { w: 560, h: 56 }
+          : { w: Number(rects[key].w) || 300, h: Number(rects[key].h) || 200 };
+      const slot = slotsFor(key).find(([x, y]) => free(x, y, r.w, r.h));
+      if (!slot) continue;
+      host.setGeom(key, { x: Math.round(slot[0]), y: Math.round(slot[1]) });
+      used.push({ x: slot[0] - pad, y: slot[1] - pad, w: r.w + 2 * pad, h: r.h + 2 * pad });
+    }
+    host.refreshGeom();
+  }
+
   private applyWindow(key: string) {
     const t = this.winRects.value[key];
     if (!t) return;
@@ -350,6 +395,15 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                           </div>
                         );
                       })}
+                    <div class="flex items-center gap-3 pt-1">
+                      <button class={applyBtn} onClick={() => void this.autolayout()}>
+                        auto-arrange all
+                      </button>
+                      <span class="text-[10px] text-slate-500">
+                        slots windows around other addons' UI (xivbar,
+                        equipviewer, …) + the retail chat log
+                      </span>
+                    </div>
                     <p class="pt-1 text-[10px] text-slate-500">
                       persisted in the overlay's window.json — applying moves a
                       live window too

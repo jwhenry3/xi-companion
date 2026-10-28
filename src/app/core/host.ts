@@ -252,6 +252,38 @@ export function setTheme(t: Theme) {
   localStorage.setItem(detachedMode ? WTHEME_KEY : THEME_KEY, t);
   applyTheme(t);
 }
+// ---------- per-window scale/opacity ----------
+// ImagineXI-style per-panel zoom + alpha — persisted per route under
+// xicompanion.winscale.<path> / winopacity.<path>. zoom on <body>
+// reflows layout so the same window size shows more/less UI; opacity
+// fades the whole panel like their alpha slider.
+const clampf = (v: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, isFinite(v) ? v : lo));
+const numOr = (k: string, d: number) => {
+  const v = parseFloat(localStorage.getItem(k) ?? '');
+  return isFinite(v) ? v : d;
+};
+const SCALE_KEY = `xicompanion.winscale.${window.location.pathname}`;
+const OPA_KEY = `xicompanion.winopacity.${window.location.pathname}`;
+export const winScale = signal(clampf(numOr(SCALE_KEY, 1), 0.6, 1.6));
+export const winOpacity = signal(clampf(numOr(OPA_KEY, 1), 0.3, 1));
+const applyViewPrefs = () => {
+  document.body.style.zoom = String(winScale.value);
+  document.body.style.opacity = String(winOpacity.value);
+};
+export function setWinView(v: { scale?: number; opacity?: number }) {
+  if (v.scale !== undefined) {
+    winScale.value = clampf(v.scale, 0.6, 1.6);
+    localStorage.setItem(SCALE_KEY, String(winScale.value));
+  }
+  if (v.opacity !== undefined) {
+    winOpacity.value = clampf(v.opacity, 0.3, 1);
+    localStorage.setItem(OPA_KEY, String(winOpacity.value));
+  }
+  applyViewPrefs();
+}
+applyViewPrefs();
+
 const winKey = (path: string) => `xicompanion.wintheme.${path}`;
 /** a detached route's stored pick (null = follows the global theme) */
 export function getWinTheme(path: string): Theme | null {
@@ -394,9 +426,10 @@ export const host = {
 
 
   /** show/position the shared fab menu window — <group>:<x>,<y>,<w>,<h>
-   *  in screen px (see fabMenuShow in main.go) */
-  fabMenuShow(group: string, x: number, y: number, w: number, h: number) {
-    tell(`xicompanion:fabmenu-show:${group}:${x},${y},${w},${h}`);
+   *  in screen px, plus <up>=1 when it opened above the bar so the menu
+   *  bottom-anchors flush to the buttons (see fabMenuShow in main.go) */
+  fabMenuShow(group: string, x: number, y: number, w: number, h: number, up = true) {
+    tell(`xicompanion:fabmenu-show:${group}:${x},${y},${w},${h},${up ? 1 : 0}`);
   },
 
   /** hide the shared fab menu window (item click, bar drag, retarget) */
@@ -613,12 +646,20 @@ export function installWindowChrome() {
     });
   }
 
+  // a press that starts a Go-driven caption move or size loop owns the
+  // pointer until release — the click that ends it (when it arrives at
+  // all) must not count for the focus hand-back below
+  let nativeManip = false;
+
   document.addEventListener(
     'mousedown',
     (e) => {
-      // NOACTIVATE windows can't raise themselves — the shell lifts the
-      // touched window to band-top on our behalf (z-order, not focus)
-      if (e.button === 0) tell('xicompanion:raise');
+      if (e.button === 0) {
+        nativeManip = false;
+        // NOACTIVATE windows can't raise themselves — the shell lifts the
+        // touched window to band-top on our behalf (z-order, not focus)
+        tell('xicompanion:raise');
+      }
       if (e.button !== 0 || fabMode.value) return;
       if (dragRegionOf(e.target as HTMLElement) === 'no-drag') return;
       // interactive elements win over the edge zone — a button within
@@ -632,14 +673,41 @@ export function installWindowChrome() {
       if (edge) {
         e.preventDefault();
         e.stopPropagation();
+        nativeManip = true;
         tell(`xicompanion:resize:${edge}`);
         return;
       }
       if (dragRegionOf(e.target as HTMLElement) === 'drag') {
         e.preventDefault(); // no text selection while dragging
         e.stopPropagation();
+        nativeManip = true;
         tell('xicompanion:drag');
       }
+    },
+    true,
+  );
+
+  // focus hand-back: a plain click bounces keyboard focus to the game
+  // once it lands — HUD panels should react without stealing play input.
+  // The exceptions are typing (editable target, or a text field holding
+  // DOM focus mid-session) and a press that began a native drag/resize.
+  // Fab/tooltip/menu are NOACTIVATE (no focus to return); the Go side
+  // also guards on an overlay window actually holding foreground.
+  document.addEventListener(
+    'click',
+    (e) => {
+      if (e.button !== 0 || fabMode.value || tooltipMode || menuMode)
+        return;
+      if (nativeManip) return;
+      const t = e.target as HTMLElement;
+      if (
+        t?.closest?.('input, textarea, select, [contenteditable="true"]') ||
+        (document.activeElement as HTMLElement | null)?.closest?.(
+          'input, textarea, select, [contenteditable="true"]',
+        )
+      )
+        return;
+      tell('xicompanion:focus-game');
     },
     true,
   );

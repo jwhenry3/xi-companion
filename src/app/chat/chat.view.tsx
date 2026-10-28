@@ -32,12 +32,22 @@ const CHANNELS: ChannelDef[] = [
   { key: 'party', label: 'party' },
   { key: 'linkshell', label: 'linkshell' },
   { key: 'linkshell2', label: 'linkshell2' },
+  { key: 'linkshell3', label: 'linkshell3' },
   { key: 'unity', label: 'unity' },
   { key: 'battle', label: 'battle' },
   { key: 'system', label: 'system' },
   { key: 'echo', label: 'echo' },
   { key: 'assistj', label: 'assist jp' },
   { key: 'assiste', label: 'assist en' },
+  // private-server custom channels — '[Tag] Name: msg' rendered lines;
+  // they sit in OTHER until traffic arrives on a server that has them
+  { key: 'global', label: 'global' },
+  { key: 'lfp', label: 'lfp' },
+  { key: 'market', label: 'market' },
+  { key: 'general', label: 'general' },
+  { key: 'crafting', label: 'crafting' },
+  { key: 'help', label: 'help' },
+  { key: 'politics', label: 'politics' },
 ];
 
 // in-game channel colors (client default font-color palette) — the
@@ -51,6 +61,14 @@ const CHANNEL_COLOR: Record<string, string> = {
   party: '#99d8f8',
   linkshell: '#a8e898',
   linkshell2: '#a8e898',
+  linkshell3: '#a8e898',
+  global: '#f0d090',
+  lfp: '#90f0d0',
+  market: '#f0b060',
+  general: '#d0c0f0',
+  crafting: '#c0d8a0',
+  help: '#a0d0f0',
+  politics: '#e8a8b8',
   unity: '#c0a8f0',
   battle: '#e0e0a0',
   system: '#b8b8b8',
@@ -85,8 +103,16 @@ const SENDABLE = new Set([
   'party',
   'linkshell',
   'linkshell2',
+  'linkshell3',
   'unity',
   'echo',
+  'global',
+  'lfp',
+  'market',
+  'general',
+  'crafting',
+  'help',
+  'politics',
 ]);
 
 // ---------- auto-translate phrases in the composer ----------
@@ -595,6 +621,16 @@ export class ChatView extends View implements OnInit, OnDestroy {
     CHANNELS.filter((c) => !this.pins.value.has(c.key)),
   );
 
+  /** channel row label — linkshell channels show the equipped pearl's
+   *  LS name once the addon has broadcast it */
+  private chanLabel(key: string, fallback: string): string {
+    const idx = { linkshell: 0, linkshell2: 1, linkshell3: 2 }[
+      key as 'linkshell' | 'linkshell2' | 'linkshell3'
+    ];
+    const nm = idx !== undefined ? this.api.chatLs.value[idx] : undefined;
+    return nm || fallback;
+  }
+
   /** member channels for multi-channel threads — 'all', custom,
    *  presets return null/sets; single channels return null and match
    *  by chatThread instead */
@@ -891,7 +927,8 @@ export class ChatView extends View implements OnInit, OnDestroy {
       } else if (k.startsWith('tell:')) {
         out.push([k, k.slice(5), '@']);
       } else if (CHANNELS.some((c) => c.key === k)) {
-        out.push([k, CHANNELS.find((c) => c.key === k)!.label, '#']);
+        const c = CHANNELS.find((x) => x.key === k)!;
+        out.push([k, this.chanLabel(k, c.label), '#']);
       }
     }
     return out;
@@ -974,7 +1011,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             {this.sectionHead('channels', 'CHANNELS')}
             {!this.sectionHidden.value.has('channels') &&
               this.listedChannels.value.map((c) =>
-                this.threadRow(c.key, c.label, '#'),
+                this.threadRow(c.key, this.chanLabel(c.key, c.label), '#'),
               )}
             {this.sectionHead(
               'custom',
@@ -1057,7 +1094,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                   { value: 'all', label: '≡ all' },
                   ...CHANNELS.map((c) => ({
                     value: c.key,
-                    label: `#${c.label}`,
+                    label: `#${this.chanLabel(c.key, c.label)}`,
                   })),
                   ...this.api.chatCustom.value.map((c) => ({
                     value: `custom:${c.name}`,
@@ -1168,7 +1205,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                     { value: 'all', label: '≡ all' },
                     ...CHANNELS.map((c) => ({
                       value: c.key,
-                      label: `#${c.label}`,
+                      label: `#${this.chanLabel(c.key, c.label)}`,
                     })),
                     ...this.api.chatCustom.value.map((c) => ({
                       value: `custom:${c.name}`,

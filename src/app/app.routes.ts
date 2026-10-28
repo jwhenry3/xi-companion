@@ -95,6 +95,10 @@ export const routes: Route[] = [
       import('./skillchain/skillchain.view').then((m) => m.SkillchainView),
     ),
   },
+  {
+    path: '/meter',
+    component: lazy(() => import('./meter/meter.view').then((m) => m.MeterView)),
+  },
 
   // the shared fab dropdown window — never user-navigable
   { path: '/fabmenu', component: FabMenu },

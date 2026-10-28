@@ -219,6 +219,15 @@ export class MacrosView extends View implements OnInit {
     this.draft.value = blankPalette();
   }
 
+  private clearCell() {
+    const d = [...this.draft.value];
+    d[this.cell.value] = {
+      name: '',
+      lines: Array.from({ length: NUM_LINES }, () => ''),
+    };
+    this.draft.value = d;
+  }
+
   private keyLabel(i: number) {
     const row = i < 10 ? 'Ctrl' : 'Alt';
     const num = ((i % 10) + 1) % 10; // 1..9,0 like the client bar
@@ -285,8 +294,9 @@ export class MacrosView extends View implements OnInit {
           </div>
         </PanelSidebar>
 
-        {/* main pane */}
-        <div class="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-3">
+        {/* main pane — scrollable content over a pinned actions footer */}
+        <div class="flex min-w-0 flex-1 flex-col">
+        <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3">
         {/* header row: book title rename + in-game switch */}
         <div class="flex flex-wrap items-center gap-3">
           <strong class="text-sm">Book {this.book.value}</strong>
@@ -397,6 +407,15 @@ export class MacrosView extends View implements OnInit {
             <span class="text-[0.68rem] text-slate-500">
               label ≤ {NAME_BYTES} bytes · lines ≤ {LINE_BYTES} bytes
             </span>
+            <span class="flex-1" />
+            <Button
+              variant="outline"
+              size="sm"
+              title="blank this macro's label and all six lines"
+              onClick={() => this.clearCell()}
+            >
+              clear
+            </Button>
           </div>
           <div class="flex flex-col gap-1.5">
             {cur.lines.map((line, i) => {
@@ -431,6 +450,10 @@ export class MacrosView extends View implements OnInit {
           </p>
         </div>
 
+        </div>
+
+        {/* footer: disclaimer + actions, always visible */}
+        <div class="flex shrink-0 flex-col gap-2 border-t border-slate-800 p-3">
         {this.loggedIn.value && (
           <p class="rounded-md border border-sky-700/60 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
             character is logged in — saving applies live: the client is
@@ -473,6 +496,7 @@ export class MacrosView extends View implements OnInit {
               {this.message.value.text}
             </span>
           )}
+        </div>
         </div>
         </div>
       </PanelShell>

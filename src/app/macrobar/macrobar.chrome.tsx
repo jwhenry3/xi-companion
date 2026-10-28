@@ -26,17 +26,6 @@ export class MacroBarChrome extends View {
   );
   private titles = computed(() => this.char.value?.titles ?? []);
 
-  /** drive the client's palette to the bar's selection — picking still
-   *  doubles as an in-game switcher (book loads re-read files, so only
-   *  send the book command when it actually changed) */
-  private syncInGame(bookChanged: boolean) {
-    if (!this.api.macros.value?.logged_in) return;
-    if (bookChanged) {
-      void this.api.sendCommand(`input /macro book ${barBook.value}`);
-    }
-    void this.api.sendCommand(`input /macro set ${barPage.value}`);
-  }
-
   private pickChar(id: string) {
     barChar.value = id;
     barBook.value = 1;
@@ -45,16 +34,13 @@ export class MacroBarChrome extends View {
   }
 
   private pickBook(b: number) {
-    const changed = b !== barBook.value;
     barBook.value = b;
     barPersist();
-    this.syncInGame(changed);
   }
 
   private pickPage(p: number) {
     barPage.value = p;
     barPersist();
-    this.syncInGame(false);
   }
 
   private stepPage(d: -1 | 1) {

@@ -1,9 +1,10 @@
 import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc/core';
-import { ExternalLink } from 'lucide-preact';
+import { ExternalLink, Cog } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, theme, setTheme, THEMES, type Theme } from './core/host';
-import { Dropdown } from './core/dropdown';
+import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, theme, setTheme, THEMES, type Theme, winOpacity, setWinView } from './core/host';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { cn } from '@/lib/utils';
 import { Fab, FabMenu } from './fab';
 
 import { TooltipView } from './tooltip/tooltip.view';
@@ -24,16 +25,92 @@ const NAV = [
 // under xicompanion.wintheme.<route> so each spawned window keeps its
 // own look. A native <select>'s popup needs window activation (these
 // panels are NOACTIVATE) — the shared Dropdown is the same fix in-page.
-function ThemePicker() {
- return (
- <Dropdown
- class="h-5 shrink-0 px-1 text-[10px] capitalize leading-none"
- title="theme for this window only"
- align="right"
- value={theme.value}
- options={THEMES}
- onChange={(t) => setTheme(t as Theme)}
+// per-window theme + alpha — ImagineXI's per-panel prefs sliders.
+// Same in-page popover approach as Dropdown (native popups need window
+// activation, which these panels never get)
+function ViewPrefs() {
+ const [open, setOpen] = useState(false);
+ const root = useRef<HTMLSpanElement>(null);
+ useLayoutEffect(() => {
+ if (!open) return;
+ const onDown = (e: MouseEvent) => {
+ if (!root.current?.contains(e.target as Node)) setOpen(false);
+ };
+ const onKey = (e: KeyboardEvent) => {
+ if (e.key === 'Escape') setOpen(false);
+ };
+ document.addEventListener('mousedown', onDown);
+ document.addEventListener('keydown', onKey);
+ return () => {
+ document.removeEventListener('mousedown', onDown);
+ document.removeEventListener('keydown', onKey);
+ };
+ }, [open]);
+ const row = (
+ label: string,
+ v: number,
+ lo: number,
+ hi: number,
+ set: (n: number) => void,
+ ) => (
+ <label class="flex items-center gap-2 px-2 py-1">
+ <span class="w-8 text-[10px] text-slate-400">{label}</span>
+ <input
+ type="range"
+ min={lo}
+ max={hi}
+ step={0.05}
+ value={v}
+ class="w-24 accent-indigo-400"
+ onInput={(e) => set(parseFloat((e.target as HTMLInputElement).value))}
  />
+ <span class="w-8 text-right text-[10px] text-slate-400">
+ {Math.round(v * 100)}%
+ </span>
+ </label>
+ );
+ return (
+ <span ref={root} class="relative inline-flex">
+ <button
+ class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-indigo-200/80 hover:bg-indigo-300/20 hover:text-white"
+ title="this window's opacity"
+ onClick={(e) => {
+ e.stopPropagation();
+ setOpen(!open);
+ }}
+ >
+ <Cog size={12} />
+ </button>
+ {open && (
+ <span
+ class="absolute right-0 top-full z-50 mt-0.5 flex flex-col rounded border border-slate-600 bg-slate-900 py-1 shadow-lg"
+ onClick={(e) => e.stopPropagation()}
+ >
+ <span class="flex flex-wrap gap-1 px-2 pb-1 pt-0.5">
+ {THEMES.map((t) => (
+ <button
+ class={cn(
+ 'rounded px-1.5 py-0.5 text-[10px] capitalize',
+ t === theme.value
+ ? 'bg-indigo-500/40 text-indigo-100'
+ : 'text-slate-400 hover:bg-slate-700',
+ )}
+ onClick={() => setTheme(t as Theme)}
+ >
+ {t}
+ </button>
+ ))}
+ </span>
+ {row('alpha', winOpacity.value, 0.3, 1, (n) => setWinView({ opacity: n }))}
+ <button
+ class="mx-2 mt-0.5 rounded px-1 py-0.5 text-left text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+ onClick={() => setWinView({ scale: 1, opacity: 1 })}
+ >
+ reset
+ </button>
+ </span>
+ )}
+ </span>
  );
 }
 
@@ -87,6 +164,7 @@ export class AppShell extends View {
  '/party': 'Party',
  '/target': 'Target',
  '/skillchain': 'Skillchains',
+ '/meter': 'Combat Meter',
  } as Record<string, string>
  )[path] ??
  NAV.find(
@@ -107,7 +185,7 @@ export class AppShell extends View {
  {title}
  </span>
  )}
- <ThemePicker />
+ <ViewPrefs />
  <button
  class="flex h-6 w-6 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
  title="close (Esc does the same)"

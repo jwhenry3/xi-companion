@@ -5,7 +5,8 @@ import './styles.css';
 
 // Esc collapses the overlay back to the floating button — in Electron the
 // shell intercepts the key before the page; under Wails we handle it here.
-// A detached (?window=) tab closes its own window instead.
+// Detached (?window=) panels ignore Esc — destroying a HUD window off a
+// stray keystroke was too easy; close them via × or the Panels menu.
 // Capture phase so it behaves the same either way (expand via //xicompanion
 // overlay or clicking the fab).
 window.addEventListener(
@@ -16,8 +17,7 @@ window.addEventListener(
     if (document.querySelector('[data-modal]')) return;
     if (tooltipMode) host.closeTooltip();
     else if (menuMode) host.fabMenuHide();
-    else if (detachedMode) host.closeWindow();
-    else host.collapse();
+    else if (!detachedMode) host.collapse();
   },
   true,
 );

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ImagineXI feature port** — a batch of HUD features researched from
+  the imaginexi-overlay addon:
+  - **Combat meter** — `party.lua` tallies damage/healing per actor
+    from the 0x028 action parse it already runs (first-target first-
+    action param; cures detected by spell name). Sorted `mt` rows ride
+    the party payload into the new `/meter` detached window (dmg/heal
+    tabs, session clock, `/s` rates, share %, reset). `//xicompanion
+    meter [reset]`; fab combat group + fab-layer spawn registered.
+  - **Mob level on target** — the incoming-text handler feeds
+    `party.log_line` which parses `/check` replies ("seems to be …",
+    "X's level is N") into `t.lv`/`t.con`, plus `input /check` fired
+    once per new mob target (`settings.target_check`, `//xicompanion
+    check` toggles). Target window shows lv · con.
+  - **Party TH** — trait estimate from member job packets (THF main
+    10/40, THF sub capped) as `TH+n` chips on party rows; observed TH
+    proc levels from battle text show as `TH n` on the target bar.
+  - **LS3 + private-server channels** — `linkshell3` (render mode 215)
+    and `[Tag]`-prefixed custom channels (global/lfp/market/general/
+    crafting/help/politics) classified in the text stream, sendable
+    via `/linkshell3`/`!tag` prefixes, and listed in the sidebar +
+    custom-filter editor. Unknown 0x017 modes now defer to the
+    rendered line for classification instead of landing in 'system'.
+    Equipped pearl names broadcast (`chatLs` signal) label the LS rows.
+  - **Per-window zoom/opacity** — `Aa` popover on every detached
+    window's title bar; sliders persist per route
+    (`xicompanion.winscale/winopacity.<path>`).
+  - **Panels list popup** — new grid button on the fab opens one flat
+    show/hide list of every window (all groups + pages).
+  - **Auto-arrange** — `obstacles.lua` scans other addons'
+    `data/settings.xml` (xivbar, equipviewer, giltracker, TParty,
+    targetinfo, InfoBar, debuffed, distance) + retail chat/menu zones;
+    `GET /api/layout` serves the rect list and the settings page's
+    "auto-arrange all" slots the fab + every open window into free
+    zones via `geom-set`.
+
+### Added (earlier)
+
+- **`ffxi` theme from the client's own window skin** —
+  `scripts/extract-winskin.py` parses the `menu <name>` records inside
+  the menu archives (`ROM/0/2.DAT`, `0/1.DAT`), decodes the embedded
+  `xTXD` texture chunks (DXT3/DXT1) to PNG atlases under
+  `addon/xicompanion/themes/<dat>/`, and dumps the small
+  `frames`/`comwin`/`windowps` layout records (piece rects) to JSON for
+  slice work. `GET /api/theme?f=<dat>/<file>.png` serves the extracted
+  art (traversal-rejected). The new `ffxi` picker theme skins
+  `.ffxi-panel` with the game's navy/periwinkle chrome and
+  buttons/fabs with the extracted `xlbutton` gradient via
+  `border-image`.
+
 ## [0.1.6] - 2026-10-28
 
 ### Fixed

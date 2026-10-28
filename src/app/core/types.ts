@@ -115,8 +115,10 @@ export interface ChatMessage {
   seq: number;
   /** per-addon-load marker — changes on reload so clients resync */
   boot?: number;
-  /** channel key: say|shout|yell|emote|party|linkshell|linkshell2|unity|
-   *  battle|system|echo|assistj|assiste|tell */
+  /** channel key: say|shout|yell|emote|party|linkshell|linkshell2|
+   *  linkshell3|unity|battle|system|echo|assistj|assiste|tell, or a
+   *  private-server custom channel (global|lfp|market|general|
+   *  crafting|help|politics) */
   channel: string;
   /** sender name (for inbound tells this is the peer) */
   sender?: string;
@@ -437,6 +439,8 @@ export interface PartyMember {
   sjl?: number;
   /** Trust role tag (TNK/HLR/RNG/CST/SUP/DD) — trusts have no job packets */
   tr?: string;
+  /** estimated Treasure Hunter from job traits (THF main/sub) */
+  th?: number;
   b?: PartyBuff[];
 }
 
@@ -461,6 +465,15 @@ export interface TargetState {
   tp?: number;
   /** claim status: 0 unclaimed, 1 self, 2 party, 3 someone else's */
   cl?: number;
+  /** exact level when a /check reply reported one */
+  lv?: number;
+  /** /check difficulty text ("a decent challenge", "incredibly tough") */
+  con?: string;
+  /** observed Treasure Hunter proc level on this target */
+  th?: number;
+  /** non-mob relationship: self/party/alliance/linkshell member/other
+   *  player — colors the name */
+  rel?: 'self' | 'party' | 'alliance' | 'ls' | 'pc';
   cast?: TargetCast;
 }
 
@@ -508,6 +521,9 @@ export interface PartyState {
   me?: number;
   /** any cast currently being tracked (actor may not be the target) */
   cast?: TargetCast;
+  /** combat meter — sorted damage rows + session elapsed seconds */
+  mt?: { n: string; d: number; h: number; hits: number; own?: number }[];
+  mtt?: number;
   /** skillchain / magic-burst tracking — active chains + recent WSs */
   sc?: {
     c?: ScChain[];

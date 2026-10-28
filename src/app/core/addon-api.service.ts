@@ -229,9 +229,17 @@ export class AddonApi {
           this.state.value = JSON.parse(d);
           this.connected.value = true;
           break;
-        case 'chat':
-          this.ingestChat(JSON.parse(d));
+        case 'chat': {
+          const m = JSON.parse(d);
+          // linkshell-name updates carry no seq — a metadata payload,
+          // not a message row
+          if (m.linkshells) {
+            this.chatLs.value = m.linkshells;
+            break;
+          }
+          this.ingestChat(m);
           break;
+        }
         case 'journal':
           this.journal.value = JSON.parse(d);
           break;
@@ -443,6 +451,8 @@ export class AddonApi {
   readonly chatAlerts = signal<Record<string, number>>({});
   /** player-defined filter channels (custom:<name> thread keys) */
   readonly chatCustom = signal<ChatCustomChannel[]>([]);
+  /** equipped linkpearl names [ls1, ls2, ls3] — labels the ls channels */
+  readonly chatLs = signal<string[]>([]);
 
   private chatSeq = 0;
   private chatBoot = 0;

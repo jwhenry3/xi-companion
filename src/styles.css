@@ -425,6 +425,7 @@ html.slate .ffxi-fab.on {
   background-color: rgb(255 255 255 / 0.14);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.3);
 }
+
 /* square every control and drop visible borders — border-color keeps
    the 1px layout space, it just doesn't paint. Accent fills (active
    macro slots, selections) still carry state. */

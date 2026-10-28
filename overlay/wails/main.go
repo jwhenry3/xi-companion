@@ -465,6 +465,14 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 		uintptr(int64(sl)), uintptr(int64(st)),
 		uintptr(int64(sr-sl)), uintptr(int64(sb-st)),
 		swpNoActivate|swpNoZOrder)
+	// gesture done — hand keyboard focus back to the game (same
+	// ourHwnd guard as the page's xicompanion:focus-game message:
+	// NOACTIVATE panels never took it, foreign apps keep it)
+	if fg, _, _ := pGetForegroundWindow.Call(); fg != 0 && ourHwnd(fg) {
+		if g := gameHwnd(); g != 0 {
+			pSetForegroundWindow.Call(g)
+		}
+	}
 }
 
 
@@ -952,9 +960,12 @@ func spawnKey(route string) string {
 // layer — always up alongside it, and hidden during the zoning
 // blackout / cutscenes the same way the fab is.
 func fabLayerSpawned(key string) bool {
+	// instanced routes ("/macrobar?n=2") collapse to their base —
+	// additional bars join the blackout like the first
+	key = strings.SplitN(key, "?", 2)[0]
 	return key == "/tracker" || key == "/macrobar" || key == "/cooldowns" ||
 		key == "/minimap" || key == "/party" || key == "/target" ||
-		key == "/skillchain"
+		key == "/skillchain" || key == "/meter"
 }
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
@@ -1110,6 +1121,7 @@ func spawnWindow(route string) {
 		"/party":      "Party",
 		"/target":     "Target",
 		"/skillchain": "Skillchains",
+		"/meter":      "Meter",
 	}
 	title, ok := spawnTitles[key]
 	if !ok {
@@ -1126,12 +1138,12 @@ func spawnWindow(route string) {
 		mw, mh = 200, 52
 	case "/party":
 		mw, mh = 200, 140
+	case "/meter":
+		mw, mh = 240, 100
 	case "/macrobar":
-		// two rows of cells + the slim title bar — let it shrink to a
-		// strip instead of the generic 280x180 floor. +16px floor for the
-		// bottom resize band — at min height the edge zone would
-		// otherwise overlap the cells entirely
-		mw, mh = 260, 134
+		// fixed-size strip — exactly the two cell rows + title bar;
+		// not resizable (DisableResize below), so no border floor
+		mw, mh = 584, 118
 	case "/macros":
 		// book sidebar + page grid + line editor
 		mw, mh = 520, 340
@@ -1193,6 +1205,9 @@ func spawnWindow(route string) {
 	case "/skillchain":
 		// three columns — chains+ws | burst spells | recent
 		opts.Width, opts.Height = 560, 280
+	case "/meter":
+		// ranked damage rows — a party-list-ish strip
+		opts.Width, opts.Height = 340, 200
 	}
 	if r := geomSnapshot().Windows[instKey]; r != nil && r.W >= mw && r.H >= mh {
 		opts.Width, opts.Height = r.W, r.H
@@ -1201,6 +1216,14 @@ func spawnWindow(route string) {
 		// WindowXY the shell re-centers after creation and the restored
 		// X/Y are ignored (same trap as the main window)
 		opts.InitialPosition = application.WindowXY
+	}
+	if key == "/macrobar" {
+		// content-sized, fixed — no resize strip on the native border.
+		// Overrides the restore above too: a size saved while the bar
+		// was still resizable snaps back to the content fit.
+		opts.DisableResize = true
+		opts.Width, opts.Height = mw, mh
+		opts.MaxWidth, opts.MaxHeight = mw, mh
 	}
 	w := app.Window.NewWithOptions(opts)
 
@@ -1786,7 +1809,9 @@ var (
 	fabMenuMu   sync.Mutex
 )
 
-// xicompanion:fabmenu-show:<group>:<x>,<y>,<w>,<h> — x/y/w/h are screen px
+// xicompanion:fabmenu-show:<group>:<x>,<y>,<w>,<h>[,<up>] — x/y/w/h are
+// screen px; the optional up flag (default 1) tells the menu whether it
+// opened above the bar so it bottom-anchors flush to the buttons
 func fabMenuShow(arg string) {
 	sep := strings.LastIndexByte(arg, ':')
 	if sep < 0 {
@@ -1794,11 +1819,11 @@ func fabMenuShow(arg string) {
 	}
 	group, nums := arg[:sep], arg[sep+1:]
 	f := strings.Split(nums, ",")
-	if len(f) != 4 || group == "" {
+	if (len(f) != 4 && len(f) != 5) || group == "" {
 		return
 	}
 	var v [4]int
-	for i, s := range f {
+	for i, s := range f[:4] {
 		n, err := strconv.Atoi(strings.TrimSpace(s))
 		if err != nil {
 			return
@@ -1808,6 +1833,10 @@ func fabMenuShow(arg string) {
 	x, y, w, h := v[0], v[1], v[2], v[3]
 	if w <= 0 || h <= 0 {
 		return
+	}
+	up := true
+	if len(f) == 5 {
+		up = strings.TrimSpace(f[4]) != "0"
 	}
 	fabMenuMu.Lock()
 	mw := fabMenuWin
@@ -1820,11 +1849,11 @@ func fabMenuShow(arg string) {
 		fabMenuWin = nil
 		fabMenuMu.Unlock()
 		fabMenuHwnd.Store(0)
-		fabMenuCreate(group, x, y, w, h)
+		fabMenuCreate(group, x, y, w, h, up)
 		return
 	}
 	mw.ExecJS(fmt.Sprintf(
-		"window.__xicMenu&&window.__xicMenu(%s)", strconv.Quote(group)))
+		"window.__xicMenu&&window.__xicMenu(%s,%v)", strconv.Quote(group), up))
 	mw.SetPosition(x, y)
 	mw.SetSize(w, h)
 	// w.Show() (not a raw reshow) — the window was created Hidden so
@@ -1836,7 +1865,7 @@ func fabMenuShow(arg string) {
 	go windowsReport()
 }
 
-func fabMenuCreate(group string, x, y, w, h int) {
+func fabMenuCreate(group string, x, y, w, h int, up bool) {
 	opts := application.WebviewWindowOptions{
 		Title:            windowTitle + " — menu",
 		Frameless:        true,
@@ -1860,6 +1889,9 @@ func fabMenuCreate(group string, x, y, w, h int) {
 	}
 	// URL at creation skips the splash hop (see spawnWindow)
 	menuPath := "fabmenu?window=1&g=" + url.QueryEscape(group)
+	if !up {
+		menuPath += "&up=0"
+	}
 	if addonTarget != "" {
 		opts.URL = navURL(addonTarget + menuPath)
 	} else {
@@ -1869,6 +1901,11 @@ func fabMenuCreate(group string, x, y, w, h int) {
 	fabMenuMu.Lock()
 	fabMenuWin = mw
 	fabMenuMu.Unlock()
+	// created Hidden — the retarget path (fabMenuShow -> mw != nil)
+	// calls Show(), but the create path itself never did, so the very
+	// first menu click produced an invisible window. The page carries
+	// ?g=<group> in its URL, so no ExecJS retarget is needed here.
+	mw.Show()
 
 	mw.OnWindowEvent(events.Common.WindowMinimise, func(e *application.WindowEvent) {
 		pShowWindow.Call(hwndOf(mw), swShowNA)
@@ -2112,6 +2149,22 @@ func main() {
 				go spawnWindow(strings.TrimPrefix(message, "xicompanion:spawn:"))
 			case strings.HasPrefix(message, "xicompanion:toggle:"):
 				go toggleWindow(strings.TrimPrefix(message, "xicompanion:toggle:"))
+			case message == "xicompanion:focus-game":
+				// a completed page click hands keyboard focus back to
+				// the game — the page skips presses that began a
+				// drag/resize or landed in an editable element. Guard
+				// on an overlay window actually holding foreground:
+				// NOACTIVATE panels never take it, and we must not
+				// yank a foreign app's focus either
+				go func() {
+					fg, _, _ := pGetForegroundWindow.Call()
+					if fg == 0 || !ourHwnd(fg) {
+						return
+					}
+					if g := gameHwnd(); g != 0 {
+						pSetForegroundWindow.Call(g)
+					}
+				}()
 			case message == "xicompanion:loaded":
 				// the page finished booting — releases the window's
 				// navigateWhenReady retry loop (no-op once it exits)
