@@ -1284,7 +1284,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
                   )}
                 </div>
                 <Button
-                  class="h-8 rounded-l-none border border-input bg-card px-3 hover:bg-accent"
+                  class="h-8 rounded-l-none border border-input bg-card px-3 text-foreground hover:bg-accent"
                   onClick={() => void this.send()}
                 >
                   send

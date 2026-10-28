@@ -13,11 +13,10 @@
 //   "xicompanion:expand"               → fab → full window
 //   "xicompanion:collapse"             → full → fab (Esc/× both collapse now)
 //   "xicompanion:quit"                 → exit the overlay process
-//   "xicompanion:spawn:<route>"        → open/focus a detached per-tab window
+//   "xicompanion:spawn:<route>"        → open a detached per-tab window
 //   "xicompanion:toggle:<route>"       → spawn-or-close (the fab's menu bar)
 //   "xicompanion:windows"              → ask for the open spawned-route list
 //   "xicompanion:close"                → destroy a detached window (main collapses)
-//   "xicompanion:refocus"              → hand keyboard focus back to the FFXI window
 import { signal } from '@preact/signals';
 
 interface Webview2Host {
@@ -83,9 +82,6 @@ export const detachedMode = winParam !== null;
 export const menuMode =
   detachedMode && window.location.pathname === '/fabmenu';
 
-/** the collapse-all handle — a bare floating button, no chrome */
-export const visibilityMode =
-  detachedMode && window.location.pathname === '/visibility';
 
 /** detached windows that render as floating overlay panels — the
  *  transparent backdrop + opaque card chrome. The shell skips the
@@ -117,7 +113,6 @@ if (
   partyMode ||
   targetMode ||
   skillchainMode ||
-  visibilityMode ||
   menuMode
 )
   document.body.classList.add('panel-mode');
@@ -128,6 +123,12 @@ if (
 export const tooltipMode = new URLSearchParams(window.location.search).has(
   'tooltip',
 );
+
+// NOTE: an earlier design hid the OS cursor on the fab layer
+// ('nocursor' class) expecting the game's software cursor to show
+// through the translucent pixels. It didn't — over opaque panel
+// pixels there was NO cursor at all, and click-through regions ate
+// input. One arrow everywhere is the only reliable behavior.
 
 /** payload for the floating item tooltip — x/y are screen coords */
 export interface TooltipRef {
@@ -198,7 +199,7 @@ if (inWebView()) {
     openWindows.value = list ?? [];
   };
   // collapse-all state pushed by the shell — keeps the fab's button
-  // and the /visibility window's icon in sync across reloads
+  // in sync across reloads
   (window as any).__xicCollapsed = (c: boolean) => {
     uiCollapsed.value = !!c;
   };
@@ -391,11 +392,6 @@ export const host = {
     tell(`xicompanion:toggle:${path}`);
   },
 
-  /** collapse/restore every overlay window — the fab's collapse-all
-   *  button; the bar itself stays up as the restore handle */
-  collapseAll() {
-    tell('xicompanion:collapseall');
-  },
 
   /** show/position the shared fab menu window — <group>:<x>,<y>,<w>,<h>
    *  in screen px (see fabMenuShow in main.go) */
@@ -485,15 +481,21 @@ export const host = {
   },
 };
 
-const EDGE = 8; // px of viewport edge that acts as the size border
+// the outer ~8px are a real non-client resize border
+// (NonClientRegionSupport → SM_CXSIZEFRAME+PADDEDBORDER ≈ 8px) — the
+// page stops seeing mousemove there, so the hint zone sits just inside
+// it: tight enough that a visible hint means a grab will resize, not
+// drag
+const EDGE = 10; // px of viewport edge that acts as the size border
+const EDGE_KEEP = 14; // wider zone once engaged — boundary hysteresis
 
-function edgeAt(x: number, y: number): string | null {
+function edgeAt(x: number, y: number, zone = EDGE): string | null {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  const l = x < EDGE;
-  const r = x >= w - EDGE;
-  const t = y < EDGE;
-  const b = y >= h - EDGE;
+  const l = x < zone;
+  const r = x >= w - zone;
+  const t = y < zone;
+  const b = y >= h - zone;
   if (t && l) return 'nw-resize';
   if (t && r) return 'ne-resize';
   if (b && l) return 'sw-resize';
@@ -507,6 +509,12 @@ function edgeAt(x: number, y: number): string | null {
 
 // climbs ancestors for --wails-draggable — 'drag' = caption move,
 // 'no-drag' = interactive element (edge zones must not resize-grab it)
+function interactiveEl(t: HTMLElement | null): boolean {
+  return !!t?.closest?.(
+    'button, a, input, select, textarea, label, summary, [role="button"], [contenteditable="true"]',
+  );
+}
+
 function dragRegionOf(t: HTMLElement | null): 'drag' | 'no-drag' | null {
   let el = t;
   // e.target can be Document — getComputedStyle throws on non-Elements
@@ -524,8 +532,8 @@ function dragRegionOf(t: HTMLElement | null): 'drag' | 'no-drag' | null {
 //  - no-drag wins over the resize border so buttons inside edge zones
 //    (× in the corner) still click; resize edges win over drag so the
 //    title bar's top sliver + corners resize rather than move
-//  - edges: mousemove shows the resize cursor; mousedown starts the
-//    Go-driven size loop via "xicompanion:resize:<cursor>"
+//  - edges: mousemove draws the sky edge highlight; mousedown starts
+//    the Go-driven size loop via "xicompanion:resize:<cursor>"
 //  - drag: mousedown on a --wails-draggable:drag element (honoring
 //    no-drag) starts the Go-driven caption move via "xicompanion:drag"
 export function installWindowChrome() {
@@ -533,43 +541,77 @@ export function installWindowChrome() {
   updateFabMode();
   window.addEventListener('resize', updateFabMode);
 
-  // hovered resize edge → bright border hint, overlay-only so content
-  // doesn't reflow; the 'rc' class forces the resize cursor past
-  // per-element cursor rules (buttons would otherwise keep 'pointer')
-  let hlEl: HTMLDivElement | null = null;
-  const edgeHl = (edge: string | null) => {
-    if (!edge) {
-      hlEl?.remove();
-      hlEl = null;
-      return;
+
+
+
+  // static resize chrome — a visible frame at the client boundary plus
+  // corner glyphs where the native corner strips live. Marks the real
+  // edge instead of making the user guess; pointer-events none, the
+  // grab happens on the non-client band just outside.
+  if (!fabMode.value && !tooltipMode) {
+    const fr = document.createElement('div');
+    fr.className = 'resize-frame';
+    document.body.appendChild(fr);
+    const corners = document.createElement('div');
+    corners.className = 'resize-corners';
+    const GLYPHS: Record<string, string> = {
+      nw: '◤', ne: '◥', sw: '◣', se: '◢',
+      n: '≡', s: '≡', e: '⠿', w: '⠿',
+    };
+    for (const c of ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w']) {
+      const s = document.createElement('span');
+      s.className = 'rc-' + c;
+      s.textContent = GLYPHS[c];
+      corners.appendChild(s);
     }
-    if (!hlEl) {
-      hlEl = document.createElement('div');
-      hlEl.style.cssText =
-        'position:fixed;inset:0;pointer-events:none;z-index:9999;' +
-        'border:0 solid rgba(56,189,248,.85);';
-      document.body.appendChild(hlEl);
-    }
-    hlEl.style.borderWidth =
-      (edge[0] === 'n' ? '2px ' : '0 ') +
-      (edge.includes('e') ? '2px ' : '0 ') +
-      (edge[0] === 's' || edge === 'sw-resize' || edge === 'se-resize' || edge === 's-resize' ? '2px ' : '0 ') +
-      (edge.includes('w') ? '2px' : '0');
-  };
-  const setEdge = (edge: string | null) => {
-    const cursor = edge ?? '';
-    if (document.documentElement.style.cursor !== cursor) {
-      document.documentElement.style.cursor = cursor;
-    }
-    document.documentElement.classList.toggle('rc', edge !== null);
-    edgeHl(edge);
-  };
-  document.addEventListener('mousemove', (e) => {
-    if (e.buttons !== 0 || fabMode.value || tooltipMode) return; // no churn mid-drag / no edges on fab/tooltip
-    const region = dragRegionOf(e.target as HTMLElement);
-    setEdge(region === 'no-drag' ? null : edgeAt(e.clientX, e.clientY));
-  });
-  document.addEventListener('mouseleave', () => setEdge(null));
+    document.body.appendChild(corners);
+    // native resizes and caption drags both put the pointer on
+    // non-client pixels — no :hover — and neither produces a DOM
+    // signal directly (size events for resize, position deltas for
+    // drag). Arm the same class off whichever stream is live so the
+    // bare theme keeps its chip up while the window is manipulated.
+    let mt: ReturnType<typeof setTimeout> | null = null;
+    const armManip = () => {
+      document.body.classList.add('resizing');
+      if (mt) clearTimeout(mt);
+      mt = setTimeout(
+        () => document.body.classList.remove('resizing'),
+        250,
+      );
+    };
+    window.addEventListener('resize', armManip);
+    let px = screenX,
+      py = screenY;
+    setInterval(() => {
+      if (screenX !== px || screenY !== py) {
+        px = screenX;
+        py = screenY;
+        armManip();
+      }
+    }, 120);
+    // hovered — pointer activity keeps the class alive 2s past the
+    // last mousemove, so brief excursions onto the non-client band
+    // don't flicker the chrome. Stationary = out.
+    let ht: ReturnType<typeof setTimeout> | null = null;
+    document.addEventListener('mousemove', () => {
+      document.body.classList.add('hovered');
+      if (ht) clearTimeout(ht);
+      ht = setTimeout(
+        () => document.body.classList.remove('hovered'),
+        1000,
+      );
+    });
+    // edit mode — the settings window owns the toggle ('xic.edit'
+    // localStorage key); every window applies the class on load and
+    // follows changes through 'storage' events. Chrome is pure
+    // affordance — native resizing works either way.
+    const applyEdit = (on: boolean) =>
+      document.body.classList.toggle('edit-mode', on);
+    applyEdit(localStorage.getItem('xic.edit') === '1');
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'xic.edit') applyEdit(e.newValue === '1');
+    });
+  }
 
   document.addEventListener(
     'mousedown',
@@ -579,6 +621,10 @@ export function installWindowChrome() {
       if (e.button === 0) tell('xicompanion:raise');
       if (e.button !== 0 || fabMode.value) return;
       if (dragRegionOf(e.target as HTMLElement) === 'no-drag') return;
+      // interactive elements win over the edge zone — a button within
+      // 8px of the border must click, not resize-grab (this was both
+      // the eaten clicks and the cursor flicker near edge controls)
+      if (interactiveEl(e.target as HTMLElement)) return;
       // resize edges win over the drag region — the title bar's top
       // 8px sliver + corners resize instead of moving the window
       const edge =
@@ -594,21 +640,6 @@ export function installWindowChrome() {
         e.stopPropagation();
         tell('xicompanion:drag');
       }
-    },
-    true,
-  );
-
-  // every click hands keyboard focus back to the game — the webview
-  // claims foreground on click and losing game input mid-fight is the
-  // surprise we're avoiding. Text-entry elements keep focus so typing
-  // still works; the shell SetForegroundWindows FFXI on xicompanion:refocus.
-  document.addEventListener(
-    'mouseup',
-    (e) => {
-      if (e.button !== 0) return;
-      const t = e.target as HTMLElement | null;
-      if (t?.closest('input, textarea, [contenteditable="true"]')) return;
-      tell('xicompanion:refocus');
     },
     true,
   );

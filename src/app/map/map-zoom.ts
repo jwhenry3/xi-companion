@@ -17,3 +17,19 @@ export const loadZoom = (key: string, fallback: number) => {
 
 export const saveZoom = (key: string, v: number) =>
   localStorage.setItem(key, String(v));
+
+// hidden entity kinds — shared by /map and /minimap so the chips on
+// the map page also filter the floating radar; storage events carry
+// changes to the already-open window
+export const HIDE_KEY = 'xicompanion.map.hide';
+
+export const loadHidden = (): ReadonlySet<string> => {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(HIDE_KEY) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+};
+
+export const saveHidden = (s: ReadonlySet<string>) =>
+  localStorage.setItem(HIDE_KEY, JSON.stringify([...s]));

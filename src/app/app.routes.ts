@@ -1,53 +1,145 @@
 import { h } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
 import type { Route } from '@preact-mvc/core';
 import { FabMenu } from './fab';
-import { InventoryView } from './inventory/inventory.view';
-import { ChatView } from './chat/chat.view';
-import { MacrosView } from './macros/macros.view';
-import { MacroBarView } from './macrobar/macrobar.view';
-import { ProfileView } from './profile.view';
-import { SetsView } from './sets/sets.view';
-import { BindingsView } from './bindings/bindings.view';
-import { JournalView } from './journal/journal.view';
-import { TrackerView } from './tracker/tracker.view';
-import { CooldownsView } from './cooldowns/cooldowns.view';
-import { MapView } from './map/map.view';
-import { MinimapView } from './map/minimap.view';
-import { PartyView } from './party/party.view';
-import { TargetView } from './target/target.view';
-import { SkillchainView } from './skillchain/skillchain.view';
-import { VisibilityView } from './visibility/visibility.view';
-import { SettingsView } from './settings/settings.view';
-import { AbilitiesView } from './abilities/abilities.view';
+
+// Every spawned/detached window is its own app instance — an eager import
+// graph made even the tiniest panel pull the whole bundle. lazy() wraps a
+// route in a dynamic import so a window only fetches the view chunk it
+// renders (shared deps stay in the entry chunk).
+function lazy(load: () => Promise<any>) {
+  let Comp: any = null;
+  let failed = false;
+  let pending: Promise<any> | null = null;
+  return function LazyRoute() {
+    const [, tick] = useState(0);
+    useEffect(() => {
+      if (Comp || failed) return;
+      pending ??= load().then(
+        (m) => {
+          Comp = m;
+          tick((n) => n + 1);
+        },
+        (e) => {
+          failed = true;
+          console.error('route chunk failed to load', e);
+          tick((n) => n + 1);
+        },
+      );
+    }, []);
+    if (failed) return h('p', { class: 'p-1 text-xs text-slate-400' }, 'failed to load view');
+    return Comp ? h(Comp, null) : null;
+  };
+}
 
 export const routes: Route[] = [
-  { path: '/', component: InventoryView },
-  { path: '/chat', component: ChatView },
-  { path: '/journal', component: JournalView },
-  { path: '/map', component: MapView },
+  {
+    path: '/',
+    component: lazy(() =>
+      import('./inventory/inventory.view').then((m) => m.InventoryView),
+    ),
+  },
+  {
+    path: '/chat',
+    component: lazy(() => import('./chat/chat.view').then((m) => m.ChatView)),
+  },
+  {
+    path: '/journal',
+    component: lazy(() =>
+      import('./journal/journal.view').then((m) => m.JournalView),
+    ),
+  },
+  {
+    path: '/map',
+    component: lazy(() => import('./map/map.view').then((m) => m.MapView)),
+  },
   // no NAV entries — these are detached-window routes (quest tracker,
   // clickable macro bar, cooldown list, minimap)
-  { path: '/tracker', component: TrackerView },
-  { path: '/macrobar', component: MacroBarView },
-  { path: '/cooldowns', component: CooldownsView },
-  { path: '/minimap', component: MinimapView },
-  { path: '/party', component: PartyView },
-  { path: '/target', component: TargetView },
-  { path: '/skillchain', component: SkillchainView },
-  // the collapse-all handle — spawnWindow starts it on every launch
-  { path: '/visibility', component: VisibilityView },
+  {
+    path: '/tracker',
+    component: lazy(() =>
+      import('./tracker/tracker.view').then((m) => m.TrackerView),
+    ),
+  },
+  {
+    path: '/macrobar',
+    component: lazy(() =>
+      import('./macrobar/macrobar.view').then((m) => m.MacroBarView),
+    ),
+  },
+  {
+    path: '/cooldowns',
+    component: lazy(() =>
+      import('./cooldowns/cooldowns.view').then((m) => m.CooldownsView),
+    ),
+  },
+  {
+    path: '/minimap',
+    component: lazy(() =>
+      import('./map/minimap.view').then((m) => m.MinimapView),
+    ),
+  },
+  {
+    path: '/party',
+    component: lazy(() => import('./party/party.view').then((m) => m.PartyView)),
+  },
+  {
+    path: '/target',
+    component: lazy(() =>
+      import('./target/target.view').then((m) => m.TargetView),
+    ),
+  },
+  {
+    path: '/skillchain',
+    component: lazy(() =>
+      import('./skillchain/skillchain.view').then((m) => m.SkillchainView),
+    ),
+  },
+
   // the shared fab dropdown window — never user-navigable
   { path: '/fabmenu', component: FabMenu },
-  { path: '/settings', component: SettingsView },
-  { path: '/macros', component: MacrosView },
-  { path: '/abilities', component: AbilitiesView },
+  {
+    path: '/settings',
+    component: lazy(() =>
+      import('./settings/settings.view').then((m) => m.SettingsView),
+    ),
+  },
+  {
+    path: '/macros',
+    component: lazy(() =>
+      import('./macros/macros.view').then((m) => m.MacrosView),
+    ),
+  },
+  {
+    path: '/abilities',
+    component: lazy(() =>
+      import('./abilities/abilities.view').then((m) => m.AbilitiesView),
+    ),
+  },
   {
     path: '/profile',
-    component: ProfileView,
+    component: lazy(() =>
+      import('./profile.view').then((m) => m.ProfileView),
+    ),
     children: [
-      { path: '', component: SetsView },
-      { path: 'sets', component: SetsView },
-      { path: 'bindings', component: BindingsView },
+      {
+        path: '',
+        component: lazy(() =>
+          import('./sets/sets.view').then((m) => m.SetsView),
+        ),
+      },
+      {
+        path: 'sets',
+        component: lazy(() =>
+          import('./sets/sets.view').then((m) => m.SetsView),
+        ),
+      },
+      {
+        path: 'bindings',
+        component: lazy(() =>
+          import('./bindings/bindings.view').then((m) => m.BindingsView),
+        ),
+      },
     ],
   },
   { path: '*', component: () => h('p', null, 'Not found.') },

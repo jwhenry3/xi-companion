@@ -264,7 +264,7 @@ export class TooltipView extends View {
         {pinned && (
           <div
             class="ffxi-panel-title flex h-6 items-center gap-1 pl-2 pr-1"
-            style={{ '--wails-draggable': 'drag' }}
+            style={{ '--wails-draggable': 'drag', 'app-region': 'drag', '-webkit-app-region': 'drag' }}
           >
             <span
               class={`min-w-0 flex-1 truncate text-[10px] font-medium ${itemNameClass(meta) || 'text-indigo-100'}`}
@@ -273,7 +273,7 @@ export class TooltipView extends View {
             </span>
             <button
               class="flex h-4 w-4 items-center justify-center rounded text-[11px] leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
-              style={{ '--wails-draggable': 'no-drag' }}
+              style={{ '--wails-draggable': 'no-drag', 'app-region': 'no-drag', '-webkit-app-region': 'no-drag' }}
               onClick={() => host.closeTooltip()}
             >
               ×

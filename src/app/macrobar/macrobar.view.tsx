@@ -1,21 +1,18 @@
 // Detached macro bar — the 20 Ctrl/Alt cells of one palette as clickable
 // buttons. A click POSTs /api/macros/run, which replays the macro's lines
 // through the client's input line just like pressing the keybind would.
-// No NAV entry; reached via "macro bar" on the Macros page or //xicompanion
-// macrobar. Char/book/page persist in localStorage so the bar reopens
-// where it was.
-import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
+// Standalone: it does NOT follow the client's active book/page — the
+// pickers live in the window title bar (macrobar.chrome). Multiple bars
+// can be open at once ("+" spawns /macrobar?n=<id>, an independent
+// selection + position). Char/book/page persist per instance.
+import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
-import { RefreshCw } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
 import type { MacroCharacter, MacroEntry } from '../core/types';
-import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { barBook, barChar, barPage, PALS_PER_BOOK } from './macrobar.state';
 
-const NUM_BOOKS = 40;
-const PALS_PER_BOOK = 10;
 const NUM_MACROS = 20;
-const LS_KEY = 'xicompanion.macrobar';
 
 const keyLabel = (i: number) =>
   `${i < 10 ? 'Ctrl' : 'Alt'}+${((i % 10) + 1) % 10}`;
@@ -24,17 +21,9 @@ const keyLabel = (i: number) =>
 export class MacroBarView extends View implements OnInit, OnDestroy {
   private api = inject(AddonApi);
 
-  private charId = signal('');
-  private book = signal(1);
-  private page = signal(1);
   private running = signal<number | null>(null);
   private err = signal<string | null>(null);
   private timer = 0;
-  private disposeSel?: () => void;
-  // suppress in-game follow briefly after a local pick — the client's
-  // mcr.sys write lands ~a poll later, and without the hold the effect
-  // snaps the picker back to the stale value before it can
-  private selHold = 0;
   private onFocus = () => void this.api.refreshMacros();
   private onStorage = (e: StorageEvent) => {
     if (e.key === 'xicompanion.macros.saved') this.onFocus();
@@ -43,56 +32,21 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
   private chars = computed(() => this.api.macros.value?.characters ?? []);
   private char = computed<MacroCharacter | null>(
     () =>
-      this.chars.value.find((c) => c.id === this.charId.value) ??
+      this.chars.value.find((c) => c.id === barChar.value) ??
       this.chars.value[0] ??
       null,
   );
-  private titles = computed(() => this.char.value?.titles ?? []);
   private paletteIndex = computed(
-    () => (this.book.value - 1) * PALS_PER_BOOK + (this.page.value - 1),
+    () => (barBook.value - 1) * PALS_PER_BOOK + (barPage.value - 1),
   );
   private macros = computed<MacroEntry[]>(
     () =>
       this.char.value?.palettes.find((p) => p.index === this.paletteIndex.value)
         ?.macros ?? [],
   );
-  private palsWithContent = computed(
-    () =>
-      new Set(
-        (this.char.value?.palettes ?? [])
-          .filter((p) => p.book === this.book.value)
-          .map((p) => p.palette),
-      ),
-  );
 
   onInit() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(LS_KEY) ?? 'null');
-      if (saved) {
-        this.charId.value = String(saved.char ?? '');
-        this.book.value = Number(saved.book) || 1;
-        this.page.value = Number(saved.page) || 1;
-      }
-    } catch {
-      // fresh state
-    }
     void this.api.refreshMacros();
-    void this.api.refreshMacroSel();
-    // follow the client's active palette: mcr.sys changes push a
-    // `macrosel` event → adopt its book/page when it names our char
-    // (the pickers' own in-game sync echoes back here harmlessly)
-    this.disposeSel = effect(() => {
-      const c = this.char.value;
-      const v = c ? this.api.macroSel.value[c.id] : undefined;
-      if (
-        v && Date.now() >= this.selHold &&
-        (v.b !== this.book.value || v.p !== this.page.value)
-      ) {
-        this.book.value = v.b;
-        this.page.value = v.p;
-        this.persist();
-      }
-    });
     // this window has its own api context — edits saved in the editor
     // window don't reach us, so refetch on save bumps, focus + a poll
     this.timer = window.setInterval(this.onFocus, 15000);
@@ -104,56 +58,6 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
     clearInterval(this.timer);
     window.removeEventListener('focus', this.onFocus);
     window.removeEventListener('storage', this.onStorage);
-    this.disposeSel?.();
-  }
-
-  private persist() {
-    localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({
-        char: this.char.value?.id ?? '',
-        book: this.book.value,
-        page: this.page.value,
-      }),
-    );
-  }
-
-  private pickChar(id: string) {
-    this.charId.value = id;
-    this.book.value = 1;
-    this.page.value = 1;
-    this.persist();
-  }
-
-  /** drive the client's own palette to the bar's selection — the whole
-   *  point of the pickers is to double as a quick in-game switcher.
-   *  Book switches re-load the book client-side, so only send one when
-   *  the book actually changed (rapid re-loads risk the PR #1892 wipe) */
-  private syncInGame(bookChanged: boolean) {
-    if (!this.api.macros.value?.logged_in) return;
-    if (bookChanged) {
-      void this.api.sendCommand(`input /macro book ${this.book.value}`);
-    }
-    void this.api.sendCommand(`input /macro set ${this.page.value}`);
-  }
-
-  private pickBook(b: number) {
-    const changed = b !== this.book.value;
-    this.selHold = Date.now() + 2500;
-    this.book.value = b;
-    this.persist();
-    this.syncInGame(changed);
-  }
-
-  private pickPage(p: number) {
-    this.selHold = Date.now() + 2500;
-    this.page.value = p;
-    this.persist();
-    this.syncInGame(false);
-  }
-
-  private stepPage(d: -1 | 1) {
-    this.pickPage(((this.page.value - 1 + d + PALS_PER_BOOK) % PALS_PER_BOOK) + 1);
   }
 
   private async run(i: number) {
@@ -178,79 +82,13 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
     if (this.chars.value.length === 0) {
       return <p class="p-1 text-xs text-slate-400">no macro files found</p>;
     }
-    const c = this.char.value;
     const macros = this.macros.value;
     return (
-      <div class="flex h-full flex-col gap-2.5">
-        {/* pickers */}
-        <div class="flex items-center gap-2">
-          {this.chars.value.length > 1 && (
-            <Select
-              className="w-24"
-              value={c?.id ?? ''}
-              options={this.chars.value.map((x) => ({ value: x.id, label: x.id }))}
-              onChange={(v) => this.pickChar(v)}
-            />
-          )}
-          <Select
-            className="w-40"
-            filterable
-            value={String(this.book.value)}
-            options={Array.from({ length: NUM_BOOKS }, (_, i) => {
-              const b = i + 1;
-              return {
-                value: String(b),
-                label: this.titles.value[i] || `Book ${b}`,
-              };
-            })}
-            onChange={(v) => this.pickBook(Number(v))}
-          />
-          <button
-            class="h-7 w-4 rounded border border-slate-700 text-[10px] text-slate-400 transition-colors hover:bg-slate-800"
-            title="previous page"
-            onClick={() => this.stepPage(-1)}
-          >
-            ‹
-          </button>
-          {Array.from({ length: PALS_PER_BOOK }, (_, i) => {
-            const p = i + 1;
-            const has = this.palsWithContent.value.has(p);
-            return (
-              <button
-                key={p}
-                class={cn(
-                  'h-7 w-6 rounded border text-[10px] transition-colors',
-                  p === this.page.value
-                    ? 'border-sky-500 bg-sky-500/15 text-sky-200'
-                    : 'border-slate-700 text-slate-400 hover:bg-slate-800',
-                )}
-                title={has ? `page ${p} (has macros)` : `page ${p} (empty)`}
-                onClick={() => this.pickPage(p)}
-              >
-                {has ? <strong>{p}</strong> : p}
-              </button>
-            );
-          })}
-          <button
-            class="h-7 w-4 rounded border border-slate-700 text-[10px] text-slate-400 transition-colors hover:bg-slate-800"
-            title="next page"
-            onClick={() => this.stepPage(1)}
-          >
-            ›
-          </button>
-          <button
-            class="ml-auto flex h-7 w-6 items-center justify-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-            title="reload macro files"
-            onClick={this.onFocus}
-          >
-            <RefreshCw size={12} />
-          </button>
-        </div>
-
+      <div class="flex h-full flex-col justify-start gap-1.5 pt-0.5">
         {/* ctrl + alt rows */}
         {([0, 10] as const).map((rowStart) => (
           <div class="flex items-center gap-1.5" key={rowStart}>
-            <span class="w-7 shrink-0 text-[10px] text-slate-500">
+            <span class="w-7 shrink-0 text-[11px] text-slate-500">
               {rowStart === 0 ? 'Ctrl' : 'Alt'}
             </span>
             {Array.from({ length: 10 }, (_, k) => {

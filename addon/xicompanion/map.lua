@@ -39,6 +39,20 @@ local ls_char = nil          -- character the loaded sets belong to
 local ls_dirty = false
 local ls_next_save = 0
 
+-- Static points of interest (telepoints, homepoints, books, maws...) from
+-- the generated mappois.lua table (scripts/extract-pois.py). Entries are
+-- world yalms {x, y=ns, z=height} per zone; they're projected through the
+-- client's get_map_data once per zone and cached as map px keyed by the
+-- sub-map id the projection assigns — the same transform entities use, so
+-- multi-map zones just work. Missing file just means no POI markers.
+local poi_world = {}
+do
+    local ok, t = pcall(dofile, plat.addon_path .. 'mappois.lua')
+    if ok and type(t) == 'table' then poi_world = t end
+end
+local poi_px = {}            -- zone -> {{x,y,m,k,n}} projected+cached
+local poi_miss = {}          -- zone -> true: projection attempted, none usable
+
 -- NM set: the client never reports notorious status (no entity flag,
 -- nothing in widescan packets) — so it's matched by name against the
 -- generated nm_names.lua table (bg-wiki Category:Notorious_Monster via
@@ -102,6 +116,40 @@ end
 
 local function grow_space(px)
     while px and px > mspace do mspace = mspace * 2 end
+end
+
+local function poi_for(zone)
+    local cached = poi_px[zone]
+    if cached then return cached end
+    if poi_miss[zone] then return nil end
+    local rows = poi_world[zone]
+    if not rows then
+        poi_miss[zone] = true
+        return nil
+    end
+    local out = {}
+    for _, p in ipairs(rows) do
+        local ok, mid, px, py = pcall(
+            plat.ffxi.get_map_data, p.x, p.y, p.z)
+        if not (ok and px) then
+            -- a few captured heights sit just outside a floor's band;
+            -- ground level picks the right sub-map for anything walkable
+            ok, mid, px, py = pcall(
+                plat.ffxi.get_map_data, p.x, p.y, 0)
+        end
+        if ok and px then
+            px = math.floor(px + 0.5)
+            py = math.floor(py + 0.5)
+            grow_space(math.max(math.abs(px), math.abs(py)))
+            out[#out + 1] = { x = px, y = py, m = mid, k = p.k, n = p.n }
+        end
+    end
+    if #out == 0 then
+        poi_miss[zone] = true
+        return nil
+    end
+    poi_px[zone] = out
+    return out
 end
 
 local function scan(now)
@@ -189,12 +237,26 @@ local function scan(now)
     for _, e in pairs(ws_list) do ws[#ws + 1] = e end
     for _, e in pairs(ws_pending) do ws[#ws + 1] = e end
 
+    -- POIs live on the sub-map their height projects to — only emit the
+    -- current map's set (mid changes as the player crosses floors)
+    local poi
+    local ptab = poi_for(zone)
+    if ptab then
+        poi = ctx.json_array and ctx.json_array({}) or {}
+        for _, p in ipairs(ptab) do
+            if p.m == mid then
+                poi[#poi + 1] = { x = p.x, y = p.y, k = p.k, n = p.n }
+            end
+        end
+    end
+
     return {
         z = zone, zn = zn, m = mid, ms = mspace, pos = pos,
         me = { x = mx, y = my, f = me.facing or 0 },
         e = ents,
         ws = ws,
         wsa = wsa and 1 or 0,
+        poi = poi,
     }
 end
 
@@ -334,6 +396,8 @@ function M.reset()
     ws_deadline = 0
     ws_list = {}
     ws_tracked = nil
+    poi_px = {}
+    poi_miss = {}
     mspace = 512
     last_payload = nil
 end

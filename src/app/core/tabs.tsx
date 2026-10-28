@@ -8,52 +8,52 @@ import { Link } from '@preact-mvc/core';
 import { cn } from '@/lib/utils';
 
 export function TabBar({
-  class: c,
-  children,
+ class: c,
+ children,
 }: {
-  class?: string;
-  children?: ComponentChildren;
+ class?: string;
+ children?: ComponentChildren;
 }) {
-  return (
-    <div
-      class={cn(
-        'flex items-end gap-0.5 border-b border-border px-2 pt-1.5',
-        c,
-      )}
-    >
-      {children}
-    </div>
-  );
+ return (
+ <div
+ class={cn(
+ 'flex items-end gap-0.5 border-b border-border px-2 pt-1.5',
+ c,
+ )}
+ >
+ {children}
+ </div>
+ );
 }
 
 export function Tab({
-  to,
-  onClick,
-  active,
-  class: c,
-  children,
+ to,
+ onClick,
+ active,
+ class: c,
+ children,
 }: {
-  /** router link target — omit for an in-page tab (renders a button) */
-  to?: string;
-  onClick?: () => void;
-  active: boolean;
-  class?: string;
-  children?: ComponentChildren;
+ /** router link target — omit for an in-page tab (renders a button) */
+ to?: string;
+ onClick?: () => void;
+ active: boolean;
+ class?: string;
+ children?: ComponentChildren;
 }) {
-  const cls = cn(
-    '-mb-px rounded-t-md border-x border-t border-border px-4 py-1.5 text-xs font-medium transition-colors',
-    active
-      ? 'bg-slate-900 text-sky-300'
-      : 'cursor-pointer border-transparent text-slate-500 hover:bg-slate-800/60 hover:text-slate-300',
-    c,
-  );
-  return to != null ? (
-    <Link to={to} class={cls}>
-      {children}
-    </Link>
-  ) : (
-    <button class={cls} onClick={onClick}>
-      {children}
-    </button>
-  );
+ const cls = cn(
+ '-mb-px rounded-t-md border-x border-t border-border px-4 py-1.5 text-xs font-medium transition-colors',
+ active
+ ? 'bg-slate-900 text-sky-300'
+ : ' border-transparent text-slate-500 hover:bg-slate-800/60 hover:text-slate-300',
+ c,
+ );
+ return to != null ? (
+ <Link to={to} class={cls}>
+ {children}
+ </Link>
+ ) : (
+ <button class={cls} onClick={onClick}>
+ {children}
+ </button>
+ );
 }

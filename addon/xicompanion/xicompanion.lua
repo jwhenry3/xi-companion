@@ -79,10 +79,6 @@ local defaults = {
     chat_custom_channels = {},
     -- opt-in: steal a key combo to open/focus our chat window while one
     -- is open — our composer opens instead of the client's chat line.
-    -- Format: [modifier+]*keyname — modifiers shift/ctrl/alt, key names
-    -- a-z 0-9 f1-f12 space enter tab slash comma period etc.
-    chat_space_focus = false,
-    chat_focus_hotkey = 'shift+space',
     swapui = {
         -- headless set scanner: custom[] holds sets added via `//xicompanion swap add`
         custom = {},
@@ -1606,6 +1602,20 @@ end
 
 local routes = {}
 
+-- detached-window spawn queue: the overlay drains it via /api/spawn
+-- on its status poll. Routes open as panels; '!show' surfaces the
+-- fab/uncollapses. Enqueuing beats launching the exe per panel — every
+-- launch blipped a taskbar entry (login = fab + up to 7 panels).
+local spawn_queue = {}
+local last_spawn_drain = 0
+
+routes['GET /api/spawn'] = function(conn)
+    last_spawn_drain = os.time()
+    local q = spawn_queue
+    spawn_queue = {}
+    send_json(conn, 200, { routes = q })
+end
+
 routes['GET /api/status'] = function(conn)
     send_json(conn, 200, {
         addon = _addon.name,
@@ -2195,6 +2205,7 @@ routes['GET /api/icon'] = function(conn, req)
     serve_icon(conn, req, 'icons', 'item_by_id')
 end
 
+
 -- menu spell/JA icons — pre-extracted from ROM/280/15.DAT + 324/95.DAT
 -- into data/menuicons/<idx>.bmp by scripts/extract-menuicons.py;
 -- menu_icon_names.lua maps index → "group/name" (e.g. "white/cure").
@@ -2478,9 +2489,9 @@ local SETTABLE = {
     port = 'number', autostart = 'boolean',
     fab = 'boolean', tracker = 'boolean', macrobar = 'boolean',
     cooldowns = 'boolean', skillchain = 'boolean',
+    minimap = 'boolean', party = 'boolean', target = 'boolean',
     poll_interval = 'number',
     chat_history = 'number', chat_tell_threads = 'number',
-    chat_space_focus = 'boolean', chat_focus_hotkey = 'string',
 }
 routes['GET /api/settings'] = function(conn)
     local out = {}
@@ -2952,10 +2963,27 @@ plat.on('incoming chunk', pump)
 -- button (bundled exe only — no Electron fallback, it's too heavy to
 -- auto-spawn). Returns true if something was launched.
 local function launch_overlay(fab, extra)
+    local spawned = false
+    for route in (extra or ''):gmatch('%-%-spawn[=%s]+(%S+)') do
+        spawn_queue[#spawn_queue + 1] = route
+        spawned = true
+    end
+    if not spawned then
+        spawn_queue[#spawn_queue + 1] = '!show'
+    end
+    -- overlay alive ⇒ it drains the queue within ~2s — no launch
+    -- needed (every exe start flashed a taskbar entry)
+    if os.time() - last_spawn_drain < 6 then
+        return true
+    end
     local exe = plat.addon_path .. 'overlay\\xicompanion-overlay.exe'
     if plat.file_exists(exe) then
-        os.execute('start "" "' .. exe .. '"' .. (fab and ' --fab' or '') ..
-            (extra and ' ' .. extra or ''))
+        local params = fab and '--fab' or ''
+        -- plat.spawn is console-free (ShellExecuteW); os.execute's
+        -- cmd /c fallback flashes a console that steals game focus
+        if not plat.spawn(exe, params) then
+            os.execute('start "" "' .. exe .. '" ' .. params)
+        end
         return true
     end
     if fab then return false end
@@ -2964,7 +2992,9 @@ local function launch_overlay(fab, extra)
     local script = plat.addon_path ..
         '..\\..\\gearswapui\\overlay\\launch.mjs'
     if plat.file_exists(script) then
-        os.execute('start "" node "' .. script .. '"')
+        if not plat.spawn('node.exe', '"' .. script .. '"', true) then
+            os.execute('start "" node "' .. script .. '"')
+        end
         return true
     end
     log_err('no overlay found (expected ' .. exe .. ')')
@@ -3277,9 +3307,15 @@ local function reset_state()
 end
 
 local function kill_overlay()
-    os.execute('taskkill /F /IM xicompanion-overlay.exe >nul 2>nul')
+    -- plat.kill_image TerminateProcess()es directly — taskkill.exe is
+    -- a console app and its window flashes even under SW_HIDE
+    if not plat.kill_image('xicompanion-overlay.exe') then
+        os.execute('taskkill /F /IM xicompanion-overlay.exe >nul 2>nul')
+    end
     -- transitional: pre-rename binary
-    os.execute('taskkill /F /IM xic-overlay.exe >nul 2>nul')
+    if not plat.kill_image('xic-overlay.exe') then
+        os.execute('taskkill /F /IM xic-overlay.exe >nul 2>nul')
+    end
 end
 
 local function session_start()

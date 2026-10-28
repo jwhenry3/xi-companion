@@ -801,4 +801,99 @@ end
 -- signature-normalized onto Windower's (dik, down, flags, blocked)
 function P.on_key(_fn) return nil end
 
+-- console-free process launch — same contract as the Windower side:
+-- ShellExecuteW never creates a console (os.execute's cmd /c flash
+-- steals game focus). SW_SHOWNA (8) for apps, SW_HIDE (0) for console
+-- tools like taskkill. Returns false on failure → os.execute fallback.
+local shell_exec
+do
+    local ok = pcall(ffi.cdef, [[
+        typedef const wchar_t* LPCWSTR;
+        intptr_t ShellExecuteW(void* hwnd, LPCWSTR verb, LPCWSTR file,
+            LPCWSTR params, LPCWSTR dir, int show);
+    ]])
+    if ok then
+        local ok2, shell32 = pcall(ffi.load, 'shell32.dll')
+        if ok2 then
+            local function wstr(s)
+                local b = ffi.new('uint16_t[?]', #s + 1)
+                for i = 1, #s do b[i - 1] = s:byte(i) end
+                return b
+            end
+            shell_exec = function(file, params, show)
+                local okc, r = pcall(shell32.ShellExecuteW,
+                    nil, nil, wstr(file),
+                    params and wstr(params) or nil, nil, show)
+                return okc and tonumber(r) > 32
+            end
+        end
+    end
+end
+
+function P.spawn(file, params, hide)
+    if not shell_exec then return false end
+    return shell_exec(file, params, hide and 0 or 8)
+end
+
+-- plat.kill_image(name) — terminate by image name without spawning
+-- taskkill.exe (its console window flashes). Returns false when no
+-- match/ffi missing → os.execute taskkill fallback.
+local kill_image
+do
+    local okc = pcall(ffi.cdef, [[
+        typedef struct {
+            unsigned long dwSize, cntUsage, th32ProcessID;
+            uintptr_t th32DefaultHeapID, th32ModuleID;
+            unsigned long cntThreads, th32ParentProcessID;
+            long pcPriClassBase;
+            unsigned long dwFlags;
+            wchar_t szExeFile[260];
+        } PROCESSENTRY32W;
+        void* CreateToolhelp32Snapshot(unsigned long, unsigned long);
+        int Process32FirstW(void*, PROCESSENTRY32W*);
+        int Process32NextW(void*, PROCESSENTRY32W*);
+        void* OpenProcess(unsigned long, int, unsigned long);
+        int TerminateProcess(void*, unsigned int);
+        int CloseHandle(void*);
+    ]])
+    local ok2, k32 = pcall(ffi.load, 'kernel32.dll')
+    if okc and ok2 then
+        kill_image = function(name)
+            local snap = k32.CreateToolhelp32Snapshot(2, 0)
+            if snap == nil or tonumber(ffi.cast('intptr_t', snap)) == -1 then
+                return false
+            end
+            local pe = ffi.new('PROCESSENTRY32W')
+            pe.dwSize = ffi.sizeof(pe)
+            local lower = name:lower()
+            local killed = false
+            if k32.Process32FirstW(snap, pe) ~= 0 then
+                repeat
+                    local b = {}
+                    for i = 0, 259 do
+                        local c = tonumber(pe.szExeFile[i])
+                        if c == 0 then break end
+                        b[#b + 1] = string.char(c)
+                    end
+                    if table.concat(b):lower() == lower then
+                        local h = k32.OpenProcess(0x0001, 0, pe.th32ProcessID)
+                        if h ~= nil and tonumber(ffi.cast('intptr_t', h)) ~= 0 then
+                            k32.TerminateProcess(h, 1)
+                            k32.CloseHandle(h)
+                            killed = true
+                        end
+                    end
+                until k32.Process32NextW(snap, pe) == 0
+            end
+            k32.CloseHandle(snap)
+            return killed
+        end
+    end
+end
+
+function P.kill_image(name)
+    if not kill_image then return false end
+    return kill_image(name)
+end
+
 return P

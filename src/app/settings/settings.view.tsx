@@ -244,7 +244,6 @@ export class SettingsView extends View implements OnInit, OnDestroy {
               {this.section(
                 'Overlay',
                 <>
-                  {this.boolRow('fab', 'floating button', 'auto-launch on login')}
                   {this.boolRow(
                     'tracker',
                     'quest tracker',
@@ -262,6 +261,23 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                   )}
                   {this.boolRow('party', 'party list', 'auto-launch on login')}
                   {this.boolRow('target', 'target bar', 'auto-launch on login')}
+                  <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={localStorage.getItem('xic.edit') === '1'}
+                      onChange={(e) => {
+                        const on = e.currentTarget.checked;
+                        // shared localStorage key — 'storage' events arm
+                        // every other overlay window automatically
+                        localStorage.setItem('xic.edit', on ? '1' : '0');
+                        document.body.classList.toggle('edit-mode', on);
+                      }}
+                    />
+                    resize handles
+                    <span class="text-[10px] text-slate-500">
+                      show frame + corner markers on all windows
+                    </span>
+                  </label>
                 </>,
               )}
               {this.section(
@@ -272,16 +288,6 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                   {this.numRow('poll_interval', 'poll interval (s)')}
                   {this.numRow('chat_history', 'chat history per thread')}
                   {this.numRow('chat_tell_threads', 'tell threads kept')}
-                  {this.boolRow(
-                    'chat_space_focus',
-                    'hotkey opens chat',
-                    'steals the combo while a chat window is open',
-                  )}
-                  {this.strRow(
-                    'chat_focus_hotkey',
-                    'chat hotkey',
-                    'e.g. shift+space — mods: shift/ctrl/alt',
-                  )}
                 </>,
               )}
               {host.inShell() &&

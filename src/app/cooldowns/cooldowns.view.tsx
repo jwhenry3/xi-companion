@@ -78,7 +78,7 @@ export class CooldownsView extends View implements OnInit, OnDestroy {
     if (cds.length === 0) {
       return (
         <div class="flex h-full items-center justify-center">
-          <p class="px-2 py-1 text-[10px] text-slate-400">
+          <p class="px-2 py-1 text-[11px] text-slate-400">
             no active cooldowns
           </p>
         </div>

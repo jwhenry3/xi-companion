@@ -413,7 +413,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
             </span>
           )}
         </span>
-        {hint && <span class="truncate text-[10px] text-slate-500">{hint}</span>}
+        {hint && <span class="truncate text-[11px] text-slate-500">{hint}</span>}
       </button>
     );
   }
@@ -507,12 +507,12 @@ export class JournalView extends View implements OnInit, OnDestroy {
                 )}%`}
               />
             </span>
-            <span class="w-14 text-right text-[10px] tabular-nums text-slate-400">
+            <span class="w-14 text-right text-[11px] tabular-nums text-slate-400">
               {e.target ? `${Math.min(e.progress, e.target)}/${e.target}` : e.progress}
             </span>
           </span>
         )}
-        <span class="w-8 shrink-0 text-right text-[10px] text-slate-600">
+        <span class="w-8 shrink-0 text-right text-[11px] text-slate-600">
           {e.id}
         </span>
       </button>
@@ -654,7 +654,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
               wiki
             </span>
             {this.wiki.value.state === 'loading' ? (
-              <span class="text-[10px] text-slate-600">…</span>
+              <span class="text-[11px] text-slate-600">…</span>
             ) : (
               <button
                 class="flex items-center gap-0.5 text-[10px] text-sky-400 hover:underline"
@@ -752,7 +752,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
     return (
       <PanelShell>
         <PanelSidebar>
-          <label class="flex shrink-0 items-center gap-1.5 border-b border-slate-800 px-3 py-1.5 text-[10px] text-slate-400">
+          <label class="flex shrink-0 items-center gap-1.5 border-b border-slate-800 px-3 py-1.5 text-[11px] text-slate-400">
             <input
               type="checkbox"
               checked={this.activeOnly.value}
@@ -773,7 +773,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
               ),
             )}
             {missionGroups.length === 0 && (
-              <p class="px-2 text-[10px] text-slate-600">none active</p>
+              <p class="px-2 text-[11px] text-slate-600">none active</p>
             )}
             <SidebarLabel>QUESTS</SidebarLabel>
             {questGroups.map((k) =>
@@ -785,13 +785,13 @@ export class JournalView extends View implements OnInit, OnDestroy {
               ),
             )}
             {questGroups.length === 0 && (
-              <p class="px-2 text-[10px] text-slate-600">none active</p>
+              <p class="px-2 text-[11px] text-slate-600">none active</p>
             )}
             <SidebarLabel>RECORDS OF EMINENCE</SidebarLabel>
             {(!activeOnly || hasActivity(j, names, 'roe', 'roe')) &&
               this.groupRow('roe', 'roe', 'Objectives', this.roeHint())}
             {activeOnly && !hasActivity(j, names, 'roe', 'roe') && (
-              <p class="px-2 text-[10px] text-slate-600">none active</p>
+              <p class="px-2 text-[11px] text-slate-600">none active</p>
             )}
           </SidebarBody>
           <SidebarFoot>
@@ -856,7 +856,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
               value={this.query.value}
               onInput={(e) => (this.query.value = e.currentTarget.value)}
             />
-            <label class="flex items-center gap-1 text-[10px] text-slate-400">
+            <label class="flex items-center gap-1 text-[11px] text-slate-400">
               <input
                 type="checkbox"
                 checked={this.showAll.value}

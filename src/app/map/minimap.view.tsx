@@ -8,7 +8,13 @@ import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { MapRadar } from './map-radar';
 import { resolveMapImage } from './map-image';
-import { radiusFor, loadZoom, saveZoom } from './map-zoom';
+import {
+  radiusFor,
+  loadZoom,
+  saveZoom,
+  loadHidden,
+  HIDE_KEY,
+} from './map-zoom';
 
 const ZOOM_KEY = 'xicompanion.minimap.zoom';
 
@@ -19,10 +25,17 @@ export class MinimapView extends View implements OnInit, OnDestroy {
   private mapImg = signal<string | null>(null);
   private imgFor = '';
   private pollTimer?: ReturnType<typeof setInterval>;
+  // entity kinds hidden on the map page — the chips live there; this
+  // view mirrors them via localStorage
+  private hiddenKinds = signal<ReadonlySet<string>>(loadHidden());
+  private onStorage = (e: StorageEvent) => {
+    if (e.key === HIDE_KEY) this.hiddenKinds.value = loadHidden();
+  };
 
   onInit() {
     void this.api.refreshMap();
     this.resolveImage();
+    window.addEventListener('storage', this.onStorage);
     // the window can spawn before the addon serves map state, or the img
     // fetch can fail — imgFor stays latched either way and nothing ever
     // retries for that zone, so poll until a real map image is up
@@ -41,6 +54,7 @@ export class MinimapView extends View implements OnInit, OnDestroy {
 
   onDestroy() {
     clearInterval(this.pollTimer);
+    window.removeEventListener('storage', this.onStorage);
   }
 
   private resolveImage() {
@@ -59,7 +73,14 @@ export class MinimapView extends View implements OnInit, OnDestroy {
     const radius = radiusFor(this.zoom.value, s?.ms ?? 512);
     return (
       <div class="relative h-full w-full">
-        <MapRadar s={s} radius={radius} img={this.mapImg.value} />
+        <MapRadar
+          s={s}
+          radius={radius}
+          img={this.mapImg.value}
+          entHide={this.hiddenKinds.value}
+          iconUrl={(id) => this.api.iconUrl(id)}
+          scale={1.2}
+        />
         {!!s?.pos && (
           <span class="absolute left-1 top-1 rounded bg-slate-900/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums leading-none text-slate-200">
             {s.pos}

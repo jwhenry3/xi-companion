@@ -2,11 +2,13 @@
 //
 // Thin window wrapper: the Lua addon's HTTP server stays the backend, this
 // process just finds it (probing 127.0.0.1:17890..17899 for /api/status,
-// or $GSUI_PORT if set) and shows it in a frameless always-on-top window.
+// or $GSUI_PORT if set) and shows it in a frameless window owned by the
+// game — an owned window always sits above its owner but is covered by
+// foreign apps, so no always-on-top/z-order machinery is needed.
 //
 // The window has two modes:
 //
-//	fab  — a small always-on-top floating button (--fab starts this way).
+//	fab  — a small floating button (--fab starts this way).
 //	       The addon spawns it on load; it survives //xicompanion hide/close/Esc.
 //	full — the whole XI Companion UI.
 //
@@ -30,7 +32,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,38 +66,34 @@ var (
 
 	pIsWindowVisible     = user32.NewProc("IsWindowVisible")
 	pIsWindow            = user32.NewProc("IsWindow")
-	pIsIconic            = user32.NewProc("IsIconic")
 	pShowWindow          = user32.NewProc("ShowWindow")
-	pSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	pGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	pSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	pSetWindowPos        = user32.NewProc("SetWindowPos")
 	pGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
 	pGetWindowLongPtr    = user32.NewProc("GetWindowLongPtrW")
 	pSetWindowLongPtr    = user32.NewProc("SetWindowLongPtrW")
 	pGetAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
 	pGetCursorPos        = user32.NewProc("GetCursorPos")
+	pSetCursor           = user32.NewProc("SetCursor")
+	pLoadImage           = user32.NewProc("LoadImageW")
 	pGetWindowRect       = user32.NewProc("GetWindowRect")
+	pSetClassLongPtr     = user32.NewProc("SetClassLongPtrW")
+	pCallWindowProc      = user32.NewProc("CallWindowProcW")
 	pDwmSetWindowAttr    = dwmapi.NewProc("DwmSetWindowAttribute")
 	pDwmExtendFrame      = dwmapi.NewProc("DwmExtendFrameIntoClientArea")
 	pDefWindowProc       = user32.NewProc("DefWindowProcW")
 	pGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
-	pGetMessage          = user32.NewProc("GetMessageW")
-	pSetWinEventHook     = user32.NewProc("SetWinEventHook")
-	pUnhookWinEvent      = user32.NewProc("UnhookWinEvent")
-	pTranslateMsg        = user32.NewProc("TranslateMessage")
-	pDispatchMsg         = user32.NewProc("DispatchMessageW")
 	pBeginPaint          = user32.NewProc("BeginPaint")
 	pEndPaint            = user32.NewProc("EndPaint")
 
-	gdi32               = syscall.NewLazyDLL("gdi32.dll")
+	gdi32 = syscall.NewLazyDLL("gdi32.dll")
 
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
 	pFindWindowW               = user32.NewProc("FindWindowW")
 	pEnumWindows               = user32.NewProc("EnumWindows")
 	pGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
-	pAttachThreadInput         = user32.NewProc("AttachThreadInput")
-	pGetCurrentThreadId        = kernel32.NewProc("GetCurrentThreadId")
 	pOpenProcess               = kernel32.NewProc("OpenProcess")
 	pCloseHandle               = kernel32.NewProc("CloseHandle")
 	pQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
@@ -105,9 +102,7 @@ var (
 const (
 	swHide        = 0
 	swShowNA      = 8 // show without activating — restores must not steal fg
-	swRestore     = 9
-	hwndTopmost   = ^uintptr(0) // (HWND)-1
-	hwndNoTopmost = ^uintptr(1) // (HWND)-2
+	hwndTop       = 0 // HWND_TOP — top of the normal (non-topmost) band
 	swpNoSize     = 0x0001
 	swpNoMove     = 0x0002
 	swpNoZOrder   = 0x0004
@@ -116,6 +111,8 @@ const (
 	swpShowWindow = 0x0040 //nolint:unused — kept with the SWP_* family
 
 	gwlExStyle      = ^uint32(19) // GWL_EXSTYLE (-20)
+	gwlStyle        = ^uint32(15) // GWL_STYLE (-16)
+	wsThickFrame    = 0x00040000  // WS_THICKFRAME
 	gwlpOwner       = ^uint32(7)  // GWLP_HWNDPARENT (-8)
 	gwHwndNext      = 2           //nolint:unused — kept with the GW_* family
 	wsExLayered     = 0x00080000
@@ -133,19 +130,6 @@ const (
 	htBottom      = 15
 	htBottomLeft  = 16
 	htBottomRight = 17
-
-	wsExTopmost    = 0x00000008
-	// out of the BitBlt so only real desktop content frosts
-
-	// EVENT_OBJECT_LOCATIONCHANGE + out-of-context queue delivery —
-	// the backing follows overlay moves at event speed instead of the
-	// 16ms paint cadence (kills drag jitter)
-
-	// EVENT_SYSTEM_FOREGROUND — instant topmost refresh on focus flips
-	// (the 300ms poll stays as a drift fallback, but the flicker window
-	// was its latency)
-	evtForeground  = 0x0003
-	wineventSkipOwn = 0x0002
 )
 
 // edge hit-test codes (same values WM_NCHITTEST reports)
@@ -174,7 +158,7 @@ func findFFXIWindow() uintptr {
 		if h, _, _ := pFindWindowW.Call(uintptr(unsafe.Pointer(cls)), 0); h != 0 {
 			return h
 		}
-		log.Print("refocus: FFXiClass lookup failed, scanning for pol.exe")
+		log.Print("ffxi: FFXiClass lookup failed, scanning for pol.exe")
 	}
 	var found uintptr
 	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
@@ -208,7 +192,7 @@ func findFFXIWindow() uintptr {
 	})
 	pEnumWindows.Call(cb, 0)
 	if found == 0 {
-		log.Print("refocus: no pol.exe window found either")
+		log.Print("ffxi: no pol.exe window found either")
 	}
 	return found
 }
@@ -233,12 +217,13 @@ func ourHwnd(hwnd uintptr) bool {
 	return false
 }
 
-// focus-topmost: the windows hold always-on-top only while the game (or
-// one of our own windows — interacting with the overlay counts) is
-// foreground; a foreign app getting focus drops every window back to
-// normal z-order so it can't float over other apps. A ~300ms poll flips
-// each tracked hwnd's TOPMOST bit to match — spawned windows pick the
-// current state up within a tick of being born.
+// game ownership: every top-level overlay window is OWNED by the FFXI
+// game window (GWLP_HWNDPARENT). An owned window always sits above its
+// owner — it can never slide under the game — but is covered by any
+// foreign app's windows, so the whole overlay family tracks the game's
+// layering exactly, with no TOPMOST flag and no z-order polling. Owned
+// windows also hide and are destroyed with their owner: game exit (or
+// a recreated game frame) takes the family down with it.
 var ffxiHwnd atomic.Uintptr
 
 // isFFXIProcess: hwnd thuộc pol.exe? — so bằng process image thay vì hwnd
@@ -267,178 +252,114 @@ func isFFXIProcess(hwnd uintptr) bool {
 	return strings.EqualFold(filepath.Base(syscall.UTF16ToString(buf[:n])), "pol.exe")
 }
 
-func applyFocusTopmost(hwnd uintptr, want bool) {
+// gameHwnd resolves (and caches) the FFXI game window — the owner of
+// every top-level overlay window. Only ever stores a live hwnd; a dead
+// cache entry retries the lookup on the next call.
+func gameHwnd() uintptr {
+	if ffxi := ffxiHwnd.Load(); ffxi != 0 {
+		return ffxi
+	}
+	ffxi := findFFXIWindow()
+	ffxiHwnd.Store(ffxi)
+	return ffxi
+}
+
+// ownToGame makes the game window this window's owner
+// (GWLP_HWNDPARENT — the same trick the tooltip/fab-menu ownership
+// uses; a window can't be owned by a window in its own chain, and the
+// game is always the top of ours).
+func ownToGame(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	cur, _, _ := pGetWindowLongPtr.Call(hwnd, uintptr(gwlExStyle))
-	if (cur&wsExTopmost != 0) == want {
-		return // already in the desired state
+	if g := gameHwnd(); g != 0 {
+		pSetWindowLongPtr.Call(hwnd, uintptr(gwlpOwner), g)
 	}
-	pos := hwndNoTopmost
-	if want {
-		pos = hwndTopmost
-	}
-	pSetWindowPos.Call(hwnd, pos, 0, 0, 0, 0,
-		swpNoMove|swpNoSize|swpNoActivate)
 }
 
-func refreshTopmost() {
-	fg, _, _ := pGetForegroundWindow.Call()
-	ffxi := ffxiHwnd.Load()
-	if r, _, _ := pIsWindow.Call(ffxi); ffxi == 0 || r == 0 {
-		ffxi = findFFXIWindow()
-		ffxiHwnd.Store(ffxi)
-	}
-	want := fg != 0 && (fg == ffxi || ourHwnd(fg) || isFFXIProcess(fg))
-	// Snapshot our hwnds first — TryLock like the old loop: this runs
-	// inside the WinEvent callback where blocking on spawnMu can stall
-	// the hook thread (a held spawn lock + hook-thread wait = the
-	// focus path freezing and game keys dying).
-	ours := map[uintptr]bool{
-		windowHwnd.Load(): true,
-		tooltipHwnd.Load(): true,
-		fabMenuHwnd.Load(): true,
-	}
-	if spawnMu.TryLock() {
-		for _, sw := range spawned {
-			if sw.NativeWindow() != nil {
-				ours[hwndOf(sw)] = true
-			}
+// ownAllToGame catches windows spawned before the game hwnd resolved —
+// the fab bar and the editor panels. Fab-layer panels and the fab menu
+// stay owned by the bar, the tooltip by its summoner (those chains
+// still top out at the game).
+func ownAllToGame() {
+	ownToGame(windowHwnd.Load())
+	spawnMu.Lock()
+	var list []*application.WebviewWindow
+	for k, sw := range spawned {
+		if !fabLayerSpawned(strings.SplitN(k, "?", 2)[0]) {
+			list = append(list, sw)
 		}
-		spawnMu.Unlock()
 	}
-	// Re-asserting TOPMOST moves a window to the top of the topmost
-	// band — iterating spawn order let the last entry (e.g. skillchain)
-	// jump over windows the user just raised. EnumWindows walks the
-	// desktop in z-order; filtering to ours and applying bottom→top
-	// keeps the user's stacking through the transition.
-	var order []uintptr
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if ours[hwnd] {
-			order = append(order, hwnd)
-		}
-		return 1
-	})
-	pEnumWindows.Call(cb, 0)
-	for i := len(order) - 1; i >= 0; i-- {
-		applyFocusTopmost(order[i], want)
+	spawnMu.Unlock()
+	for _, sw := range list {
+		ownToGame(hwndOf(sw))
 	}
 }
 
-func focusTopmostLoop() {
-	// the WinEvent hook reacts to foreground changes instantly — this
-	// stays as a low-rate safety net for drift the events don't cover
-	for range time.Tick(500 * time.Millisecond) {
-		refreshTopmost()
-	}
-}
-
-// fires on EVENT_SYSTEM_FOREGROUND — out-of-context queue delivery like
-// the location hook; refreshes topmost at event speed instead of poll
-// cadence, which is what made the on-top flip visibly flicker
-var foregroundHookProc = syscall.NewCallback(
-	func(hook, event, hwnd, idObject, idChild, tid, ms uintptr) uintptr {
-		refreshTopmost()
-		return 0
-	})
-
-func topmostHookThread() {
-	runtime.LockOSThread()
-	// no SKIPOWNPROCESS — an event from our own windows (fab menu
-	// activating, a panel stealing focus mid-drag) is exactly the
-	// refresh we need; recomputing want is cheap anyway
-	pSetWinEventHook.Call(evtForeground, evtForeground, 0,
-		foregroundHookProc, 0, 0, 0)
-	var msg struct {
-		Hwnd uintptr
-		Msg  uint32
-		W, L uintptr
-		Time uint32
-		X, Y int32
-	}
-	for {
-		r, _, _ := pGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if int32(r) <= 0 {
-			return
-		}
-		pTranslateMsg.Call(uintptr(unsafe.Pointer(&msg)))
-		pDispatchMsg.Call(uintptr(unsafe.Pointer(&msg)))
-	}
-}
-
-// refocusGame hands keyboard focus back to FFXI after an overlay
-// interaction — only when an overlay window actually holds foreground,
-// so a hide event while the user is in another app steals nothing.
-// The click already made our window foreground, which grants us
-// SetForegroundWindow rights — AttachThreadInput to the game's thread
-// widens that grant for the borderline cases.
-func refocusGame() {
-	hwnd := findFFXIWindow()
-	if hwnd == 0 {
-		return
-	}
-	fg, _, _ := pGetForegroundWindow.Call()
-	if fg == hwnd {
-		return
-	}
-	if !ourHwnd(fg) {
-		log.Printf("refocus: fg=%#x isn't an overlay window, skipping", fg)
-		return
-	}
-	// attach to the FOREGROUND window's thread (not the game's) — that
-	// inherits its SetForegroundWindow rights for this call
-	r := setForeground(hwnd)
-	log.Printf("refocus: fg=%#x ffxi=%#x setfg=%v", fg, hwnd, r)
-}
-
-// setForeground performs the AttachThreadInput-assisted
-// SetForegroundWindow — attaching the calling thread to the current
-// foreground window's thread inherits its foreground-grant, which is
-// what makes the call work both directions (game ← overlay and
-// overlay ← game, e.g. expanding the NOACTIVATE fab).
-func setForeground(target uintptr) bool {
-	fg, _, _ := pGetForegroundWindow.Call()
-	if fg == target {
-		return true
-	}
-	cur, _, _ := pGetCurrentThreadId.Call()
-	var pid uint32
-	fgTid, _, _ := pGetWindowThreadProcessId.Call(fg, uintptr(unsafe.Pointer(&pid)))
-	pAttachThreadInput.Call(cur, fgTid, 1)
-	r, _, _ := pSetForegroundWindow.Call(target)
-	pAttachThreadInput.Call(cur, fgTid, 0)
-	return r != 0
-}
-
-// refocusAfterActivate covers window creation/activation — Windows hands
-// a new/shown window foreground, which drops the game's keyboard focus.
-// Spawn bursts (login: fab + tracker + macrobar + cooldowns) activate
-// several windows a second or more apart — a WebView2's activation lands
-// well after its NewWithOptions returns — so a single per-call poll can
-// fire before the *last* window grabs focus. Calls instead share one
-// watcher: every call extends its deadline, and the watcher hands focus
-// back on EVERY overlay activation until the burst settles.
+// focusGameSoon hands keyboard focus to the game once a spawn burst
+// settles — debounced so a burst triggers ONE hand-back ~2s after the
+// last reveal. It only acts when a WS_EX_NOACTIVATE overlay window
+// somehow holds foreground (the only illegitimate path left — a
+// window can activate before its exstyle lands): editor focus earned
+// by a real click is never taken, the game itself and foreign apps
+// are never taken.
 var (
-	fgWatchUntil atomic.Int64 // UnixNano deadline
-	fgWatcherOn  atomic.Bool
+	focusDeadline atomic.Int64
+	focusWatchOn  atomic.Bool
 )
 
-func refocusAfterActivate() {
-	fgWatchUntil.Store(time.Now().Add(3 * time.Second).UnixNano())
-	if fgWatcherOn.CompareAndSwap(false, true) {
+func focusGameSoon() {
+	focusDeadline.Store(time.Now().Add(2 * time.Second).UnixNano())
+	if focusWatchOn.CompareAndSwap(false, true) {
 		go func() {
-			defer fgWatcherOn.Store(false)
-			for time.Now().UnixNano() < fgWatchUntil.Load() {
-				fg, _, _ := pGetForegroundWindow.Call()
-				if fg != 0 && ourHwnd(fg) {
-					refocusGame()
+			defer focusWatchOn.Store(false)
+			for {
+				rem := time.Until(time.Unix(0, focusDeadline.Load()))
+				if rem <= 0 {
+					break
 				}
-				time.Sleep(60 * time.Millisecond)
+				time.Sleep(rem)
+			}
+			fg, _, _ := pGetForegroundWindow.Call()
+			if fg == 0 || !ourHwnd(fg) {
+				return
+			}
+			ex, _, _ := pGetWindowLongPtr.Call(fg, uintptr(gwlExStyle))
+			if ex&wsExNoActivate == 0 {
+				return // a real (clickable) window — leave its focus
+			}
+			if g := gameHwnd(); g != 0 {
+				pSetForegroundWindow.Call(g)
 			}
 		}()
 	}
 }
+
+// watchGameHwnd keeps the owner resolved: it picks up the game window
+// when it appears late (overlay launched before login) and quits when
+// it dies — Windows destroys owned windows with their owner out-of-band
+// (no close path runs), so a dead owner means every overlay hwnd is
+// already gone and the shell can only exit for a respawn.
+func watchGameHwnd() {
+	for range time.Tick(time.Second) {
+		if ffxi := ffxiHwnd.Load(); ffxi != 0 {
+			if r, _, _ := pIsWindow.Call(ffxi); r == 0 {
+				log.Print("game window gone — owned windows went with it, quitting")
+				app.Quit()
+				return
+			}
+			continue
+		}
+		if g := gameHwnd(); g != 0 {
+			ownAllToGame()
+		}
+	}
+}
+
+// No focus manipulation anywhere: panels that must never take keyboard
+// carry WS_EX_NOACTIVATE, everything else activates natively. Earlier
+// builds fought activation with SetForegroundWindow hand-backs — a
+// focus ping-pong that could wedge game input entirely.
 
 // openURL hands a page-requested link to the system browser — the
 // webview itself must never navigate off the addon origin.
@@ -536,15 +457,118 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 			uintptr(int64(r-l)), uintptr(int64(b-t)),
 			swpNoActivate|swpNoZOrder)
 	}
-	// drop-snap: pin the final rect to 4px intervals — edges AND size
-	// (snapping both edges keeps the delta a multiple of 4)
-	snap := func(v int32) int32 { return (v + 2) &^ 3 }
+	// drop-snap: pin the final rect to 8px intervals — edges AND size
+	// (snapping both edges keeps the delta a multiple of 8)
+	snap := func(v int32) int32 { return (v + 4) &^ 7 }
 	sl, st, sr, sb := snap(l), snap(t), snap(r), snap(b)
 	pSetWindowPos.Call(hwnd, 0,
 		uintptr(int64(sl)), uintptr(int64(st)),
 		uintptr(int64(sr-sl)), uintptr(int64(sb-st)),
 		swpNoActivate|swpNoZOrder)
-	refocusGame()
+}
+
+
+// ------------------------------------------------------ cursor subclass
+
+// Non-client pixels (resize border, caption) get WM_SETCURSOR answered
+// by DefWindowProc — system sizing arrows/arrow that race the game's XI
+// assertion at mouse-message rate. Swallow the message for non-HTCLIENT
+// hit tests: leave whatever cursor is standing (the game's XI) alone.
+const (
+	wmSetCursor = 0x0020
+	htClient    = 1
+	gwlpWndProc = ^uint32(3) // GWLP_WNDPROC (-4)
+)
+
+var (
+	origWndProc sync.Map // hwnd -> previous WNDPROC
+	xiWndProcCb = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr) uintptr {
+		if msg == wmSetCursor && lparam&0xFFFF != htClient {
+			return 1
+		}
+		if orig, ok := origWndProc.Load(hwnd); ok {
+			r, _, _ := pCallWindowProc.Call(orig.(uintptr), hwnd, msg, wparam, lparam)
+			return r
+		}
+		r, _, _ := pDefWindowProc.Call(hwnd, msg, wparam, lparam)
+		return r
+	})
+)
+
+func subclassWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	if _, loaded := origWndProc.Load(hwnd); loaded {
+		return
+	}
+	if orig, _, _ := pSetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc), xiWndProcCb); orig != 0 {
+		origWndProc.Store(hwnd, orig)
+	}
+}
+
+// setClassCursor gives a top-level window the XI cursor as its class
+// cursor (GCLP_HCURSOR) — the same mechanism FFXI's own window uses:
+// Windows itself then asserts XI on every client/caption WM_SETCURSOR,
+// no polling, no race, identical to game pixels.
+func setClassCursor(hwnd uintptr) {
+	if hwnd != 0 {
+		pSetClassLongPtr.Call(hwnd, ^uintptr(13), xiCursor())
+	}
+}
+
+// ------------------------------------------------------ cursor assert
+
+// Mirrors the game's own hardware-cursor behavior: it SetCursors its XI
+// cursor every frame whenever the pointer's position is inside its
+// window rect — positionally, ignoring what's stacked on top. We do the
+// same for our rects with the same image, so our windows behave
+// cursor-identical to game pixels. Rect containment (not WindowFromPoint)
+// is the right test because it's the game's test.
+var (
+	xiCur     atomic.Uintptr
+	xiCurOnce sync.Once
+)
+
+// xiCursor loads the XI cursor shipped beside the UI (public/ → ui/) —
+// mousenor.ani first (the animated resource the game actually uses in
+// hardware-mouse mode), mousenor.cur as a static fallback.
+func xiCursor() uintptr {
+	xiCurOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		dir := filepath.Join(filepath.Dir(exe), "..", "ui")
+		for _, name := range []string{"mousenor.ani", "mousenor.cur"} {
+			full, _ := syscall.UTF16PtrFromString(filepath.Join(dir, name))
+			if h, _, _ := pLoadImage.Call(0, uintptr(unsafe.Pointer(full)),
+				2, 0, 0, 0x10|0x8000, // IMAGE_CURSOR, LR_LOADFROMFILE|LR_SHARED
+			); h != 0 {
+				xiCur.Store(h)
+				return
+			}
+		}
+	})
+	return xiCur.Load()
+}
+
+// thickFrame gives the window a real WS_THICKFRAME so the non-client
+// resize border lives OUTSIDE the client rect — an invisible margin
+// (frameless decorations still hide it) instead of the outer ~8px of
+// content pixels the native hit-test was borrowing. The webview insets
+// automatically; the edge zone stops overlapping content.
+func thickFrame(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	cur, _, _ := pGetWindowLongPtr.Call(hwnd, uintptr(gwlStyle))
+	if cur == 0 || cur&wsThickFrame != 0 {
+		return
+	}
+	pSetWindowLongPtr.Call(hwnd, uintptr(gwlStyle), cur|wsThickFrame)
+	pSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChg)
 }
 
 // setStyleFlag flips a GWL_EXSTYLE bit and nudges the frame to apply.
@@ -616,22 +640,6 @@ type bitmapInfoHeader struct {
 	ClrImportant  uint32
 }
 
-
-
-
-
-
-
-
-
-
-
-
-func isIconic(hwnd uintptr) bool {
-	r, _, _ := pIsIconic.Call(hwnd)
-	return r != 0
-}
-
 func isVisible(hwnd uintptr) bool {
 	r, _, _ := pIsWindowVisible.Call(hwnd)
 	return r != 0
@@ -644,11 +652,11 @@ func screenSize() (int, int) {
 }
 
 // resolveHwnd waits for the window's native hwnd and stores it — the
-// caller's store feeds SetForegroundWindow / exstyle flips / tooltip
-// ownership (spawned windows pass nil; their hwnd is only needed for
-// one-shot style flips at spawn time). No periodic z-order asserts:
-// polling re-asserts caused visible flicker as windows popped to
-// band-top and back, so stacking is left to Windows + xicompanion:raise.
+// caller's store feeds SetForegroundWindow / exstyle flips / ownership
+// (spawned windows pass nil; their hwnd is only needed for the one-shot
+// ownership apply at spawn time). Stacking needs no periodic asserts —
+// game ownership does the layering; xicompanion:raise handles
+// user-initiated lifts.
 func resolveHwnd(w *application.WebviewWindow, store *atomic.Uintptr) {
 	var hwnd uintptr
 	for tries := 0; hwnd == 0; tries++ {
@@ -682,7 +690,7 @@ type geometry struct {
 	// window the user left up comes back (close marks it false)
 	Open map[string]bool `json:"open,omitempty"`
 	// collapse-all toggle — persists so a reload can't strand the UI
-	// hidden with no way back (the visibility window still surfaces)
+	// hidden with no way back (a //xicompanion relaunch uncollapses)
 	Collapsed bool `json:"collapsed,omitempty"`
 }
 
@@ -820,8 +828,7 @@ func expand() {
 // xic:collapse|hide simply takes it off screen
 func collapse() {
 	if win != nil && win.NativeWindow() != nil {
-		win.Hide()
-		refocusGame()
+		pShowWindow.Call(hwndOf(win), swHide)
 	}
 }
 
@@ -868,7 +875,6 @@ func quit() {
 	x, y := win.Position()
 	setFabGeom(rect{X: x, Y: y, W: fabW, H: fabH})
 	saveGeometry()
-	refocusGame()
 	app.Quit()
 }
 
@@ -906,7 +912,7 @@ func trackGeometry() {
 // --------------------------------------------------------- spawned tabs
 
 // Detached per-tab windows ("pop out" in the header posts xicompanion:spawn:<path>).
-// Each is its own frameless always-on-top Webview2 window navigated to the
+// Each is its own frameless game-owned Webview2 window navigated to the
 // addon page with ?window=<path> — the app renders just that view plus a
 // slim title bar. Bounds persist per route in window.json.
 var (
@@ -918,7 +924,6 @@ var (
 	spawnMu       sync.Mutex
 	addonTarget   string      // probed addon base URL, set once found
 	backendHidden atomic.Bool // zoning blackout / cutscene flag
-	fgHidden      atomic.Bool // unused — foreign foreground no longer hides
 	collapsed     atomic.Bool // user collapse-all toggle (fab button)
 )
 
@@ -949,7 +954,7 @@ func spawnKey(route string) string {
 func fabLayerSpawned(key string) bool {
 	return key == "/tracker" || key == "/macrobar" || key == "/cooldowns" ||
 		key == "/minimap" || key == "/party" || key == "/target" ||
-		key == "/skillchain" || key == "/visibility"
+		key == "/skillchain"
 }
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
@@ -1045,6 +1050,11 @@ func navigateWhenReady(w *application.WebviewWindow, url func() string) {
 }
 
 func spawnWindow(route string) {
+	// /visibility is retired — a stale persisted open-state must not
+	// respawn a window on a dead route
+	if spawnKey(route) == "/visibility" {
+		return
+	}
 	// route may carry a deep-link query (/journal?g=&s=&id=) — the key
 	// is the bare path, the query rides into the spawned window's url
 	query := ""
@@ -1052,8 +1062,17 @@ func spawnWindow(route string) {
 		query = route[i+1:]
 	}
 	key := spawnKey(route)
+	// /macrobar is multi-instance: ?n=<id> gives each bar its own window,
+	// geometry slot and persisted open-state; key stays the bare path for
+	// route lookups (titles, fab layer, spawnPath), instKey for maps
+	instKey := key
+	if key == "/macrobar" && query != "" {
+		if qv, err := url.ParseQuery(query); err == nil && qv.Get("n") != "" {
+			instKey = key + "?n=" + qv.Get("n")
+		}
+	}
 	spawnMu.Lock()
-	if w, ok := spawned[key]; ok && w.NativeWindow() != nil {
+	if w, ok := spawned[instKey]; ok && w.NativeWindow() != nil {
 		spawnMu.Unlock()
 		if query != "" {
 			// deep-link into the already-open window — same in-page
@@ -1063,17 +1082,9 @@ func spawnWindow(route string) {
 				"window.__xicNavigate ? __xicNavigate(%s) : location.assign(%s)",
 				strconv.Quote(nav), strconv.Quote(nav)))
 		}
-		if fabLayerSpawned(key) {
-			// NOACTIVATE panels can't hold keyboard focus — Focus() would
-			// just bounce fg off the game and back; show them inertly
-			go func() { pShowWindow.Call(hwndOf(w), swShowNA) }()
-		} else {
-			go func() {
-				w.Show()
-				w.Focus()
-			}()
-			refocusAfterActivate()
-		}
+		// never activate on re-show — the user focuses a panel by
+		// clicking it
+		go func() { pShowWindow.Call(hwndOf(w), swShowNA) }()
 		return
 	}
 	spawnMu.Unlock()
@@ -1081,11 +1092,11 @@ func spawnWindow(route string) {
 	// race guard: a sibling spawnWindow for this route is already
 	// creating its window — only the first caller proceeds
 	spawnMu.Lock()
-	if spawnInFlight[key] {
+	if spawnInFlight[instKey] {
 		spawnMu.Unlock()
 		return
 	}
-	spawnInFlight[key] = true
+	spawnInFlight[instKey] = true
 	spawnMu.Unlock()
 
 	const minSW, minSH = 280, 180
@@ -1099,7 +1110,6 @@ func spawnWindow(route string) {
 		"/party":      "Party",
 		"/target":     "Target",
 		"/skillchain": "Skillchains",
-		"/visibility": "Visibility",
 	}
 	title, ok := spawnTitles[key]
 	if !ok {
@@ -1116,6 +1126,12 @@ func spawnWindow(route string) {
 		mw, mh = 200, 52
 	case "/party":
 		mw, mh = 200, 140
+	case "/macrobar":
+		// two rows of cells + the slim title bar — let it shrink to a
+		// strip instead of the generic 280x180 floor. +16px floor for the
+		// bottom resize band — at min height the edge zone would
+		// otherwise overlap the cells entirely
+		mw, mh = 260, 134
 	case "/macros":
 		// book sidebar + page grid + line editor
 		mw, mh = 520, 340
@@ -1129,7 +1145,7 @@ func spawnWindow(route string) {
 	opts := application.WebviewWindowOptions{
 		Title:            windowTitle + " — " + title,
 		Frameless:        true,
-		AlwaysOnTop:      true,
+		Hidden:           true,
 		BackgroundType:   application.BackgroundTypeTranslucent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
 		Width:            560,
@@ -1139,6 +1155,8 @@ func spawnWindow(route string) {
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
+			WebView2CompositionHosting:         true,
+			NonClientRegionSupport:            true,
 		},
 	}
 	// URL at creation skips the splash hop entirely — Wails navigates the
@@ -1169,12 +1187,6 @@ func spawnWindow(route string) {
 	case "/party":
 		// member rows with bars + buff chips — narrow column
 		opts.Width, opts.Height = 220, 300
-	case "/visibility":
-		// tiny always-up toggle — survives collapse-all as the restore
-		// handle; fixed-size bare button, nothing to resize
-		opts.Width, opts.Height = 48, 48
-		opts.DisableResize = true
-		opts.MinWidth, opts.MinHeight = 48, 48
 	case "/target":
 		// a slim name + HP + cast strip
 		opts.Width, opts.Height = 220, 64
@@ -1182,7 +1194,7 @@ func spawnWindow(route string) {
 		// three columns — chains+ws | burst spells | recent
 		opts.Width, opts.Height = 560, 280
 	}
-	if r := geomSnapshot().Windows[key]; r != nil && r.W >= mw && r.H >= mh {
+	if r := geomSnapshot().Windows[instKey]; r != nil && r.W >= mw && r.H >= mh {
 		opts.Width, opts.Height = r.W, r.H
 		opts.X, opts.Y = r.X, r.Y
 		// InitialPosition's zero value is WindowCentered — without
@@ -1193,8 +1205,8 @@ func spawnWindow(route string) {
 	w := app.Window.NewWithOptions(opts)
 
 	spawnMu.Lock()
-	spawned[key] = w
-	delete(spawnInFlight, key)
+	spawned[instKey] = w
+	delete(spawnInFlight, instKey)
 	spawnMu.Unlock()
 	// async — ExecJS waits on the main window's dispatcher; a synchronous
 	// call here would stall the navigation goroutines below (window
@@ -1208,34 +1220,60 @@ func spawnWindow(route string) {
 		pShowWindow.Call(hwndOf(w), swShowNA)
 	})
 
-	go resolveHwnd(w, nil)
-	if fabLayerSpawned(key) {
-		go func() {
-			// set as soon as the hwnd exists — activation can land well
-			// before the webview finishes initializing, and the flag is
-			// what keeps the panel (and its transparent margins) from
-			// ever stealing the game's keyboard
-			for i := 0; i < 60 && w.NativeWindow() == nil; i++ {
-				time.Sleep(50 * time.Millisecond)
-			}
-			if w.NativeWindow() == nil {
-				return
-			}
-			hwnd := uintptr(w.NativeWindow())
+	go func() {
+		// created Hidden — apply flags/ownership, THEN reveal with
+		// SW_SHOWNA: no path to foreground exists. (A window that lands
+		// fg before its NOACTIVATE exstyle is applied keeps it — that
+		// race locked the game's keyboard.)
+		for i := 0; i < 60 && w.NativeWindow() == nil; i++ {
+			time.Sleep(50 * time.Millisecond)
+		}
+		hwnd := hwndOf(w)
+		if hwnd == 0 {
+			return
+		}
+		setClassCursor(hwnd)
+		subclassWindow(hwnd)
+		thickFrame(hwnd)
+		if fabLayerSpawned(key) {
+			// keeps the panel (and its transparent margins) from ever
+			// stealing the game's keyboard
 			setStyleFlag(hwnd, wsExNoActivate, true)
-			// a fab-layer window (the tracker) is owned by the main
-			// window — owned windows always outrank their owner in
-			// z-order, so it can never slide under the UI (same trick as
-			// the item tooltip). It also follows the owner's hide during
-			// the blackout.
+			// a fab-layer window is owned by the main window — owned
+			// windows always outrank their owner in z-order, so it can
+			// never slide under the UI (same trick as the item
+			// tooltip). It also follows the owner's hide during the
+			// blackout.
 			for i := 0; i < 40 && windowHwnd.Load() == 0; i++ {
 				time.Sleep(50 * time.Millisecond)
 			}
 			if owner := windowHwnd.Load(); owner != 0 {
 				pSetWindowLongPtr.Call(hwnd, uintptr(gwlpOwner), owner)
 			}
-		}()
-	}
+		} else {
+			// editor panels own straight to the game — always above it,
+			// always under foreign apps, and they die with the owner.
+			// NOACTIVATE is held through the reveal (SW_SHOW can't
+			// activate a NOACTIVATE window) then cleared so the panel
+			// activates normally on user clicks — never on its own.
+			setStyleFlag(hwnd, wsExNoActivate, true)
+			ownToGame(hwnd)
+		}
+		// FIRST reveal goes through w.Show() — it wakes the WebView2
+		// controller a Hidden-created window starts without; every
+		// later hide/show stays raw swHide/swShowNA so the controller
+		// never re-hides (a raw reshow after w.Hide() paints nothing)
+		w.Show()
+		if !fabLayerSpawned(key) {
+			setStyleFlag(hwnd, wsExNoActivate, false)
+		}
+		// spawned while collapsed or mid-blackout (zoning) goes straight
+		// back down — the watchers restore it when the world comes back
+		if collapsed.Load() ||
+			(fabLayerSpawned(key) && backendHidden.Load()) {
+			pShowWindow.Call(hwnd, swHide)
+		}
+	}()
 	if addonTarget != "" {
 		armLoadRetry(w, func() string { return opts.URL })
 	} else {
@@ -1249,23 +1287,14 @@ func spawnWindow(route string) {
 			return navURL(target + spawnPath)
 		})
 	}
-	// spawned mid-blackout (zoning or foreign-foreground) starts hidden —
-	// the watchers restore it when the world/focus comes back
-	if (collapsed.Load() && key != "/visibility") ||
-		(fabLayerSpawned(key) && key != "/visibility" && backendHidden.Load()) {
-		w.Hide()
-	}
-	go trackSpawned(w, key)
-	setWindowOpen(key, true)
+	go trackSpawned(w, instKey)
+	setWindowOpen(instKey, true)
 	saveGeometry()
 	// stamp the current collapse-all state — queued ExecJS flushes
 	// once the page finishes loading
 	w.ExecJS(fmt.Sprintf(
 		"window.__xicCollapsed&&window.__xicCollapsed(%v)", collapsed.Load()))
 	log.Printf("spawned window %q", key)
-	// creation activated the window — hand focus back to the game once
-	// the hwnd lands in the spawned map
-	refocusAfterActivate()
 }
 
 // trackSpawned mirrors a spawned window's bounds into geom.Windows[key],
@@ -1324,7 +1353,6 @@ func toggleWindow(route string) {
 	if ok {
 		unownTooltip(hwndOf(w)) // owned windows die with the owner
 		w.Close()               // trackSpawned's teardown drops it + reports
-		refocusGame()
 		return
 	}
 	spawnWindow(route)
@@ -1339,8 +1367,15 @@ func windowsReport() {
 	}
 	spawnMu.Lock()
 	keys := make([]string, 0, len(spawned))
+	seen := map[string]bool{}
 	for k := range spawned {
-		keys = append(keys, k)
+		// instanced routes ("/macrobar?n=x") collapse to their base
+		// path — the menu only marks whether a panel kind is open
+		k = strings.SplitN(k, "?", 2)[0]
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
 	}
 	spawnMu.Unlock()
 	slices.Sort(keys)
@@ -1416,6 +1451,9 @@ func geomSet(arg string) {
 		}
 	}
 	if key == "fab" {
+		// the bar is fixed-size — only position is persisted/applied;
+		// a W/H in the message (or a stale saved one) can't inflate it
+		r.W, r.H = fabW, fabH
 		setFabGeom(r)
 	} else {
 		setWindowGeom(key, r)
@@ -1427,9 +1465,6 @@ func geomSet(arg string) {
 	if key == "fab" {
 		if win != nil && win.NativeWindow() != nil {
 			win.SetPosition(r.X, r.Y)
-			if r.W > 0 && r.H > 0 {
-				win.SetSize(r.W, r.H)
-			}
 		}
 		return
 	}
@@ -1477,7 +1512,6 @@ func closeFor(w application.Window) {
 			spawnMu.Unlock()
 			unownTooltip(hwndOf(sw)) // owned windows die with the owner
 			sw.Close()
-			refocusGame()
 			return
 		}
 	}
@@ -1546,64 +1580,6 @@ func isWindow(hwnd uintptr) bool {
 	return r != 0
 }
 
-// sameProcess reports whether two hwnds belong to the same process —
-// FFXI's own dialogs/IME surfaces still count as "game foreground".
-func sameProcess(a, b uintptr) bool {
-	if a == 0 || b == 0 {
-		return false
-	}
-	var pa, pb uint32
-	pGetWindowThreadProcessId.Call(a, uintptr(unsafe.Pointer(&pa)))
-	pGetWindowThreadProcessId.Call(b, uintptr(unsafe.Pointer(&pb)))
-	return pa != 0 && pa == pb
-}
-
-// applyFgHidden hides or restores the whole overlay family. Restores go
-// through SW_SHOWNA on the hwnd — w.Show() activates, which would steal
-// foreground right back from whatever the user switched to. The zoning
-// blackout still wins over a restore: windows it wants hidden stay down.
-func applyFgHidden(hide bool) {
-	if !fgHidden.CompareAndSwap(!hide, hide) {
-		return
-	}
-	log.Printf("fg-hidden=%v", hide)
-	op := uintptr(swHide)
-	if !hide {
-		op = swShowNA
-	}
-	apply := func(w application.Window) {
-		if w == nil {
-			return
-		}
-		if hwnd := hwndOf(w); hwnd != 0 {
-			pShowWindow.Call(hwnd, op)
-		}
-	}
-	if hide || !backendHidden.Load() {
-		apply(win) // blackout owns the fab — a restore must not resurface it
-	}
-	spawnMu.Lock()
-	var list []*application.WebviewWindow
-	keys := map[*application.WebviewWindow]string{}
-	for k, sw := range spawned {
-		list = append(list, sw)
-		keys[sw] = k
-	}
-	spawnMu.Unlock()
-	for _, sw := range list {
-		if !hide && backendHidden.Load() && fabLayerSpawned(keys[sw]) {
-			continue
-		}
-		apply(sw)
-	}
-	tooltipMu.Lock()
-	tw := tooltipWin
-	tooltipMu.Unlock()
-	if tw != nil {
-		apply(tw)
-	}
-}
-
 // applyCollapsed hides or restores the whole overlay family on the
 // user's collapse-all toggle — same mechanics as the old fg-hidden
 // path, but only fires on an explicit command. Restores go through
@@ -1645,9 +1621,6 @@ func applyCollapsed(hide bool) {
 	}
 	spawnMu.Unlock()
 	for _, sw := range list {
-		if keys[sw] == "/visibility" {
-			continue // the restore handle — never collapse it away
-		}
 		if !hide && backendHidden.Load() && fabLayerSpawned(keys[sw]) {
 			continue
 		}
@@ -1659,8 +1632,8 @@ func applyCollapsed(hide bool) {
 	if tw != nil {
 		apply(tw)
 	}
-	// keep every page's button state in sync — the visibility window
-	// and the fab both render the toggle
+	// keep every page's collapsed flag in sync — pages stash it for
+	// their own chrome decisions
 	b := fmt.Sprintf(
 		"window.__xicCollapsed&&window.__xicCollapsed(%v)", hide)
 	win.ExecJS(b)
@@ -1700,19 +1673,21 @@ func tooltipShow(caller application.Window, raw string) {
 		return
 	}
 	setTooltipOwner(hwndOf(caller))
+	setClassCursor(tooltipHwnd.Load())
+	subclassWindow(tooltipHwnd.Load())
 	setClickable(tooltipHwnd.Load(), m.Pinned)
 	payload, _ := json.Marshal(m)
 	w.ExecJS(fmt.Sprintf(
 		"window.__xicTooltip&&window.__xicTooltip(%s)", payload))
 	w.SetPosition(m.X, m.Y)
-	w.Show()
+	pShowWindow.Call(tooltipHwnd.Load(), swShowNA)
 }
 
 func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 	opts := application.WebviewWindowOptions{
 		Title:            windowTitle + " — item",
 		Frameless:        true,
-		AlwaysOnTop:      true,
+		Hidden:           true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
 		Width:            320,
@@ -1720,6 +1695,8 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
+			WebView2CompositionHosting:         true,
+			NonClientRegionSupport:            true,
 		},
 	}
 	// URL at creation skips the splash hop (see spawnWindow)
@@ -1739,7 +1716,7 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 	tooltipMu.Unlock()
 
 	w.OnWindowEvent(events.Common.WindowMinimise, func(e *application.WindowEvent) {
-		w.Show()
+		pShowWindow.Call(hwndOf(w), swShowNA)
 	})
 
 	go resolveHwnd(w, &tooltipHwnd)
@@ -1756,6 +1733,10 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 		setTooltipOwner(ownerHwnd)
 		setClickable(tooltipHwnd.Load(), m.Pinned)
 		w.SetPosition(m.X, m.Y)
+		// first reveal must be w.Show() — wakes the WebView2 controller
+		// Hidden-created windows start without; NOACTIVATE (set by
+		// setClickable) already holds so it can't activate
+		w.Show()
 	}()
 	if addonTarget != "" {
 		armLoadRetry(w, func() string { return opts.URL })
@@ -1777,7 +1758,7 @@ func tooltipHide() {
 	w := tooltipWin
 	tooltipMu.Unlock()
 	if w != nil && w.NativeWindow() != nil {
-		w.Hide()
+		pShowWindow.Call(hwndOf(w), swHide)
 	}
 	// the pinned window's × lands here — the main window's pinned flag
 	// lives in its own JS context, so nudge it over ExecJS
@@ -1846,7 +1827,10 @@ func fabMenuShow(arg string) {
 		"window.__xicMenu&&window.__xicMenu(%s)", strconv.Quote(group)))
 	mw.SetPosition(x, y)
 	mw.SetSize(w, h)
-	pShowWindow.Call(hwndOf(mw), swShowNA)
+	// w.Show() (not a raw reshow) — the window was created Hidden so
+	// its WebView2 controller needs waking; NOACTIVATE holds so the
+	// SW_SHOW inside can't activate it
+	mw.Show()
 	// refresh the ● open marks — a freshly-created menu's ExecJS queue
 	// flushes on page load, so this covers the create path too
 	go windowsReport()
@@ -1856,7 +1840,8 @@ func fabMenuCreate(group string, x, y, w, h int) {
 	opts := application.WebviewWindowOptions{
 		Title:            windowTitle + " — menu",
 		Frameless:        true,
-		AlwaysOnTop:      true,
+		Hidden:           true,
+		DisableResize:    true,
 		BackgroundType:   application.BackgroundTypeTranslucent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
 		Width:            w,
@@ -1869,6 +1854,8 @@ func fabMenuCreate(group string, x, y, w, h int) {
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
+			WebView2CompositionHosting:         true,
+			NonClientRegionSupport:            true,
 		},
 	}
 	// URL at creation skips the splash hop (see spawnWindow)
@@ -1899,6 +1886,8 @@ func fabMenuCreate(group string, x, y, w, h int) {
 			return
 		}
 		hwnd := uintptr(mw.NativeWindow())
+		setClassCursor(hwnd)
+		subclassWindow(hwnd)
 		setStyleFlag(hwnd, wsExNoActivate, true)
 		for i := 0; i < 40 && windowHwnd.Load() == 0; i++ {
 			time.Sleep(50 * time.Millisecond)
@@ -1918,7 +1907,6 @@ func fabMenuCreate(group string, x, y, w, h int) {
 			return navURL(target + menuPath)
 		})
 	}
-	refocusAfterActivate()
 	// the ExecJS queue flushes once the page boots — lands the open
 	// window list (● marks) without waiting for a spawn/close event
 	go windowsReport()
@@ -1932,7 +1920,7 @@ func fabMenuHide() {
 	// raw SW_HIDE — w.Hide() also drops the WebView2 controller's
 	// IsVisible, which our swShowNA reshow never restores (the menu
 	// would "open" as an invisible frame). Raw hide/show pairs match
-	// what applyFgHidden does for every window.
+	// what applyCollapsed does for every window.
 	if hwnd := hwndOf(w); hwnd != 0 {
 		pShowWindow.Call(hwnd, swHide)
 	}
@@ -1952,7 +1940,7 @@ func fabMenuHide() {
 func watchBackend(target string) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	misses := 0
-	lastBoot := 0 // addon reload marker from /api/status
+	lastBoot := 0          // addon reload marker from /api/status
 	hidden := false        // currently applied fab-visibility, not the raw flag
 	spawnedHidden := false // fab-layer spawned windows during the blackout
 	for {
@@ -1993,10 +1981,9 @@ func watchBackend(target string) {
 			hidden = want
 			log.Printf("fab hidden=%v", hidden)
 			if hidden {
-				win.Hide()
-				refocusGame()
+				pShowWindow.Call(hwndOf(win), swHide)
 			} else {
-				win.Show()
+				pShowWindow.Call(hwndOf(win), swShowNA)
 			}
 		}
 		// fab-layer spawned windows (the quest tracker) join the
@@ -2014,11 +2001,34 @@ func watchBackend(target string) {
 			spawnMu.Unlock()
 			for _, sw := range toggle {
 				if spawnedHidden {
-					sw.Hide()
-					refocusGame()
+					pShowWindow.Call(hwndOf(sw), swHide)
 				} else {
-					sw.Show()
+					pShowWindow.Call(hwndOf(sw), swShowNA)
 				}
+			}
+		}
+		// drain the addon's spawn queue — routes it wants opened as
+		// detached windows, '!show' surfaces the bar. Enqueued spawns
+		// avoid relaunching the exe per panel (every launch flashed a
+		// taskbar entry)
+		if sresp, err := client.Get(target + "api/spawn"); err == nil {
+			var sq struct {
+				Routes []string `json:"routes"`
+			}
+			json.NewDecoder(sresp.Body).Decode(&sq)
+			sresp.Body.Close()
+			for _, r := range sq.Routes {
+				if r == "!show" {
+					applyCollapsed(false)
+					if hwnd := hwndOf(win); hwnd != 0 {
+						pShowWindow.Call(hwnd, swShowNA)
+					}
+				} else {
+					go spawnWindow(r)
+				}
+			}
+			if len(sq.Routes) > 0 {
+				focusGameSoon()
 			}
 		}
 	}
@@ -2056,32 +2066,16 @@ func main() {
 					return
 				}
 				go func() {
-					fabRelaunch := slices.Contains(data.Args, "--fab")
-					if !fabRelaunch {
-						expand()
-					}
 					// a --fab relaunch during the zoning blackout must
 					// not flash the hidden fab back on screen
 					if backendHidden.Load() {
 						return
 					}
 					// any //xicompanion command is an un-collapse too —
-					// bring the whole family back (fab included)
+					// bring the whole family back (fab included). Show
+					// only — no focus stealing from the game.
 					applyCollapsed(false)
-					win.Show()
-					if fabRelaunch {
-						// addon (re)load auto-spawning the fab — keep the
-						// game's keyboard focus instead of stealing it
-						refocusAfterActivate()
-						return
-					}
-					win.Focus()
-					if hwnd := windowHwnd.Load(); hwnd != 0 {
-						if isIconic(hwnd) {
-							pShowWindow.Call(hwnd, swRestore)
-						}
-						pSetForegroundWindow.Call(hwnd)
-					}
+					pShowWindow.Call(hwndOf(win), swShowNA)
 				}()
 			},
 		},
@@ -2103,7 +2097,17 @@ func main() {
 			case message == "xicompanion:quit":
 				go quit()
 			case message == "xicompanion:close":
-				go closeFor(w) // spawned window → destroy; main → collapse
+				go func() {
+					// give the game focus BEFORE the destroy — if we
+					// close while our window still holds it, Windows
+					// picks the next topmost window (which can be a
+					// foreign app) before we can correct it
+					if g := gameHwnd(); g != 0 {
+						pSetForegroundWindow.Call(g)
+						time.Sleep(50 * time.Millisecond)
+					}
+					closeFor(w) // spawned window → destroy; main → collapse
+				}()
 			case strings.HasPrefix(message, "xicompanion:spawn:"):
 				go spawnWindow(strings.TrimPrefix(message, "xicompanion:spawn:"))
 			case strings.HasPrefix(message, "xicompanion:toggle:"):
@@ -2133,17 +2137,18 @@ func main() {
 				go geomSet(strings.TrimPrefix(message, "xicompanion:geom-set:"))
 			case message == "xicompanion:raise":
 				// panels are NOACTIVATE — clicking can't raise them
-				// naturally, so the page asks on mousedown. Raising
-				// needs no activation: the user's stacking order is
-				// whichever window they touched last.
-				go pSetWindowPos.Call(hwndOf(w), hwndTopmost, 0, 0, 0, 0,
-					swpNoMove|swpNoSize|swpNoActivate)
-			case message == "xicompanion:refocus":
-				// let the click finish dispatching first — the macro's
-				// send_command / the tooltip's pin go out on this gesture
+				// naturally, so the page asks on mousedown. HWND_TOP
+				// lifts the window to the top of the normal band —
+				// gated on the game family holding foreground: under a
+				// foreign app the raise would pop the panel over it.
 				go func() {
-					time.Sleep(50 * time.Millisecond)
-					refocusGame()
+					fg, _, _ := pGetForegroundWindow.Call()
+					if fg == 0 || (fg != ffxiHwnd.Load() &&
+						!ourHwnd(fg) && !isFFXIProcess(fg)) {
+						return
+					}
+					pSetWindowPos.Call(hwndOf(w), hwndTop, 0, 0, 0, 0,
+						swpNoMove|swpNoSize|swpNoActivate)
 				}()
 			case strings.HasPrefix(message, "xicompanion:open:"):
 				go openURL(strings.TrimPrefix(message, "xicompanion:open:"))
@@ -2168,9 +2173,9 @@ func main() {
 	})
 
 	opts := application.WebviewWindowOptions{
-		Title:       windowTitle,
-		Frameless:   true,
-		AlwaysOnTop: true,
+		Title:     windowTitle,
+		Frameless: true,
+		Hidden:    true,
 		// translucent: the fab's square window still reads as a circle,
 		// and glass can frost its backdrop via DWMSBT_TRANSIENTWINDOW
 		BackgroundType:   application.BackgroundTypeTranslucent,
@@ -2179,6 +2184,8 @@ func main() {
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
+			WebView2CompositionHosting:         true,
+			NonClientRegionSupport:            true,
 		},
 	}
 	// the fab IS the main window — always a fixed bar; every feature
@@ -2189,6 +2196,7 @@ func main() {
 	}
 	opts.Width, opts.Height = fabW, fabH
 	opts.MinWidth, opts.MinHeight = fabW, fabH
+	opts.MaxWidth, opts.MaxHeight = fabW, fabH
 	opts.X, opts.Y = x, y
 	opts.DisableResize = true
 	// InitialPosition's zero value is WindowCentered — without WindowXY
@@ -2204,10 +2212,36 @@ func main() {
 		pShowWindow.Call(hwndOf(win), swShowNA)
 	})
 
-	go resolveHwnd(win, &windowHwnd)
+	go func() {
+		// created Hidden — the bar gets NOACTIVATE + game-ownership
+		// BEFORE the first SW_SHOWNA, so nothing it does ever takes
+		// foreground
+		for i := 0; i < 60 && win.NativeWindow() == nil; i++ {
+			time.Sleep(50 * time.Millisecond)
+		}
+		hwnd := hwndOf(win)
+		if hwnd == 0 {
+			return
+		}
+		windowHwnd.Store(hwnd)
+		setClassCursor(hwnd)
+		subclassWindow(hwnd)
+		setStyleFlag(hwnd, wsExNoActivate, true)
+		ownToGame(hwnd)
+		// first reveal must be w.Show() — it wakes the WebView2
+		// controller a Hidden-created window starts without (a raw
+		// reshow paints an empty frame); NOACTIVATE already holds so
+		// it can't activate
+		win.Show()
+		if collapsed.Load() || backendHidden.Load() {
+			pShowWindow.Call(hwnd, swHide)
+		}
+		// guarantee: the burst ends with the game holding focus —
+		// fires only if a NOACTIVATE window still illegally has it
+		focusGameSoon()
+	}()
 	go trackGeometry()
-	go focusTopmostLoop()
-	go topmostHookThread()
+	go watchGameHwnd()
 	navigateWhenReady(win, func() string {
 		addonTarget = probeTarget()
 		// restore windows the user left open — same persistence path as
@@ -2217,15 +2251,10 @@ func main() {
 			collapsed.Store(true)
 		}
 		for key, open := range snap.Open {
-			// /visibility is excluded — the dedicated spawn below owns
-			// it (a restore + dedicated spawn racing made two windows)
-			if open && key != "/visibility" {
+			if open {
 				go spawnWindow(key)
 			}
 		}
-		// the visibility toggle is the collapse-all restore handle —
-		// it always exists
-		go spawnWindow("/visibility")
 		if snap.Collapsed {
 			// the fab + windows spawned before the flag landed need a
 			// manual hide — applyCollapsed can't run (CompareAndSwap
@@ -2234,11 +2263,8 @@ func main() {
 				pShowWindow.Call(hwnd, swHide)
 			}
 		}
-		// the addon auto-spawning the fab on (re)load steals foreground —
-		// hand it back once our hwnd is registered; the bar stays
-		// NOACTIVATE so clicks never steal the game
-		setStyleFlag(hwndOf(win), wsExNoActivate, true)
-		refocusAfterActivate()
+		// the bar's NOACTIVATE/ownership were applied at hwnd time —
+		// nothing left to do here
 		go func() {
 			// cold start with --spawn (e.g. `//xicompanion tracker` while the
 			// overlay wasn't running) — open the detached window once

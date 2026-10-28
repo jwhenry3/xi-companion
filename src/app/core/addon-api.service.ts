@@ -58,9 +58,22 @@ export class AddonApi {
     number,
     { resolve: (v: any) => void; reject: (e: any) => void }
   >();
+  /** same-origin window bus — 'macros' means another window wrote macro
+   *  files (editor save/title); refetch so sibling views (the detached
+   *  macro bars) update without waiting on the SSE/file-watch round
+   *  trip. Same origin + shared profile = reaches every panel. */
+  private bc: BroadcastChannel | null =
+    typeof BroadcastChannel !== 'undefined'
+      ? new BroadcastChannel('xicompanion')
+      : null;
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.disconnect());
+    if (this.bc) {
+      this.bc.onmessage = (e) => {
+        if (e.data === 'macros') void this.refreshMacros();
+      };
+    }
     this.connect();
     void this.refreshFiles();
     this.pollTimer = setInterval(() => void this.tick(), 3000);
@@ -79,6 +92,7 @@ export class AddonApi {
 
   private disconnect() {
     this.es?.close();
+    this.bc?.close();
     this.wport?.postMessage({ t: 'close' });
     this.wport?.close();
     if (this.pollTimer != null) clearInterval(this.pollTimer);
@@ -805,6 +819,7 @@ export class AddonApi {
     });
     await queryClient.invalidateQueries({ queryKey: ['macros'] });
     void this.refreshMacros();
+    this.bc?.postMessage('macros');
     return res;
   }
 
@@ -830,6 +845,7 @@ export class AddonApi {
     );
     await queryClient.invalidateQueries({ queryKey: ['macros'] });
     void this.refreshMacros();
+    this.bc?.postMessage('macros');
     return res;
   }
 }

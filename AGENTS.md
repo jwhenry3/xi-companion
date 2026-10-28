@@ -126,6 +126,17 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   flag, nothing in widescan), so `map.lua` name-matches entities (f&16)
   and widescan entries (`nm`) against it. Regenerate with `python
   scripts/extract-nms.py` (bg-wiki Category:Notorious_Monster API).
+- `mappois.lua` — GENERATED (do not edit): per-zone static map POIs
+  (homepoints, telepoints, field manuals/survival guides, maws,
+  waypoints, confluxes, geo founts, portals, planar rifts, outposts) as
+  world-yalm `{k,n,x,y=ns,z=height}` rows. `map.lua` projects them
+  through `get_map_data` once per zone (height-0 retry for captures that
+  miss a floor band) and emits the current sub-map's set as `poi[]` in
+  the `map` payload; `map-radar.tsx` draws per-kind glyphs + tooltips
+  and the map sidebar gets marker filter chips. Regenerate with `python
+  scripts/extract-pois.py` (vendored client uberwarp XMLs in
+  `scripts/pois/` + `scripts/npc_list.sql` — an AirSkyBoat capture dump
+  downloaded on demand).
 - `abilities.lua` + `ja_levels.lua` — the /abilities skill+spell book:
   learned sets from `get_abilities()`/`get_spells()`, obtainable spells
   from `res.spells[].levels` (subjob reqs ×2 to main level), JA job/level
@@ -308,8 +319,8 @@ prefers the bundled exe and falls back to the Electron dev launcher.
 
 - `wails/` — the shippable shell (Wails **v3**, ~11MB exe, `go build -tags
   production`): probes `127.0.0.1:17890-17899` for `/api/status`
-  (`$GSUI_PORT` overrides), then `SetURL` navigates the frameless +
-  AlwaysOnTop window to the addon page once `app.Run` has created the
+  (`$GSUI_PORT` overrides), then `SetURL` navigates the frameless
+  game-owned window to the addon page once `app.Run` has created the
   window impl (`SetURL` is a no-op while `NativeWindow()` is nil — and
   even with an HWND it's dropped while the WebView2 core is still
   coming up, which stranded windows on the dark splash; every window
@@ -320,21 +331,28 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   connection-refused error pages fire it too).
   `SingleInstanceOptions` surfaces the first window on re-launch;
   `Windows.HiddenOnTaskbar` keeps it out of the taskbar/alt-tab.
-  **No periodic z-order machinery** — every polling re-assert scheme
-  (per-window `HWND_TOPMOST`, then the coordinated `zSweep`) caused
-  visible flicker: each `SetWindowPos` pops a window to band-top, and
-  any foreign always-on-top window made the sweep re-run every cycle.
-  Stacking is now left to Windows + `xicompanion:raise` (posted on page
-  mousedown — lifts the touched window without activating it, needed
-  since panels carry `WS_EX_NOACTIVATE` and can't raise themselves).
-  `resolveHwnd` only waits for the hwnd to exist (feeds the focus /
-  exstyle / tooltip-ownership stores); `WindowMinimise` → `Show()`
+  **No TOPMOST / z-order machinery** — every window is OWNED by the
+  FFXI game window (`GWLP_HWNDPARENT` once `NativeWindow()` resolves;
+  `findFFXIWindow` locates the `FFXiClass` frame, `pol.exe` scan
+  fallback): an owned window always sits above its owner and is covered
+  by foreign apps, so layering needs no re-asserts at all (earlier
+  schemes — polling `HWND_TOPMOST`, `zSweep`, focus-gated topmost —
+  all flickered or fought foreign topmost windows). Owned windows also
+  hide/die with the owner: `watchGameHwnd` (1s `IsWindow` poll) picks
+  up a late-appearing game hwnd and `app.Quit`s when it dies — a dead
+  owner means Windows already destroyed every overlay hwnd out-of-band.
+  Stacking among siblings is `xicompanion:raise` (posted on page
+  mousedown — `HWND_TOP`, gated on the game family holding foreground
+  so a click can't pop a panel over a foreign app, needed since panels
+  carry `WS_EX_NOACTIVATE` and can't raise themselves).
+  `resolveHwnd` only waits for the hwnd to exist (feeds the exstyle /
+  ownership stores); `WindowMinimise` → `Show()`
   still undoes the frameless auto-minimize quirk. The window has two modes: a 540×56px
   transparent **fab** (`--fab` arg; the addon auto-spawns it on **login**
   — or on `load` while already logged in — `settings.fab`,
   `//xicompanion fab on|off`; the addon taskkills the process on **logout**)
   and the full UI. The fab is a one-row menu bar (`src/app/fab.tsx`):
-  the XIC mark expands the main UI (`xicompanion:expand`), then toggle buttons
+  toggle buttons
   (`xicompanion:toggle:<route>`) for the fab-layer panels (`/tracker`,
   `/macrobar`, `/cooldowns`, `/minimap`) and every app page (`/`,
   `/chat`, `/journal`, `/map`, `/macros`, `/profile`, `/settings`) —
@@ -350,13 +368,25 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   handler) and hides/shows the window on the response's `hidden` flag —
   set during the zoning blackout (incoming `0x00B`→`0x00A` packets) and
   in event/cutscene status (player.status == 4), matching in-render
-  addons. `watchForeground` polls `GetForegroundWindow` every ~350ms:
-  while FFXI runs and a **foreign** window owns foreground (not ours,
-  not the game's process — dialogs/IME surfaces count), the whole
-  overlay family hides after ~0.7s of persistence (alt-tab flicker
-  guard) and restores on the first good poll — restore uses
-  `SW_SHOWNA` so it can't steal focus back, and the zoning blackout
-  still wins over a restore. With no game running nothing hides.
+  addons. Game-ownership handles foreign-foreground layering (the
+  overlay family can't outrank a foreign app). **No focus manipulation
+  anywhere** — no `SetForegroundWindow`, no refocus watchers, no
+  `window.Focus()`: every window is created `Hidden: true`, gets its
+  `WS_EX_NOACTIVATE` + ownership applied while hidden, then reveals.
+  **Reveal contract** — the FIRST reveal must be `w.Show()` (it also
+  wakes the WebView2 controller a Hidden-created window starts without;
+  `NOACTIVATE` holds through it so the `SW_SHOW` inside can't activate —
+  editors get the flag cleared right after so they activate on user
+  clicks). Every LATER hide/show is raw `SW_HIDE`/`SW_SHOWNA` pairs —
+  `w.Hide()` drops the controller's `IsVisible`, and a raw reshow after
+  it paints an invisible frame. `focusGameSoon()` is the one sanctioned
+  focus call: a debounced end-of-load `SetForegroundWindow(game)` that
+  only fires while a `WS_EX_NOACTIVATE` overlay window holds foreground
+  (the creation-activation race's only remnant) — clicked editors,
+  foreign apps, and the game itself are never touched. Editors activate natively on click, and Windows hands
+  foreground to the owner (the game) when an owned window hides/closes.
+  (Earlier `AttachThreadInput`+`SetForegroundWindow` hand-backs were a
+  focus ping-pong that could wedge game input entirely.)
   The page picks what
   to render from viewport size (`fabMode` signal in host.ts);
   `body.fab-mode` drops the opaque background so the buttons read
@@ -379,8 +409,8 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   clicks — including transparent margins — can't steal game focus.
   `xicompanion:spawn:<route>` from the page's pop-out header button creates a
   detached per-tab window via `WindowManager.NewWithOptions` (frameless,
-  always-on-top, 280×180 min, same message bridge): one window per route
-  key, re-spawn focuses instead of duplicating, geometry persists per
+  game-owned, 280×180 min, same message bridge): one window per route
+  key, re-spawn shows instead of duplicating, geometry persists per
   route under `windows` in window.json, `resolveHwnd` registers its
   hwnd, and `xicompanion:close` on a spawned window destroys it (on the main
   window it collapses to the fab). `watchBackend`'s zoning/cutscene hide
@@ -393,14 +423,6 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `__xicNavigate` (in-page router nav, expanding the fab first) — the
   journal selects via `/journal?g=<kind>&s=<key>&id=<n>` params, and the
   tracker window itself stays up.
-  `xicompanion:refocus`: a capture-phase `mouseup` listener in host.ts posts it
-  after every primary-button click except on `input`/`textarea`/
-  `contenteditable` (typing keeps focus); the shell `SetForegroundWindow`s
-  the game — found via its `FFXiClass` window class, falling back to a
-  `pol.exe` process-name scan — so clicks never strand game input.
-  Drag/resize end refocuses too: the modal WM_NCLBUTTONDOWN loop eats
-  the DOM mouseup, so `startMoveLoop` spawns `watchDragEnd`, which polls
-  the button state and refocuses on release.
   Logs to `%LOCALAPPDATA%/xicompanion/overlay.log`; WebView2 UDF at
   `%LOCALAPPDATA%/xicompanion/webview2`.
 - `launch.mjs` — dev path: spawns Electron detached, strips

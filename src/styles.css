@@ -211,8 +211,7 @@ body {
 }
 
 
-/* app wordmark — Cinzel in the FFXI logo's gold gradient (matches the
-   fab's XicLogo) */
+/* app wordmark — Cinzel in the FFXI logo's gold gradient */
 .font-logo {
   font-family: 'Cinzel', 'Times New Roman', serif;
   font-weight: 700;
@@ -244,18 +243,67 @@ body {
   background: #64748b;
 }
 
-/* interactive elements read as clickable — buttons don't get the
-   pointer cursor by default */
-button, [role='button'], select, input[type='checkbox'],
-input[type='radio'], summary, a {
-  cursor: pointer;
-}
-button:disabled { cursor: not-allowed; }
+/* assert the SAME cursor image the game does — with hardware mouse on,
+   the game calls SetCursor every frame while the pointer is inside its
+   window rect, so any different image flickers against it; the same
+   image is a no-op. Hotspot 19,19 is the .cur's own. */
+* { cursor: url('/mousenor.png') 19 19, default !important; }
 
-/* resize-edge hover: the resize cursor must beat per-element cursors —
-   buttons/inputs inside the 8px border zone would otherwise keep
-   pointer/text. 'rc' on <html> + inline cursor style inherited down */
-html.rc, html.rc * { cursor: inherit !important; }
+/* resize chrome — a permanent thin frame marking the real window
+   edge plus corner glyphs where the native HTSIZE strips live. The
+   non-client grab band sits just outside these marks; everything is
+   pointer-events:none so nothing eats input. Resizable panels only —
+   the fab/tooltip are fixed-size */
+/* hidden unless edit-mode is on — otherwise the elements fall back to
+   inline flow and render as stray text below the window */
+.resize-frame, .resize-corners { display: none; }
+
+body.detached-mode.edit-mode .resize-frame,
+body.panel-mode.edit-mode .resize-frame {
+  display: block;
+  position: fixed; inset: 0; pointer-events: none; z-index: 9990;
+  /* solid frame in the title-bar's header blue — marks the real edge */
+  border: 1px solid #39438f;
+  border-radius: 8px;
+}
+body.detached-mode.edit-mode .resize-corners,
+body.panel-mode.edit-mode .resize-corners { display: block; }
+body.detached-mode.edit-mode .resize-corners span,
+body.panel-mode.edit-mode .resize-corners span {
+  position: fixed; pointer-events: none; z-index: 9991;
+  font-size: 9px; line-height: 1; color: rgba(148, 163, 184, .55);
+}
+body.detached-mode.edit-mode .resize-corners .rc-nw, body.panel-mode.edit-mode .resize-corners .rc-nw { top: -1px; left: -1px; }
+body.detached-mode.edit-mode .resize-corners .rc-ne, body.panel-mode.edit-mode .resize-corners .rc-ne { top: -1px; right: -1px; }
+body.detached-mode.edit-mode .resize-corners .rc-sw, body.panel-mode.edit-mode .resize-corners .rc-sw { bottom: -1px; left: -1px; }
+body.detached-mode.edit-mode .resize-corners .rc-se, body.panel-mode.edit-mode .resize-corners .rc-se { bottom: -1px; right: -1px; }
+body.detached-mode.edit-mode .resize-corners .rc-n, body.panel-mode.edit-mode .resize-corners .rc-n { top: 0; left: 50%; transform: translateX(-50%); }
+body.detached-mode.edit-mode .resize-corners .rc-s, body.panel-mode.edit-mode .resize-corners .rc-s { bottom: 0; left: 50%; transform: translateX(-50%); }
+body.detached-mode.edit-mode .resize-corners .rc-e, body.panel-mode.edit-mode .resize-corners .rc-e { right: 0; top: 50%; transform: translateY(-50%); }
+body.detached-mode.edit-mode .resize-corners .rc-w, body.panel-mode.edit-mode .resize-corners .rc-w { left: 0; top: 50%; transform: translateY(-50%); }
+
+/* NOTE: the old 'nocursor' class hid the OS cursor on HUD surfaces —
+   over opaque panel pixels there was no cursor at all and
+   click-through regions ate input. Removed; the arrow stays visible. */
+
+/* hover affordance — no transform: translating on hover moves the
+   element out from under the cursor, unhovers it, snaps it back, and
+   rehovers — a visible flicker loop that also ate clicks mid-cycle */
+button:not(:disabled):hover, [role='button']:hover,
+select:hover, summary:hover {
+  box-shadow: 0 2px 10px rgb(0 0 0 / .5), 0 0 0 1px rgb(148 163 184 / .35);
+}
+input[type='checkbox']:hover, input[type='radio']:hover {
+  box-shadow: 0 0 0 3px rgb(56 189 248 / .35);
+}
+input:not([type='checkbox']):not([type='radio']):hover,
+textarea:hover {
+  border-color: rgb(148 163 184 / .55);
+}
+button, [role='button'], select, summary, input, textarea {
+  transition: transform 80ms ease, box-shadow 80ms ease,
+    border-color 80ms ease, background-color 80ms ease;
+}
 
 
 
@@ -270,6 +318,8 @@ body.fab-mode {
 body.detached-mode {
   background-color: transparent;
 }
+
+
 
 /* fab-layer panel windows (tracker, macro bar, cooldowns) additionally
  * disable selection — they read as overlay panels, not documents */
@@ -454,6 +504,14 @@ html.bare .ffxi-panel {
   border: none;
   border-radius: 0;
   box-shadow: none;
+  transition: background-color 120ms ease;
+}
+/* hover reveals a dark chip so the panel reads as a surface while
+   you're working on it — clear when the pointer is off */
+html.bare .ffxi-panel:hover,
+html.bare body.hovered .ffxi-panel,
+html.bare body.resizing .ffxi-panel {
+  background-color: rgb(0 0 0 / 0.55);
 }
 html.bare .ffxi-panel-title {
   background: transparent;
@@ -548,10 +606,16 @@ html.bare .ffxi-panel main {
   font-weight: 600;
 }
 
-/* frameless overlay drag region — Wails reads --wails-draggable natively;
-   the Electron dev shell injects the -webkit-app-region equivalent */
-header {
+/* frameless overlay drag region — WebView2 reads app-region natively
+   (NonClientRegionSupport): the title is a real caption, edges are real
+   HTSIZExxx borders. --wails-draggable kept alongside: the Electron dev
+   shell and the page's own edge/drag detection read it */
+header,
+[style*='--wails-draggable: drag'],
+[style*='--wails-draggable:drag'] {
   --wails-draggable: drag;
+  app-region: drag;
+  -webkit-app-region: drag;
 }
 header a,
 header button,
@@ -559,6 +623,8 @@ header input,
 header select,
 header .nav-link {
   --wails-draggable: no-drag;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 /* text-entry anywhere opts out of drag regions AND the 8px resize
    edge — a resize grab on a bottom-hugging input eats focus/caret */
@@ -567,4 +633,6 @@ textarea,
 select,
 [contenteditable='true'] {
   --wails-draggable: no-drag;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }

@@ -368,6 +368,17 @@ export interface MapWsEntry {
   el?: number;
 }
 
+export interface MapPoi {
+  /** position in map pixels (0..ms) — projected addon-side through
+   *  get_map_data from the world-yalm table in mappois.lua */
+  x: number;
+  y: number;
+  /** kind: hp book tele maw way portal flux fount in rift outpost */
+  k: string;
+  /** display name */
+  n?: string;
+}
+
 export interface MapState {
   /** 0 = not logged in / un-mapped area */
   on?: number;
@@ -388,6 +399,9 @@ export interface MapState {
   ws?: MapWsEntry[];
   /** 1 while a widescan result list is held */
   wsa?: number;
+  /** static POIs (telepoints, homepoints, books...) on the current map —
+   *  only present when the zone has markers AND this sub-map */
+  poi?: MapPoi[];
 }
 
 // ---------- party / target (party.lua) ----------
