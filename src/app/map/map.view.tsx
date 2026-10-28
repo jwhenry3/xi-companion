@@ -12,6 +12,7 @@ import { AddonApi } from '../core/addon-api.service';
 import { host } from '../core/host';
 import type { MapEntity } from '../core/types';
 import { MapRadar, ELEV_DELTA, POI_KIND, entKind } from './map-radar';
+import { cn } from '@/lib/utils';
 import { resolveMapImage } from './map-image';
 import {
  radiusFor,
@@ -35,6 +36,7 @@ const KIND_ORDER = [
  'linkshell',
  'player',
  'npc',
+ '???',
  'nm',
  'mob',
  'other',
@@ -45,6 +47,7 @@ const KIND_COLOR: Record<string, string> = {
  linkshell: 'text-orange-300',
  player: 'text-violet-300',
  npc: 'text-emerald-300',
+ '???': 'text-fuchsia-400',
  nm: 'text-yellow-300',
  mob: 'text-rose-300',
  other: 'text-slate-400',
@@ -234,6 +237,28 @@ export class MapView extends View implements OnInit, OnDestroy {
  <span class="min-w-0 flex-1 truncate text-slate-200">
  {e.n || '—'}
  </span>
+ {/* damaged mob/NM (st 16) — a slim hp bar + %; full-health mobs
+     show nothing so the list stays clean */}
+ {e.st === 16 && e.hp < 100 && (
+ <span class="flex shrink-0 items-center gap-1">
+ <span class="block h-1.5 w-9 overflow-hidden rounded bg-slate-700/80">
+ <span
+ class={cn(
+ 'block h-full',
+ e.hp <= 25
+ ? 'bg-rose-500'
+ : e.hp <= 50
+ ? 'bg-amber-500'
+ : 'bg-emerald-500',
+ )}
+ style={`width:${Math.max(0, e.hp)}%`}
+ />
+ </span>
+ <span class="text-[9px] tabular-nums text-slate-400">
+ {e.hp}%
+ </span>
+ </span>
+ )}
  {e.el != null && Math.abs(e.el) >= ELEV_DELTA && (
  <span
  class="shrink-0 text-[9px] tabular-nums text-slate-400"

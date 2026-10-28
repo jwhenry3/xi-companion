@@ -19,6 +19,7 @@ const C = {
   nm: '#fde047', // yellow-300
   mob: '#fb7185', // rose-400
   npc: '#34d399', // emerald-400
+  qmk: '#e879f9', // fuchsia-400 — '???' examination points
   pc: '#a78bfa', // violet-400
   other: '#94a3b8', // slate-400
   ws: '#fbbf24', // amber-400
@@ -92,6 +93,8 @@ export function entKind(e: MapEntity): string {
   if (e.f & 8) return 'linkshell';
   if (e.f & 16) return 'nm';
   if (e.st === 16) return 'mob';
+  // '???' NPCs are quest/examination points — filterable, not generic NPCs
+  if (e.n === '???') return '???';
   if (e.f & 4 || e.st === 2) return 'npc';
   if (e.st === 1) return 'player';
   return 'other';
@@ -103,6 +106,7 @@ function entColor(e: MapEntity): string {
   if (e.f & 8) return C.ls;
   if (e.f & 16) return C.nm;
   if (e.st === 16) return C.mob;
+  if (e.n === '???') return C.qmk;
   if (e.f & 4 || e.st === 2) return C.npc;
   if (e.st === 1) return C.pc;
   return C.other;

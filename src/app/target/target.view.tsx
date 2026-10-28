@@ -16,6 +16,33 @@ function barClass(v: number) {
  return 'bg-emerald-500';
 }
 
+// /check difficulty → the client's strength glyph: a con-colored ● plus
+// ▲ arrows for tiers above Even Match. NMs answer "impossible to
+// gauge" — that reads as ★ instead of arrows.
+const CON_TIERS: [RegExp, string, number][] = [
+  [/too strong|extremely tough/, 'text-rose-600', 3],
+  [/incredibly tough/, 'text-red-500', 3],
+  [/very tough/, 'text-orange-400', 2],
+  [/\btough\b/, 'text-amber-300', 1],
+  [/even match/, 'text-slate-100', 0],
+  [/decent challenge/, 'text-sky-400', 0],
+  [/incredibly easy/, 'text-violet-300', 0],
+  [/easy prey/, 'text-emerald-400', 0],
+  [/too weak/, 'text-slate-500', 0],
+];
+const conMark = (con: string) => {
+ const c = con.toLowerCase();
+ if (/impossib|gauge/.test(c)) return <span class="text-pink-400">★</span>;
+ const m = CON_TIERS.find(([re]) => re.test(c));
+ if (!m) return null;
+ const [, cls, ar] = m;
+ return (
+  <span class={cn(cls, 'tracking-tight')}>
+   ●{ar > 0 ? '▲'.repeat(ar) : ''}
+  </span>
+ );
+};
+
 @Component()
 export class TargetView extends View implements OnInit, OnDestroy {
  private api = inject(AddonApi);
@@ -98,13 +125,20 @@ export class TargetView extends View implements OnInit, OnDestroy {
  tp {t!.tp}
  </span>
  )}
- {(t!.lv != null || t!.con) && (
- <span class="shrink-0 text-[11px] text-amber-300" title="/check result">
- {t!.lv != null ? `lv ${t.lv}` : ''}
- {t!.lv != null && t!.con ? ' · ' : ''}
- {t!.con ?? ''}
- </span>
- )}
+ {(() => {
+  const mark = t!.con ? conMark(t!.con) : null;
+  if (t!.lv == null && !mark && !t!.con) return null;
+  return (
+   <span
+    class="flex shrink-0 items-center gap-1 text-[11px] text-amber-300"
+    title={t!.con ? `/check: ${t!.con}` : '/check result'}
+   >
+    {mark}
+    {t!.lv != null && `lv ${t!.lv}`}
+    {!mark && t!.con}
+   </span>
+  );
+ })()}
  {t!.th != null && (
  <span class="shrink-0 text-[11px] font-semibold text-amber-300">
  TH {t!.th}
