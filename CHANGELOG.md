@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-28
+
 ### Fixed
 
 - **Invisible mouse cursor + eaten clicks over overlay windows** — the
@@ -47,55 +49,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scale correctly. Only the current sub-map's set rides the `poi`
   field of the `map` payload. The map sidebar gains marker-kind filter
   chips under the entity filters.
+- **Native non-client window chrome** — the overlay now opts into
+  Wails' `WebView2CompositionHosting` + `NonClientRegionSupport`:
+  `app-region`/`--wails-draggable` regions are real `HTCAPTION` drags
+  and the border is a real `HTSIZExxx` resize strip with OS-native
+  move/size semantics (Snap assist included) instead of the page-side
+  tracking loop. All windows are owned by the game (`GWLP_HWNDPARENT`)
+  so they track its z-order and minimize with it; `WS_EX_NOACTIVATE`
+  keeps them from ever taking focus.
+- **Edit-mode resize affordance** — a `resize handles` toggle in
+  Settings (`xic.edit`, shared localStorage key so every window follows
+  the `storage` event) draws the frame border, edge grab handles, and
+  corner glyphs on resizable panels; native resizing keeps working
+  either way. The bare theme shows its semi-transparent chip while the
+  pointer is active (1s debounce) and through move/resize drags.
+- **FFXI cursor on overlay windows** — the game's hardware cursor
+  appears over the windows because the owner chain makes hit-testing
+  resolve to the game's hwnd and it asserts its cursor positionally.
+  The overlay matches it: the FFXI cursor image (`mousenor.ani`, `.cur`
+  fallback) is registered as the window class cursor, a WndProc
+  subclass swallows non-client `WM_SETCURSOR` so no stray arrow races
+  it, and the webview asserts the same image via CSS. Drag/resize and
+  z-order behavior are unchanged.
+
+### Fixed (cont.)
+
+- **Auto-launch settings silently dropped** — `minimap`, `party`, and
+  `target` were missing from the `SETTABLE` whitelist so `GET
+  /api/settings` never returned them (checkboxes always read off) and
+  `POST` discarded the writes.
+- **Fab menu window** — was resizable and padded: `DisableResize` plus
+  the `p-1` wrapper margin removed so the dropdown fills the window
+  edge-to-edge.
+- **Inventory filter** — `Weapon` and `Armor` collapse into a single
+  `Equipment` category; every equipment slot spans both anyway.
+
+## [0.1.5] - 2026-10-26
+
+### Added
+
+- **Chat enhancements** — the chat view was largely rebuilt: custom
+  player-defined filter channels (`custom:<name>` merged views, edited
+  via the `+` dialog and persisted through `GET|PUT
+  /api/chat/channels`), per-thread unread/alert badges with learn ★
+  markers, header search with hit highlighting and source-thread jump
+  chips, send-target selection in merged views, and a dedicated
+  `send.ts` (with tests) for outgoing message handling.
+
+### Changed
+
+- **Theme synchronization** — a proper theme layer: `panel.tsx` and
+  `tabs.tsx` chrome components plus theme tokens drive the panel look
+  consistently across the main window and detached panels, replacing
+  the ad-hoc per-view styling. The window-management code in the shell
+  was slimmed down substantially in the same pass.
 
 ### Fixed
 
-- **Item / key-item auto-translate phrases** rendered as raw
-  `{AT:xxxxxxxx}` tokens in chat (e.g. `{Null Belt}` in bazaar shouts).
-  The FD block's type byte selects the id's source table: `0x02` phrase,
-  `0x07`/`0x09`/`0x0A` item, `0x13`/`0x15`/`0x16` key item — `09`/`0A`
-  and `15`/`16` unmask a 0x00 id byte that rides the wire as `0xFF`.
-  Items resolve through `res.items`, key items through `res.key_items`,
-  and phrases gain a client-extracted table (`at_names.lua`, generated
-  by `scripts/extract-autotranslate.py` from the AT DAT at file id
-  `0xD971` — ~150 entries newer than the installed `res` table).
-  Outbound `{Name}` braces now encode items/key items too, with the
-  correct masked type byte.
-- **Detached windows fighting for always-on-top** — every periodic
-  re-assert scheme stole band-top per `SetWindowPos` call: per-window
-  asserts ping-ponged siblings, and the coordinated `zSweep` visibly
-  flickered whenever a foreign always-on-top window kept it running.
-  All polling z-order machinery removed; stacking is Windows-managed
-  plus `xicompanion:raise` (posted on page mousedown — lifts the touched
-  window without activating it, needed since `WS_EX_NOACTIVATE`
-  panels can't raise themselves).
+- **Macro / key-lock issues** — work in `macros.lua` and the command
+  path around macro writes while the client holds key locks, plus
+  `_WindowerMemory` bindings for the new host capabilities.
 
-
-- **Lost all keyboard input to the game ("can only type in chat")** —
-  two causes. Drag/resize posted `WM_NCLBUTTONDOWN` to enter the native
-  modal loop; a post landing after button-up parked the window holding
-  global mouse capture, eating every click and key until Esc. Move/size
-  is now a Go loop (poll cursor → `SetWindowPos`, ends on button-up) —
-  no capture anywhere. Second, panel windows' transparent margins
-  looked like the game but clicks landed on the WebView2 and stole
-  activation — the fab and fab-layer panels (tracker, macro bar,
-  cooldowns, minimap) now hold `WS_EX_NOACTIVATE` like the tooltip, so
-  they can never take the game's keyboard; expand clears it.
-- **Detached windows fighting for always-on-top** — every window's
-  `keepPinned` unconditionally re-asserted `HWND_TOPMOST` every 2s,
-  and each assert steals band-top, so siblings ping-ponged forever.
-  The re-assert now only fires when a foreign window (the game, other
-  apps) actually outranks ours — sibling stacking follows click order
-  and stays put.
-- **Detached windows stuck solid dark** — `SetURL` fired as soon as the
-  HWND existed, but the WebView2 core initializes later; navigations in
-  that gap were dropped and the window sat on the dark splash page
-  forever. `navigateWhenReady` now waits for the splash's own
-  `WebViewNavigationCompleted` (with a timed fallback) and re-issues
-  `SetURL` until the page itself posts `xicompanion:loaded` after bootstrap —
-  NavigationCompleted fires for connection-refused error pages too, so
-  it can't confirm a mount. Applied to the main window, spawned
-  windows, and the item tooltip.
+## [0.1.4] - 2026-10-25
 
 ### Added
 
@@ -115,6 +130,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Category:Notorious_Monster via `scripts/extract-nms.py`). NMs render
   yellow on the radar and get their own `nm` kind/label/filter chip in
   the entity list.
+- **Party list window** — a detached `/party` panel fed by a new
+  `party.lua` module (party member state, ~870 lines).
+- **Status icon extraction** — `menu_extractor.lua`,
+  `statusicons2_map.lua`, and `sts_icon_names.lua` decode the client's
+  status/menu icon tables; ability/spell rows and tooltips now use the
+  real menu icons.
+
+## [0.1.3] - 2026-10-24
+
+### Added
+
 - **Ashita v4 target (untested against a live client)** — `plat.lua`
   now dispatches to `plat_windower`/`plat_ashita` so the same
   `addon/xicompanion/` tree installs under both hosts (`xicompanion.lua` is the Ashita
@@ -128,69 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expected, no GearSwap there), and packet injection uses the 6 outgoing
   packet layouts we emit. Deploy with
   `node scripts/deploy.mjs <ashita>\addons\xicompanion`.
-- **Shared transport worker** — every window's addon traffic now goes
-  through one `SharedWorker` (`core/bridge.worker.ts`): a single SSE
-  stream + request queue replaces the per-window stream that starved
-  fetches under Chromium's ~6-connection-per-origin cap once several
-  detached panels were open. Snapshot events replay to newly attached
-  windows, identical GETs dedupe across windows, and static endpoints
-  (itemmeta, journal names, chat phrases) cache worker-side.
-- **Real zone map imagery** — the map page and minimap now render the
-  client's own map images with no setup. `mapdats.lua` (generated from
-  Windower ResourceExtractor's MapDats.json: 231 zones / 640 maps) maps
-  zone+map to a file id, `mapimg.lua` resolves it through `FTABLE.DAT`
-  to `ROM/<d>/<f>.DAT`, and `GET /api/map/img` serves the raw DAT bytes
-  as `application/x-ffxi-map` — the browser decodes the DXT3 /
-  8-bit-bitmap payload in-page (all 640 retail maps are 512×512),
-  keeping image decode entirely off the game frame. User-dropped
-  `data/maps/<zone>_<map>.png` files still take precedence; unresolved
-  zones fall back to the radar grid.
-- **Minimap window + Map page** — a detached fab-layer `/minimap`
-  (square radar panel, click to cycle zoom) and a full `/map` nav page
-  fed by a new `map.lua` module. Positions come from
-  `windower.ffxi.get_map_data()` — the client's own world→map-pixel
-  projection, so multi-map zones just work; entities in render range
-  come from `get_mob_array()` (colored by type: party sky, mobs rose,
-  NPCs emerald, players violet). Widescan rides incoming 0x0F4 bursts
-  (index/level/type/map-offsets/name, committed ~0.35s after the burst
-  goes quiet), 0x0F5 track updates give the tracked target an absolute
-  live position, and 0x0F6 marks clear cancelled scans. The map page's
-  "widescan" button injects the same outgoing 0x0F4 request the map
-  menu sends. Live updates ride a `map` SSE event at ~10Hz; snapshot at
-  `GET /api/map`. Drop a PNG into `data/maps/<zone>_<map>.png`
-  (remapster/FFXIDB pack naming) to get the real zone image under the
-  radar — `GET /api/map/img` serves it, 404 falls back to the grid.
-  `//xicompanion minimap` toggles/spawns; `settings.minimap` auto-launches on
-  login.
-- **Fab menu bar** — the floating button is now a one-row bar
-  (540×56px window): the XIC mark opens the main UI, then toggle
-  buttons for the four fab-layer panels (tracker, macro bar, cooldowns,
-  minimap) and every main-UI page (inventory, chat, journal, map, macro
-  editor, GearSwap, settings) as detached windows. Open windows get a
-  gold ring — the shell pushes the live list via `__xicWindows`.
-  Drag from any button or the gaps to reposition; right-click still
-  quits.
-- **Cooldowns window** — a detached fab-layer panel (`/cooldowns`) listing
-  active ability/spell recasts: name, live countdown, and a bar that
-  fills as the timer completes (amber = abilities, sky = spells). A new
-  `recasts.lua` module polls
-  `windower.ffxi.get_ability_recasts()`/`get_spell_recasts()` each pump,
-  rounds remaining to 0.1s, and pushes diffs over a `recasts` SSE event
-  (snapshot at `GET /api/recasts`). Since the client never reports full
-  recasts for abilities, the addon tracks each key's largest observed
-  remaining as the max (spells additionally floor at
-  `res.spells[id].recast`); job change and logout reset it. Open it via
-  the fab cluster or `//xicompanion cooldowns`;
-  `settings.cooldowns` auto-spawns it on login.
-- **Training regimes** (Fields of Valor / Grounds of Valor) in the journal
-  and tracker: outgoing 0x05B dialogue choices at a Field Manual/Grounds
-  Tome capture the selected page, 0x029/0x02D messages drive live
-  killed/needed progress and completion, and 0x113 supplies the tabs
-  balance. A new `regime_names.lua` (generated from bg-wiki by
-  `scripts/extract-regimes.py`) resolves each zone+page to its real
-  objectives — mob names, counts, and recommended level — rendered in the
-  journal's new TRAINING section and as a tracker row (hideable via the
-  `valor:valor` group key like the other categories).
 
 ### Changed
 
@@ -210,91 +173,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The **Profile** tab is now labeled **GearSwap** — "Profile" meant
   nothing without the GearSwap context.
 
-### Added
+## [0.1.2] - 2026-10-24
 
-- Detached per-tab windows: a pop-out button in the header opens the
-  current tab in its own small always-on-top window (`xicompanion:spawn:<route>`
-  → `WindowManager.NewWithOptions` at `/<route>?window=1`, which renders
-  the routed view under a slim draggable title bar). Each keeps its own
-  saved bounds in `window.json`, can be shrunk to 280×180, drags/resizes
-  like the main window, and closing one (×/Esc) destroys just that
-  window. Re-popping an already detached tab focuses its window instead
-  of duplicating it.
-- The chat "+ new direct message" action is now a proper modal dialog
-  (Enter opens, Esc/click-outside cancels) instead of an inline sidebar
-  field.
-- Detached macro bar: `/macrobar` (via the "macro bar" button on the
-  Macros page or `//xicompanion macrobar`) is an always-up fab-layer window —
-  char/book/page pickers plus the 20 Ctrl/Alt cells as clickable
-  buttons. A click calls `POST /api/macros/run`, which replays the
-  macro's lines through the client's input line (`input`, with `/wait N`
-  lines paced through the scheduler and `[AT:xxxxxxxx]` re-encoded to
-  raw FD bytes) — the same thing pressing the in-game keybind does.
-  Char/book/page persist across launches, and while logged in the
-  pickers also switch the client's own palette (`/macro book` only when
-  the book changes — rapid book re-loads risk the PR #1892 wipe —
-  plus `/macro set` for the page).
-- Macros page: book picker is now a vertical sidebar list (char select +
-  all 40 books with title subtitles and ● content markers, matching the
-  journal's group column) instead of a header dropdown.
-- Overlay clicks return keyboard focus to the game: a capture-phase
-  `mouseup` listener posts `xicompanion:refocus` and the shell calls
-  `SetForegroundWindow` on the FFXI window (found via its `FFXiClass`
-  window class, falling back to a `pol.exe` process scan). Text-entry
-  elements (input/textarea/contenteditable) keep focus so typing still
-  works, and drag/resize end refocuses too — the modal move/size loop
-  swallows the DOM mouseup, so the shell watches for button release in
-  `startMoveLoop` and refocuses there. Applies to the main UI, detached
-  windows, tooltip and fab. The same return happens when an overlay
-  window stops owning input: collapse-to-fab, a detached window closing,
-  the blackout hide, and quit all call `refocusGame` — which only acts
-  when an overlay window actually holds foreground — so Esc/Enter go
-  back to the client instead of an invisible webview.
-- Fixed `[AT:xxxxxxxx]` decode skipping 2 chars short of the 13-char
-  marker in `text_to_bytes` — writing a palette containing an
-  auto-translate phrase corrupted it (`FD…FD` + trailing `4]`). Same
-  off-by-two fixed in the editor's byte counter.
-- Fixed un-hiding a tracker entry that was suppressed by its whole
-  category: the row's eye only looked at the `kind:key:id` key, so an
-  entry hidden by the `kind:key` group flag could never be restored —
-  clicking it wrote a key that had no effect. The toggle now reflects
-  the effective state (either key) and re-tracking clears both;
-  `/api/journal/track` failures surface in the pane instead of
-  silently dropping.
-- Fixed the tooltip window bouncing under/over the main UI: every
-  always-on-top window re-asserts `HWND_TOPMOST` on a timer, and
-  whichever pinner ran last won the top of the band. The tooltip is
-  now an **owned window** of whatever window summoned it
-  (`GWLP_HWNDPARENT` — owned windows always outrank their owner in
-  z-order), so re-pinning can never bury it.
-- `deploy` now rename-swaps a locked `xicompanion-overlay.exe`: Windows can't
-  overwrite a running binary but can rename it, so the new build lands
-  as `xicompanion-overlay.exe` immediately and the old one is deleted once the
-  process exits.
-- Item tooltip actions: multi-slot equipment (weapons → `equip main` /
-  `equip sub`, rings → left/right) now gets one button per valid slot —
-  `meta.slots` is an unordered set, so picking `slots[0]` could target
-  the wrong hand. `unequip` now works: there's no `/unequip` client
-  command, so `POST /api/item` gained an `unequip` action that injects
-  an equip packet (0x050) with Item Index 0 — the same encoding
-  GearSwap emits for empty slots.
-- API data fetches now run through TanStack Query
-  (`@tanstack/query-core`): shared cache + in-flight dedupe for
-  itemmeta, journal names, chat phrases, macro state, and gearswap
-  files; writes invalidate their keys so refetches never serve stale
-  data. Views use a `bindQuery` signal adapter over `QueryObserver`
-  (the class components can't run hooks).
-- Item tooltips are a real native window instead of an inline detail
-  panel: clicking an item pins a small frameless always-on-top window
-  beside it with its details and actions (equip/unequip/use/move/drop,
-  augment and extdata details, drop confirm). One shared window is
-  reused and updated via `ExecJS` (`xicompanion:tooltip:{json}`, `-hide`) so
-  sweeping items doesn't reload or reflow anything; the Inventory and
-  GearSwap views no longer reserve space for a detail panel. A tracker
-  row click also got `xicompanion:main:<url>` → `showInMain` so detached
-  windows can navigate the main one.
-
-### Changed (cont.)
+### Changed
 
 - The fab now lives only while a character is logged in: the addon spawns
   it on `login` (or on `load` while already in-game) and taskkills the
@@ -306,22 +187,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/api/status` and the shell calls `win.Hide()`/`win.Show()` on the
   main window only while it's in fab mode; the full UI and detached
   windows stay up.
+- **Overlay hides while the game is in the background** — the shell
+  watches the foreground window and hides the overlay when FFXI loses
+  focus to another application.
+
+## [0.1.1] - 2026-10-24
 
 ### Fixed
 
-- The fab (and full window) now actually restores its saved position —
-  Wails' `InitialPosition` defaults to `WindowCentered`, which centers
-  the window after creation and silently ignores the saved X/Y.
-- Dragging the fab no longer loses its position — the overlay snapshots
-  live window bounds continuously (`trackGeometry`) instead of only on
-  expand/collapse/quit, which taskkill never reaches.
+- **Item / key-item auto-translate phrases** rendered as raw
+  `{AT:xxxxxxxx}` tokens in chat (e.g. `{Null Belt}` in bazaar shouts).
+  The FD block's type byte selects the id's source table: `0x02` phrase,
+  `0x07`/`0x09`/`0x0A` item, `0x13`/`0x15`/`0x16` key item — `09`/`0A`
+  and `15`/`16` unmask a 0x00 id byte that rides the wire as `0xFF`.
+  Items resolve through `res.items`, key items through `res.key_items`,
+  and phrases gain a client-extracted table (`at_names.lua`, generated
+  by `scripts/extract-autotranslate.py` from the AT DAT at file id
+  `0xD971` — ~150 entries newer than the installed `res` table).
+  Outbound `{Name}` braces now encode items/key items too, with the
+  correct masked type byte.
 
 ## [0.1.0] - 2026-10-23
 
 Initial release — a Windower 4 addon (`gearswapui`) that runs a local HTTP
 server and serves a Web UI (Preact) in a frameless, always-on-top overlay,
 replacing the web interface for inventory, GearSwap set, and macro
-management.
+management. Includes all work through the window-management rework
+(`8b66ad8`), where the initial v0.1.0 tag was cut.
 
 ### Added
 
@@ -336,6 +228,60 @@ management.
   `windower.send_command`.
 - `//gsui` commands: `open`, `overlay`, `fab`, `start`, `stop`, `status`,
   `port`, `refresh`, `equip <set>`, `swap`.
+- Detached per-tab windows: a pop-out button in the header opens the
+  current tab in its own small always-on-top window (`xicompanion:spawn:<route>`
+  → `WindowManager.NewWithOptions` at `/<route>?window=1`, which renders
+  the routed view under a slim draggable title bar). Each keeps its own
+  saved bounds in `window.json`, can be shrunk to 280×180, drags/resizes
+  like the main window, and closing one (×/Esc) destroys just that
+  window. Re-popping an already detached tab focuses its window instead
+  of duplicating it.
+- Item tooltips are a real native window instead of an inline detail
+  panel: clicking an item pins a small frameless always-on-top window
+  beside it with its details and actions (equip/unequip/use/move/drop,
+  augment and extdata details, drop confirm). One shared window is
+  reused and updated via `ExecJS` (`xicompanion:tooltip:{json}`, `-hide`) so
+  sweeping items doesn't reload or reflow anything; the Inventory and
+  GearSwap views no longer reserve space for a detail panel. A tracker
+  row click also got `xicompanion:main:<url>` → `showInMain` so detached
+  windows can navigate the main one.
+- **Shared transport worker** — every window's addon traffic now goes
+  through one `SharedWorker` (`core/bridge.worker.ts`): a single SSE
+  stream + request queue replaces the per-window stream that starved
+  fetches under Chromium's ~6-connection-per-origin cap once several
+  detached panels were open. Snapshot events replay to newly attached
+  windows, identical GETs dedupe across windows, and static endpoints
+  (itemmeta, journal names, chat phrases) cache worker-side.
+- **Fab menu bar** — the floating button is now a one-row bar
+  (540×56px window): the XIC mark opens the main UI, then toggle
+  buttons for the four fab-layer panels (tracker, macro bar, cooldowns,
+  minimap) and every main-UI page (inventory, chat, journal, map, macro
+  editor, GearSwap, settings) as detached windows. Open windows get a
+  gold ring — the shell pushes the live list via `__xicWindows`.
+  Drag from any button or the gaps to reposition; right-click still
+  quits.
+- Overlay clicks return keyboard focus to the game: a capture-phase
+  `mouseup` listener posts `xicompanion:refocus` and the shell calls
+  `SetForegroundWindow` on the FFXI window (found via its `FFXiClass`
+  window class, falling back to a `pol.exe` process scan). Text-entry
+  elements (input/textarea/contenteditable) keep focus so typing still
+  works, and drag/resize end refocuses too — the modal move/size loop
+  swallows the DOM mouseup, so the shell watches for button release in
+  `startMoveLoop` and refocuses there. Applies to the main UI, detached
+  windows, tooltip and fab. The same return happens when an overlay
+  window stops owning input: collapse-to-fab, a detached window closing,
+  the blackout hide, and quit all call `refocusGame` — which only acts
+  when an overlay window actually holds foreground — so Esc/Enter go
+  back to the client instead of an invisible webview.
+- API data fetches now run through TanStack Query
+  (`@tanstack/query-core`): shared cache + in-flight dedupe for
+  itemmeta, journal names, chat phrases, macro state, and gearswap
+  files; writes invalidate their keys so refetches never serve stale
+  data. Views use a `bindQuery` signal adapter over `QueryObserver`
+  (the class components can't run hooks).
+- The chat "+ new direct message" action is now a proper modal dialog
+  (Enter opens, Esc/click-outside cancels) instead of an inline sidebar
+  field.
 
 **Inventory**
 
@@ -347,6 +293,13 @@ management.
   and served via `/api/icon`.
 - In-game actions: equip, unequip (per equip slot), use, drop, and move
   between bags (packet injection).
+- Item tooltip actions: multi-slot equipment (weapons → `equip main` /
+  `equip sub`, rings → left/right) now gets one button per valid slot —
+  `meta.slots` is an unordered set, so picking `slots[0]` could target
+  the wrong hand. `unequip` now works: there's no `/unequip` client
+  command, so `POST /api/item` gained an `unequip` action that injects
+  an equip packet (0x050) with Item Index 0 — the same encoding
+  GearSwap emits for empty slots.
 
 **GearSwap sets**
 
@@ -375,12 +328,140 @@ management.
   re-read a book while logged in — switches to another book, writes while
   the target book is unloaded, switches back and selects the page (≥1.5s
   between switches, per Windower/Lua#1892).
+- Detached macro bar: `/macrobar` (via the "macro bar" button on the
+  Macros page or `//xicompanion macrobar`) is an always-up fab-layer window —
+  char/book/page pickers plus the 20 Ctrl/Alt cells as clickable
+  buttons. A click calls `POST /api/macros/run`, which replays the
+  macro's lines through the client's input line (`input`, with `/wait N`
+  lines paced through the scheduler and `[AT:xxxxxxxx]` re-encoded to
+  raw FD bytes) — the same thing pressing the in-game keybind does.
+  Char/book/page persist across launches, and while logged in the
+  pickers also switch the client's own palette (`/macro book` only when
+  the book changes — rapid book re-loads risk the PR #1892 wipe —
+  plus `/macro set` for the page).
+- Macros page: book picker is now a vertical sidebar list (char select +
+  all 40 books with title subtitles and ● content markers, matching the
+  journal's group column) instead of a header dropdown.
+
+**Map & tracking**
+
+- **Minimap window + Map page** — a detached fab-layer `/minimap`
+  (square radar panel, click to cycle zoom) and a full `/map` nav page
+  fed by a new `map.lua` module. Positions come from
+  `windower.ffxi.get_map_data()` — the client's own world→map-pixel
+  projection, so multi-map zones just work; entities in render range
+  come from `get_mob_array()` (colored by type: party sky, mobs rose,
+  NPCs emerald, players violet). Widescan rides incoming 0x0F4 bursts
+  (index/level/type/map-offsets/name, committed ~0.35s after the burst
+  goes quiet), 0x0F5 track updates give the tracked target an absolute
+  live position, and 0x0F6 marks clear cancelled scans. The map page's
+  "widescan" button injects the same outgoing 0x0F4 request the map
+  menu sends. Live updates ride a `map` SSE event at ~10Hz; snapshot at
+  `GET /api/map`. Drop a PNG into `data/maps/<zone>_<map>.png`
+  (remapster/FFXIDB pack naming) to get the real zone image under the
+  radar — `GET /api/map/img` serves it, 404 falls back to the grid.
+  `//xicompanion minimap` toggles/spawns; `settings.minimap` auto-launches on
+  login.
+- **Real zone map imagery** — the map page and minimap now render the
+  client's own map images with no setup. `mapdats.lua` (generated from
+  Windower ResourceExtractor's MapDats.json: 231 zones / 640 maps) maps
+  zone+map to a file id, `mapimg.lua` resolves it through `FTABLE.DAT`
+  to `ROM/<d>/<f>.DAT`, and `GET /api/map/img` serves the raw DAT bytes
+  as `application/x-ffxi-map` — the browser decodes the DXT3 /
+  8-bit-bitmap payload in-page (all 640 retail maps are 512×512),
+  keeping image decode entirely off the game frame. User-dropped
+  `data/maps/<zone>_<map>.png` files still take precedence; unresolved
+  zones fall back to the radar grid.
+- **Cooldowns window** — a detached fab-layer panel (`/cooldowns`) listing
+  active ability/spell recasts: name, live countdown, and a bar that
+  fills as the timer completes (amber = abilities, sky = spells). A new
+  `recasts.lua` module polls
+  `windower.ffxi.get_ability_recasts()`/`get_spell_recasts()` each pump,
+  rounds remaining to 0.1s, and pushes diffs over a `recasts` SSE event
+  (snapshot at `GET /api/recasts`). Since the client never reports full
+  recasts for abilities, the addon tracks each key's largest observed
+  remaining as the max (spells additionally floor at
+  `res.spells[id].recast`); job change and logout reset it. Open it via
+  the fab cluster or `//xicompanion cooldowns`;
+  `settings.cooldowns` auto-spawns it on login.
+- **Training regimes** (Fields of Valor / Grounds of Valor) in the journal
+  and tracker: outgoing 0x05B dialogue choices at a Field Manual/Grounds
+  Tome capture the selected page, 0x029/0x02D messages drive live
+  killed/needed progress and completion, and 0x113 supplies the tabs
+  balance. A new `regime_names.lua` (generated from bg-wiki by
+  `scripts/extract-regimes.py`) resolves each zone+page to its real
+  objectives — mob names, counts, and recommended level — rendered in the
+  journal's new TRAINING section and as a tracker row (hideable via the
+  `valor:valor` group key like the other categories).
 
 **Tooling**
 
 - Vite build (`npm run build:addon`), Go build (`npm run build:overlay`),
   incremental locked-file-tolerant deploy (`scripts/deploy.mjs`), release
   packaging (`scripts/package.mjs`), GitHub release workflow.
+- `deploy` now rename-swaps a locked `xicompanion-overlay.exe`: Windows can't
+  overwrite a running binary but can rename it, so the new build lands
+  as `xicompanion-overlay.exe` immediately and the old one is deleted once the
+  process exits.
 - Fengari smoke test (`scripts/smoke-test.mjs`) driving the real addon
   over `node:net` — covers HTTP endpoints, SSE, static SPA serving, file
   CRUD, macro parse/write/apply, and addon commands.
+
+### Fixed
+
+- **Detached windows fighting for always-on-top** — every periodic
+  re-assert scheme stole band-top per `SetWindowPos` call: per-window
+  asserts ping-ponged siblings, and the coordinated `zSweep` visibly
+  flickered whenever a foreign always-on-top window kept it running.
+  All polling z-order machinery removed; stacking is Windows-managed
+  plus `xicompanion:raise` (posted on page mousedown — lifts the touched
+  window without activating it, needed since `WS_EX_NOACTIVATE`
+  panels can't raise themselves).
+- **Lost all keyboard input to the game ("can only type in chat")** —
+  two causes. Drag/resize posted `WM_NCLBUTTONDOWN` to enter the native
+  modal loop; a post landing after button-up parked the window holding
+  global mouse capture, eating every click and key until Esc. Move/size
+  is now a Go loop (poll cursor → `SetWindowPos`, ends on button-up) —
+  no capture anywhere. Second, panel windows' transparent margins
+  looked like the game but clicks landed on the WebView2 and stole
+  activation — the fab and fab-layer panels (tracker, macro bar,
+  cooldowns, minimap) now hold `WS_EX_NOACTIVATE` like the tooltip, so
+  they can never take the game's keyboard; expand clears it.
+- **Detached windows fighting for always-on-top** — every window's
+  `keepPinned` unconditionally re-asserted `HWND_TOPMOST` every 2s,
+  and each assert steals band-top, so siblings ping-ponged forever.
+  The re-assert now only fires when a foreign window (the game, other
+  apps) actually outranks ours — sibling stacking follows click order
+  and stays put.
+- **Detached windows stuck solid dark** — `SetURL` fired as soon as the
+  HWND existed, but the WebView2 core initializes later; navigations in
+  that gap were dropped and the window sat on the dark splash page
+  forever. `navigateWhenReady` now waits for the splash's own
+  `WebViewNavigationCompleted` (with a timed fallback) and re-issues
+  `SetURL` until the page itself posts `xicompanion:loaded` after bootstrap —
+  NavigationCompleted fires for connection-refused error pages too, so
+  it can't confirm a mount. Applied to the main window, spawned
+  windows, and the item tooltip.
+- Fixed `[AT:xxxxxxxx]` decode skipping 2 chars short of the 13-char
+  marker in `text_to_bytes` — writing a palette containing an
+  auto-translate phrase corrupted it (`FD…FD` + trailing `4]`). Same
+  off-by-two fixed in the editor's byte counter.
+- Fixed un-hiding a tracker entry that was suppressed by its whole
+  category: the row's eye only looked at the `kind:key:id` key, so an
+  entry hidden by the `kind:key` group flag could never be restored —
+  clicking it wrote a key that had no effect. The toggle now reflects
+  the effective state (either key) and re-tracking clears both;
+  `/api/journal/track` failures surface in the pane instead of
+  silently dropping.
+- Fixed the tooltip window bouncing under/over the main UI: every
+  always-on-top window re-asserts `HWND_TOPMOST` on a timer, and
+  whichever pinner ran last won the top of the band. The tooltip is
+  now an **owned window** of whatever window summoned it
+  (`GWLP_HWNDPARENT` — owned windows always outrank their owner in
+  z-order), so re-pinning can never bury it.
+- The fab (and full window) now actually restores its saved position —
+  Wails' `InitialPosition` defaults to `WindowCentered`, which centers
+  the window after creation and silently ignores the saved X/Y.
+- Dragging the fab no longer loses its position — the overlay snapshots
+  live window bounds continuously (`trackGeometry`) instead of only on
+  expand/collapse/quit, which taskkill never reaches.
