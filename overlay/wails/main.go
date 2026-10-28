@@ -965,7 +965,7 @@ func fabLayerSpawned(key string) bool {
 	key = strings.SplitN(key, "?", 2)[0]
 	return key == "/tracker" || key == "/macrobar" || key == "/cooldowns" ||
 		key == "/minimap" || key == "/party" || key == "/target" ||
-		key == "/skillchain" || key == "/meter"
+		key == "/skillchain" || key == "/meter" || key == "/entities"
 }
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
@@ -1122,6 +1122,7 @@ func spawnWindow(route string) {
 		"/target":     "Target",
 		"/skillchain": "Skillchains",
 		"/meter":      "Meter",
+		"/entities":   "Nearby",
 	}
 	title, ok := spawnTitles[key]
 	if !ok {
@@ -1208,6 +1209,9 @@ func spawnWindow(route string) {
 	case "/meter":
 		// ranked damage rows — a party-list-ish strip
 		opts.Width, opts.Height = 340, 200
+	case "/entities":
+		// narrow entity list — same column shape as the party panel
+		opts.Width, opts.Height = 240, 300
 	}
 	if r := geomSnapshot().Windows[instKey]; r != nil && r.W >= mw && r.H >= mh {
 		opts.Width, opts.Height = r.W, r.H

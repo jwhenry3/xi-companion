@@ -23,6 +23,7 @@ import {
     Crosshair,
     ChevronDown,
     LayoutGrid,
+    List,
 } from 'lucide-preact';
 import { signal } from '@preact-mvc/core';
 
@@ -121,6 +122,7 @@ const GROUPS: FabGroup[] = [
         items: [
             { path: '/map', label: 'map', Icon: MapIcon },
             { path: '/minimap', label: 'minimap', Icon: Radar },
+            { path: '/entities', label: 'nearby', Icon: List },
         ],
     },
     {

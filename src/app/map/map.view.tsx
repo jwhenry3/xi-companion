@@ -75,13 +75,21 @@ export class MapView extends View implements OnInit, OnDestroy {
  r: number;
  } | null>(null);
 
+ private onStorage = (e: StorageEvent) => {
+ if (e.key !== 'xicompanion.selent') return;
+ const v = Number(localStorage.getItem('xicompanion.selent'));
+ this.sel.value = Number.isFinite(v) && v > 0 ? v : null;
+ };
+
  onInit() {
  void this.api.refreshMap();
  this.resolveImage();
+ window.addEventListener('storage', this.onStorage);
  }
 
  onDestroy() {
  window.clearTimeout(this.scanTimer);
+ window.removeEventListener('storage', this.onStorage);
  }
 
  /** zone/map image — user PNG or client DAT decoded in-page; a null
@@ -223,7 +231,12 @@ export class MapView extends View implements OnInit, OnDestroy {
  }`}
  title={isPlayer ? 'click for actions' : 'click to mark on the map'}
  onClick={(ev) => {
- this.sel.value = isSel ? null : (e.i ?? null);
+ const next = isSel ? null : (e.i ?? null);
+ this.sel.value = next;
+ localStorage.setItem(
+ 'xicompanion.selent',
+ next == null ? '' : String(next),
+ );
  if (isPlayer) {
  this.entMenu.value = {
  name: e.n!,
@@ -344,6 +357,7 @@ export class MapView extends View implements OnInit, OnDestroy {
  poiHide={this.hiddenPoi.value}
  entHide={this.hiddenKinds.value}
  sel={this.sel.value}
+ tgt={this.api.party.value?.t?.i}
  iconUrl={(id) => this.api.iconUrl(id)}
  scale={0.8}
  />

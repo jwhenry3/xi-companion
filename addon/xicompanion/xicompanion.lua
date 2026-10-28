@@ -72,6 +72,8 @@ local defaults = {
     target_check = true,
     -- auto-launch the skillchain/burst tracker; //xicompanion skillchain off
     skillchain = true,
+    -- auto-launch the nearby-entities list; //xicompanion entities off
+    entities = true,
     poll_interval = 1.5,
     -- messages kept per chat thread (each channel + each tell peer);
     -- served on reconnect so a reopened UI still has history
@@ -2913,8 +2915,6 @@ local function start_server()
             if bound_port ~= base_port then
                 log('port ' .. base_port .. ' busy, using ' .. bound_port .. ' instead')
             end
-            log('listening on http://127.0.0.1:' .. bound_port ..
-                ' - run //xicompanion open to launch the UI')
             return true
         end
     end
@@ -2932,7 +2932,6 @@ local function stop_server()
         pcall(function() conn.sock:close() end)
     end
     conns = {}
-    log('server stopped')
 end
 
 local function poll_state()
@@ -3117,7 +3116,7 @@ plat.on('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | start | stop | status | port <n> | refresh | swap | equip <set> | memscan [idx]')
+        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | meter | entities | check | start | stop | status | port <n> | refresh | swap | equip <set> | memscan [idx]')
     elseif cmd == 'open' then
         if server or start_server() then
             plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -3231,6 +3230,22 @@ plat.on('addon command', function(cmd, ...)
             return
         elseif launch_overlay(true, '--spawn /target') then
             log('target window launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'entities' or cmd == 'nearby' then
+        local sub = (args[1] or ''):lower()
+        if sub == 'on' or sub == 'off' then
+            settings.entities = (sub == 'on')
+            config.save(settings)
+            log('auto-entities ' .. (settings.entities and 'enabled' or 'disabled'))
+            if settings.entities and server and logged_in() then
+                launch_overlay(true, '--spawn /entities')
+            end
+        elseif not (server or start_server()) then
+            return
+        elseif launch_overlay(true, '--spawn /entities') then
+            log('entities window launched')
         else
             log_err('no overlay found (build with npm run build:overlay)')
         end
@@ -3488,6 +3503,9 @@ local function spawn_fab()
     end
     if settings.skillchain then
         launch_overlay(true, '--spawn /skillchain')
+    end
+    if settings.entities then
+        launch_overlay(true, '--spawn /entities')
     end
 end
 

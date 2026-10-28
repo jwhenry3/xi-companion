@@ -99,6 +99,12 @@ export const routes: Route[] = [
     path: '/meter',
     component: lazy(() => import('./meter/meter.view').then((m) => m.MeterView)),
   },
+  {
+    path: '/entities',
+    component: lazy(() =>
+      import('./entities/entities.view').then((m) => m.EntitiesView),
+    ),
+  },
 
   // the shared fab dropdown window — never user-navigable
   { path: '/fabmenu', component: FabMenu },

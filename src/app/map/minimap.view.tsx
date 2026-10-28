@@ -17,6 +17,7 @@ import {
 } from './map-zoom';
 
 const ZOOM_KEY = 'xicompanion.minimap.zoom';
+const SEL_KEY = 'xicompanion.selent';
 
 @Component()
 export class MinimapView extends View implements OnInit, OnDestroy {
@@ -28,8 +29,15 @@ export class MinimapView extends View implements OnInit, OnDestroy {
   // entity kinds hidden on the map page — the chips live there; this
   // view mirrors them via localStorage
   private hiddenKinds = signal<ReadonlySet<string>>(loadHidden());
+  // entity the /entities window (or /map list) last picked — pulses on
+  // the radar via MapRadar's sel ring; shared through localStorage
+  private sel = signal<number | null>(null);
   private onStorage = (e: StorageEvent) => {
     if (e.key === HIDE_KEY) this.hiddenKinds.value = loadHidden();
+    if (e.key === SEL_KEY) {
+      const v = Number(localStorage.getItem(SEL_KEY));
+      this.sel.value = Number.isFinite(v) && v > 0 ? v : null;
+    }
   };
 
   onInit() {
@@ -78,6 +86,8 @@ export class MinimapView extends View implements OnInit, OnDestroy {
           radius={radius}
           img={this.mapImg.value}
           entHide={this.hiddenKinds.value}
+          sel={this.sel.value}
+          tgt={this.api.party.value?.t?.i}
           iconUrl={(id) => this.api.iconUrl(id)}
           scale={1.2}
         />

@@ -119,6 +119,32 @@ local checked_ix = {}         -- mob index -> checked already
 local last_check_cmd = 0      -- rate limit on auto /check
 local pending_check = nil     -- {ix, name} the issued check is about
 local last_check = nil        -- {ix?, name?, con?, lv?, at}
+local am_dump = {}            -- 0x029 msg id -> first-40-bytes hex (dbg)
+local check_by_ix = {}        -- target index -> last parsed reply —
+                              -- difficulty doesn't change, so a mob's
+                              -- con lasts as long as it's tracked
+-- 0x029 /check param_2 -> con text (0x029 carries a rating int, not
+-- the phrase) — same strings the client's rendered line uses so the
+-- view's tier matcher still works
+local CHECK_RATINGS = {
+    [0] = 'too weak to be worthwhile',
+    [1] = 'easy prey',
+    [2] = 'decent challenge',
+    [3] = 'even match',
+    [4] = 'tough',
+    [5] = 'very tough',
+    [6] = 'incredibly tough',
+    [7] = 'impossible to gauge',
+}
+-- lowercase substrings a /check reply guarantees — matched when a
+-- check is pending and the "seems" patterns missed (server variants)
+local CHECK_PHRASES = {
+    'impossib', 'gauge',
+    'extremely tough', 'incredibly tough', 'very tough', 'tough',
+    'even match', 'decent challenge',
+    'easy prey', 'incredibly easy',
+    'too weak',
+}
 local last_t_ix = nil         -- target index last scan saw
 local pending_th = nil        -- {n, at} TH proc awaiting a target row
 local th_by_ix = {}           -- target index -> observed TH level
@@ -789,10 +815,11 @@ local function scan(now)
                 rel = 'pc'
             end
         end
-        local check = last_check and os.clock() - last_check.at < 60
-            and (last_check.name == t.name
-                 or (last_check.ix and last_check.ix == t.index))
-            and last_check or nil
+        local check = (t.index and check_by_ix[t.index])
+            or (last_check and os.clock() - last_check.at < 60
+                and (last_check.name == t.name
+                     or (last_check.ix and last_check.ix == t.index))
+                and last_check or nil)
         s.t = {
             i = t.id, n = t.name or '',
             hpp = t.hpp, tp = t.tp, cl = cl,
@@ -836,13 +863,40 @@ function M.log_line(text)
     -- "The Goblin Thug seems to be a decent challenge." — the generic
     -- match also covers NM replies ("seems to be an impossibility to
     -- gauge", "far too strong for you to handle alone")
-    local nm, con = text:match('^The (.-) seems to be (.+)%.?%s*$')
-        or text:match('^(.-) seems to be (.+)%.?%s*$')
+    -- replies don't all use "to be" ("seems extremely tough",
+    -- "seems impossible to gauge") — take either phrasing, anchored or
+    -- prefix-tolerant (color codes/other text can lead the line)
+    local nm, con = text:match('^The (.-) seems to be (.-)%.?%s*$')
+        or text:match('^The (.-) seems (.-)%.?%s*$')
+        or text:match('^(.-) seems to be (.-)%.?%s*$')
+        or text:match('^(.-) seems (.-)%.?%s*$')
     if con then
         last_check = { name = nm, con = con, at = os.clock(),
                        ix = pending_check and pending_check.ix }
+        if pending_check and pending_check.ix then
+            check_by_ix[pending_check.ix] = last_check
+        end
         pending_check = nil
         return
+    end
+    -- server variants that don't say "seems" at all: if a check is
+    -- pending, ANY known difficulty phrase in the line is the reply
+    if pending_check then
+        local lo = text:lower()
+        for _, p in ipairs(CHECK_PHRASES) do
+            if lo:find(p, 1, true) then
+                -- con is the matched phrase, not the raw line — the
+                -- view tiers on it
+                local c = { name = pending_check.name, con = p,
+                            ix = pending_check.ix, at = os.clock() }
+                last_check = c
+                if pending_check.ix then
+                    check_by_ix[pending_check.ix] = c
+                end
+                pending_check = nil
+                return
+            end
+        end
     end
     -- exact-level replies: "X's level is 75" (players + private
     -- servers that report the mob's real level)
@@ -851,6 +905,9 @@ function M.log_line(text)
     if lv then
         last_check = { name = pnm, lv = tonumber(lv), at = os.clock(),
                        ix = pending_check and pending_check.ix }
+        if pending_check and pending_check.ix then
+            check_by_ix[pending_check.ix] = last_check
+        end
         pending_check = nil
         return
     end
@@ -932,6 +989,47 @@ function M.handle_incoming(id, data)
 
     -- action packet: category 8/7 starts a cast on the actor; a later
     -- action from the same actor (any category) ends it
+    -- 0x029 action message — stash each new message id's raw bytes for
+    -- /api/party/dbg so the real layout can be read off
+    if id == 0x029 then
+        local hx = {}
+        for i = 1, math.min(#data, 40) do
+            hx[#hx + 1] = string.format('%02x', data:byte(i))
+        end
+        local mid = data:byte(0x15) + data:byte(0x16) * 256
+        if not am_dump[mid] then am_dump[mid] = table.concat(hx, ' ') end
+        -- fall through to the real handler below
+    end
+    -- 0x029 action message — the /check reply is param-driven, not text:
+    -- param_3 == 1 marks a check, param_1 is the mob's level and param_2
+    -- the difficulty rating (0 too weak .. 6 incredibly tough, 7+
+    -- impossible to gauge). Validated through res.action_messages —
+    -- the message id must resolve and its text mention 'seems'
+    if id == 0x029 and #data >= 0x1E then
+        local tgt_ix = data:byte(0x0F) + data:byte(0x10) * 256
+        local msg_id = data:byte(0x1D) + data:byte(0x1E) * 256
+        local p1 = data:byte(0x11) + data:byte(0x12) * 256
+            + data:byte(0x13) * 65536 + data:byte(0x14) * 16777216
+        local p2 = data:byte(0x15) + data:byte(0x16) * 256
+            + data:byte(0x17) * 65536 + data:byte(0x18) * 16777216
+        local p3 = data:byte(0x19) + data:byte(0x1A) * 256
+            + data:byte(0x1B) * 65536 + data:byte(0x1C) * 16777216
+        local am = ctx.res and ctx.res.action_messages
+            and ctx.res.action_messages[msg_id]
+        local mt = am and ((am.en or '') .. (am.enl or '')) or ''
+        if p3 == 1 and tgt_ix ~= 0
+            and mt:lower():find('seems', 1, true) then
+            local con = CHECK_RATINGS[p2]
+                or ('rating ' .. tostring(p2))
+            local c = { con = con, lv = p1 > 0 and p1 or nil,
+                        ix = tgt_ix, at = os.clock() }
+            check_by_ix[tgt_ix] = c
+            last_check = c
+            pending_check = nil
+        end
+        return
+    end
+
     if id == 0x028 and #data >= 20 then
         local actor = data:byte(5) + data:byte(6) * 256
             + data:byte(7) * 65536 + data:byte(8) * 16777216
@@ -1074,7 +1172,7 @@ function M.dbg_json()
         t = dbg_t, me = dbg_me, pn = dbg_mn,
         wc = wire_seen, ws = ctx.json_array(wire_sample), mif = dbg_mi,
         oc = out_seen, ou = math.max(0, own_until - os.clock()),
-        dl = ctx.json_array(dur_log), lk = dur_learned,
+        dl = ctx.json_array(dur_log), lk = dur_learned, am = am_dump,
     }
     local ok, enc = pcall(ctx.json.encode, out)
     return ok and enc or '{"ac":0}'

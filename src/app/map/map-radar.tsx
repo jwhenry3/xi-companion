@@ -100,7 +100,7 @@ export function entKind(e: MapEntity): string {
   return 'other';
 }
 
-function entColor(e: MapEntity): string {
+export function entColor(e: MapEntity): string {
   if (e.f & 1) return C.party; // social rings first — always friendly
   if (e.f & 2) return C.ally;
   if (e.f & 8) return C.ls;
@@ -155,6 +155,9 @@ export function MapRadar(props: {
   /** entity index (MapEntity.i) of the row selected in the side list —
    *  gets a pulsing ring on the radar */
   sel?: number | null;
+  /** entity index of the player's live target (party payload t.i) —
+   *  an amber chevron floating over the dot, like the client's arrow */
+  tgt?: number | null;
   /** resolves an item id to its /api/icon URL (the views own AddonApi) */
   iconUrl: (id: number) => string;
   class?: string;
@@ -398,6 +401,15 @@ export function MapRadar(props: {
                   />
                 </circle>
               </>
+            )}
+            {e.i != null && e.i === props.tgt && (
+              <path
+                d={chev(1, 0.9, dot)}
+                transform={`translate(${x} ${y - dot * 2.2})`}
+                fill="#fbbf24"
+                stroke="#1e293b"
+                stroke-width={unit * 0.4}
+              />
             )}
             <title>{`${e.n ?? '—'}${elText(el)}`}</title>
           </g>

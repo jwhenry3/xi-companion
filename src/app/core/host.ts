@@ -101,6 +101,8 @@ export const targetMode =
   detachedMode && window.location.pathname === '/target';
 export const skillchainMode =
   detachedMode && window.location.pathname === '/skillchain';
+export const entitiesMode =
+  detachedMode && window.location.pathname === '/entities';
 // every spawned window gets the transparent backdrop so the ffxi-panel
 // card's rounded corners clip cleanly; fab-layer panels additionally
 // disable selection (tracker-style overlay panels)
@@ -113,6 +115,7 @@ if (
   partyMode ||
   targetMode ||
   skillchainMode ||
+  entitiesMode ||
   menuMode
 )
   document.body.classList.add('panel-mode');
@@ -180,6 +183,7 @@ const PANEL_SETTING: Record<string, string> = {
   '/party': 'party',
   '/target': 'target',
   '/skillchain': 'skillchain',
+  '/entities': 'entities',
 };
 function persistPanel(path: string, on: boolean) {
   const key = PANEL_SETTING[path];

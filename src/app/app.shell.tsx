@@ -2,7 +2,7 @@ import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc
 import { ExternalLink, Cog } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, theme, setTheme, THEMES, type Theme, winOpacity, setWinView } from './core/host';
+import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, entitiesMode, theme, setTheme, THEMES, type Theme, winOpacity, setWinView } from './core/host';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { cn } from '@/lib/utils';
 import { Fab, FabMenu } from './fab';
@@ -150,7 +150,7 @@ export class AppShell extends View {
  // /target) keep tighter padding so they read as overlay panels.
  const panelMode =
  trackerMode || cooldownsMode || macrobarMode || minimapMode ||
- partyMode || targetMode || skillchainMode;
+ partyMode || targetMode || skillchainMode || entitiesMode;
  if (detachedMode) {
  // router.url carries the ?window=1 query — compare the bare path
  const path = url.split('?')[0];
@@ -165,6 +165,7 @@ export class AppShell extends View {
  '/target': 'Target',
  '/skillchain': 'Skillchains',
  '/meter': 'Combat Meter',
+ '/entities': 'Nearby',
  } as Record<string, string>
  )[path] ??
  NAV.find(

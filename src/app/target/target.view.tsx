@@ -19,14 +19,16 @@ function barClass(v: number) {
 // /check difficulty → the client's strength glyph: a con-colored ● plus
 // ▲ arrows for tiers above Even Match. NMs answer "impossible to
 // gauge" — that reads as ★ instead of arrows.
+// threat ramp: cold/dim at the safe end, hot at the deadly end —
+// arrow count adds urgency above even match
 const CON_TIERS: [RegExp, string, number][] = [
   [/too strong|extremely tough/, 'text-rose-600', 3],
   [/incredibly tough/, 'text-red-500', 3],
-  [/very tough/, 'text-orange-400', 2],
-  [/\btough\b/, 'text-amber-300', 1],
-  [/even match/, 'text-slate-100', 0],
-  [/decent challenge/, 'text-sky-400', 0],
-  [/incredibly easy/, 'text-violet-300', 0],
+  [/very tough/, 'text-orange-500', 2],
+  [/\btough\b/, 'text-amber-400', 1],
+  [/even match/, 'text-yellow-200', 0],
+  [/decent challenge/, 'text-sky-300', 0],
+  [/incredibly easy/, 'text-teal-400', 0],
   [/easy prey/, 'text-emerald-400', 0],
   [/too weak/, 'text-slate-500', 0],
 ];
@@ -91,6 +93,13 @@ export class TargetView extends View implements OnInit, OnDestroy {
  ) : (
  <>
  <span class="flex items-baseline gap-1.5">
+ {/* con glyph always leads the name — the tier mark when a
+     /check landed, a plain dot until then */}
+ <span class="w-3.5 shrink-0 self-center text-[10px] leading-none">
+  {(t!.con ? conMark(t!.con) : null) ?? (
+   <span class="text-slate-600">●</span>
+  )}
+ </span>
  {/* name matches the client's claim colors: amber
  unclaimed, emerald yours/party's, rose someone else's */}
  <span
@@ -125,20 +134,14 @@ export class TargetView extends View implements OnInit, OnDestroy {
  tp {t!.tp}
  </span>
  )}
- {(() => {
-  const mark = t!.con ? conMark(t!.con) : null;
-  if (t!.lv == null && !mark && !t!.con) return null;
-  return (
-   <span
-    class="flex shrink-0 items-center gap-1 text-[11px] text-amber-300"
-    title={t!.con ? `/check: ${t!.con}` : '/check result'}
-   >
-    {mark}
-    {t!.lv != null && `lv ${t!.lv}`}
-    {!mark && t!.con}
-   </span>
-  );
- })()}
+ {(t!.lv != null || t!.con) && (
+  <span
+   class="flex shrink-0 items-center gap-1 text-[11px] text-amber-300"
+   title={t!.con ? `/check: ${t!.con}` : '/check result'}
+  >
+   {t!.lv != null && `lv ${t!.lv}`}
+  </span>
+ )}
  {t!.th != null && (
  <span class="shrink-0 text-[11px] font-semibold text-amber-300">
  TH {t!.th}
