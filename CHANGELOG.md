@@ -5,8 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
+## [0.1.5] - unreleased
 ### Added
 
 - **ImagineXI feature port** — a batch of HUD features researched from
@@ -43,9 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `GET /api/layout` serves the rect list and the settings page's
     "auto-arrange all" slots the fab + every open window into free
     zones via `geom-set`.
-
-### Added (earlier)
-
 - **`ffxi` theme from the client's own window skin** —
   `scripts/extract-winskin.py` parses the `menu <name>` records inside
   the menu archives (`ROM/0/2.DAT`, `0/1.DAT`), decodes the embedded
@@ -57,33 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.ffxi-panel` with the game's navy/periwinkle chrome and
   buttons/fabs with the extracted `xlbutton` gradient via
   `border-image`.
-
-## [0.1.6] - 2026-10-28
-
-### Fixed
-
-- **Invisible mouse cursor + eaten clicks over overlay windows** — the
-  `nocursor` class (`cursor: none` on the fab bar, fab-layer panels,
-  tooltip, and menu) hid the OS cursor on the assumption the game's
-  software cursor would show through the translucent windows. It
-  doesn't over opaque panel pixels, so moving fast over the windows
-  left the cursor completely invisible, and clicks on fully
-  transparent/click-through regions fell through to the game. The
-  suppression is removed — one arrow cursor everywhere.
-
-### Removed
-
-- **The floating XIC visibility button** — the tiny always-up 48px
-  `/visibility` window (the collapse-all restore handle) is gone:
-  route, view, `XicLogo`, `visibilityMode`, the shell's dedicated
-  spawn/size/never-collapse handling, and `host.collapseAll` all
-  removed. A stale persisted `"/visibility": true` in `window.json`
-  can't respawn a dead-route window — `spawnWindow` ignores the route.
-  Collapse-all state still persists and uncollapses on overlay relaunch
-  (`OnSecondInstanceLaunch`).
-
-### Added
-
 - **POI markers on the map + minimap** — the map page and floating
   minimap now draw static points of interest the way the in-game map
   does: homepoints, telepoints (incl. shattered/dimensional portals),
@@ -122,23 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subclass swallows non-client `WM_SETCURSOR` so no stray arrow races
   it, and the webview asserts the same image via CSS. Drag/resize and
   z-order behavior are unchanged.
-
-### Fixed (cont.)
-
-- **Auto-launch settings silently dropped** — `minimap`, `party`, and
-  `target` were missing from the `SETTABLE` whitelist so `GET
-  /api/settings` never returned them (checkboxes always read off) and
-  `POST` discarded the writes.
-- **Fab menu window** — was resizable and padded: `DisableResize` plus
-  the `p-1` wrapper margin removed so the dropdown fills the window
-  edge-to-edge.
-- **Inventory filter** — `Weapon` and `Armor` collapse into a single
-  `Equipment` category; every equipment slot spans both anyway.
-
-## [0.1.5] - 2026-10-26
-
-### Added
-
 - **Chat enhancements** — the chat view was largely rebuilt: custom
   player-defined filter channels (`custom:<name>` merged views, edited
   via the `+` dialog and persisted through `GET|PUT
@@ -157,9 +109,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Invisible mouse cursor + eaten clicks over overlay windows** — the
+  `nocursor` class (`cursor: none` on the fab bar, fab-layer panels,
+  tooltip, and menu) hid the OS cursor on the assumption the game's
+  software cursor would show through the translucent windows. It
+  doesn't over opaque panel pixels, so moving fast over the windows
+  left the cursor completely invisible, and clicks on fully
+  transparent/click-through regions fell through to the game. The
+  suppression is removed — one arrow cursor everywhere.
+- **Auto-launch settings silently dropped** — `minimap`, `party`, and
+  `target` were missing from the `SETTABLE` whitelist so `GET
+  /api/settings` never returned them (checkboxes always read off) and
+  `POST` discarded the writes.
+- **Fab menu window** — was resizable and padded: `DisableResize` plus
+  the `p-1` wrapper margin removed so the dropdown fills the window
+  edge-to-edge.
+- **Inventory filter** — `Weapon` and `Armor` collapse into a single
+  `Equipment` category; every equipment slot spans both anyway.
 - **Macro / key-lock issues** — work in `macros.lua` and the command
   path around macro writes while the client holds key locks, plus
   `_WindowerMemory` bindings for the new host capabilities.
+
+### Removed
+
+- **The floating XIC visibility button** — the tiny always-up 48px
+  `/visibility` window (the collapse-all restore handle) is gone:
+  route, view, `XicLogo`, `visibilityMode`, the shell's dedicated
+  spawn/size/never-collapse handling, and `host.collapseAll` all
+  removed. A stale persisted `"/visibility": true` in `window.json`
+  can't respawn a dead-route window — `spawnWindow` ignores the route.
+  Collapse-all state still persists and uncollapses on overlay relaunch
+  (`OnSecondInstanceLaunch`).
 
 ## [0.1.4] - 2026-10-25
 
