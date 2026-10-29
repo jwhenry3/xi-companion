@@ -51,25 +51,26 @@ export class CooldownsView extends View implements OnInit, OnDestroy {
 
   private row(e: RecastEntry, left: number, fill: number) {
     return (
-      <div key={e.k} class="rounded px-2 py-1">
-        <span class="flex items-center gap-1.5">
-          <span class="min-w-0 flex-1 truncate text-xs text-slate-100">
-            {e.n}
-          </span>
-          <span class="shrink-0 text-[9px] tabular-nums text-slate-300">
-            {fmtCd(left)}
-          </span>
+      <span
+        key={e.k}
+        class="flex items-center gap-1.5 rounded px-2 py-0.5"
+      >
+        <span class="w-24 shrink-0 truncate text-xs text-slate-100">
+          {e.n}
         </span>
-        <span class="mt-0.5 block h-1.5 overflow-hidden rounded border border-slate-500/60 bg-slate-800/80">
+        <span class="block h-2 flex-1 overflow-hidden rounded bg-slate-800/80">
           <span
             class={cn(
-              'block h-full rounded',
+              'block h-full',
               e.t === 'a' ? 'bg-amber-400/80' : 'bg-sky-400/80',
             )}
             style={`width:${fill * 100}%`}
           />
         </span>
-      </div>
+        <span class="w-9 shrink-0 text-right text-[10px] tabular-nums text-slate-300">
+          {fmtCd(left)}
+        </span>
+      </span>
     );
   }
 

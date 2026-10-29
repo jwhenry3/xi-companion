@@ -19,30 +19,37 @@ function barClass(v: number) {
 // /check difficulty → the client's strength glyph: a con-colored ● plus
 // ▲ arrows for tiers above Even Match. NMs answer "impossible to
 // gauge" — that reads as ★ instead of arrows.
-// threat ramp: cold/dim at the safe end, hot at the deadly end —
-// arrow count adds urgency above even match
+// threat ramp: cold/dim at the safe end, hot at the deadly end.
+// negative tier = weaker than you (▼s), positive = stronger (▲s),
+// zero = even match (neutral ●)
 const CON_TIERS: [RegExp, string, number][] = [
   [/too strong|extremely tough/, 'text-rose-600', 3],
   [/incredibly tough/, 'text-red-500', 3],
   [/very tough/, 'text-orange-500', 2],
   [/\btough\b/, 'text-amber-400', 1],
   [/even match/, 'text-yellow-200', 0],
-  [/decent challenge/, 'text-sky-300', 0],
-  [/incredibly easy/, 'text-teal-400', 0],
-  [/easy prey/, 'text-emerald-400', 0],
-  [/too weak/, 'text-slate-500', 0],
+  [/decent challenge/, 'text-sky-300', -1],
+  [/incredibly easy/, 'text-teal-400', -2],
+  [/easy prey/, 'text-emerald-400', -2],
+  [/too weak/, 'text-slate-500', -3],
 ];
 const conMark = (con: string) => {
  const c = con.toLowerCase();
  if (/impossib|gauge/.test(c)) return <span class="text-pink-400">★</span>;
  const m = CON_TIERS.find(([re]) => re.test(c));
  if (!m) return null;
- const [, cls, ar] = m;
- return (
-  <span class={cn(cls, 'tracking-tight')}>
-   ●{ar > 0 ? '▲'.repeat(ar) : ''}
-  </span>
- );
+ const [, cls, tier] = m;
+ // arrows overlap into a chevron stack (\\\\\\/) — compact but still
+ // graded by count; plain ● for even match
+ const glyph =
+  tier === 0
+   ? '●'
+   : Array.from({ length: Math.abs(tier) }, (_, i) => (
+      <span key={i} className={i > 0 ? '-ml-[0.55em]' : ''}>
+       {tier > 0 ? '▲' : '▼'}
+      </span>
+     ));
+ return <span class={cn(cls, 'whitespace-nowrap')}>{glyph}</span>;
 };
 
 @Component()

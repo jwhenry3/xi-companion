@@ -357,7 +357,8 @@ export class MapView extends View implements OnInit, OnDestroy {
  poiHide={this.hiddenPoi.value}
  entHide={this.hiddenKinds.value}
  sel={this.sel.value}
- tgt={this.api.party.value?.t?.i}
+ tgt={this.api.party.value?.t?.ix}
+ stgt={this.api.party.value?.stx}
  iconUrl={(id) => this.api.iconUrl(id)}
  scale={0.8}
  />

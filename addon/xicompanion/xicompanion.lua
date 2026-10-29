@@ -1984,6 +1984,24 @@ local function poll_macro_sel()
                 for fname, stamp in pairs(cur) do
                     if prev[fname] ~= stamp then
                         sse_broadcast('macros', '{}')
+                        -- the client rewrites the outgoing palette's
+                        -- file on every move — the changed mcrN.dat IS
+                        -- the departed index, which is the only sel
+                        -- observable short of mcr.sys
+                        local n = tonumber(fname:match('^mcr(%d*)%.dat$')
+                            or fname:match('^mcr(%d+)%.dat$'))
+                        if n ~= nil then
+                            local v = {
+                                b = math.floor(n / 10) + 1,
+                                p = n % 10 + 1,
+                            }
+                            local was = macro_sel[d.id]
+                            if not was or was.b ~= v.b or was.p ~= v.p then
+                                macro_sel[d.id] = v
+                                sse_broadcast('macrosel',
+                                    json.encode(macro_sel))
+                            end
+                        end
                         break
                     end
                 end
@@ -2915,6 +2933,7 @@ local function start_server()
             if bound_port ~= base_port then
                 log('port ' .. base_port .. ' busy, using ' .. bound_port .. ' instead')
             end
+            log('listening on http://127.0.0.1:' .. bound_port)
             return true
         end
     end

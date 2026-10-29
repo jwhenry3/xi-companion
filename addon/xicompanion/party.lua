@@ -822,6 +822,7 @@ local function scan(now)
                 and last_check or nil)
         s.t = {
             i = t.id, n = t.name or '',
+            ix = t.index,
             hpp = t.hpp, tp = t.tp, cl = cl,
             lv = check and check.lv or nil,
             con = check and check.con or nil,
@@ -829,6 +830,11 @@ local function scan(now)
             th = t.index and th_by_ix[t.index] or nil,
             cast = tc and rec_json(tc) or nil,
         }
+    end
+    -- sub-target (<st>) — index only; the map marks it like the target
+    local oks, st = pcall(plat.ffxi.get_mob_by_target, 'st')
+    if oks and type(st) == 'table' and st.index then
+        s.stx = st.index
     end
     return s
 end

@@ -99,8 +99,14 @@ function commandFor(e: Row, target: string): string {
 
 function fmtSecs(secs?: number): string {
  if (!secs || secs <= 0) return '';
- // `left` arrives in seconds + tenths — "90.5s", not "1m30s"
- return `${Math.round(secs * 10) / 10}s`;
+ const s = Math.round(secs * 10) / 10;
+ if (s < 60) return `${s}s`;
+ const m = Math.floor(s / 60);
+ const rs = Math.floor(s % 60);
+ if (m < 60) return rs ? `${m}m${rs}s` : `${m}m`;
+ const h = Math.floor(m / 60);
+ const rm = m % 60;
+ return rm ? `${h}h${rm}m` : `${h}h`;
 }
 
 function iconUrl(api: AddonApi, e: Row): string | null {

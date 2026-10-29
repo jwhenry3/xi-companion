@@ -451,7 +451,7 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  {/* min-w keeps the fixed columns legible —
  narrow windows scroll sideways instead of
  crushing the name column */}
- <table class="w-full min-w-[26rem] table-fixed text-left text-xs">
+ <table class="w-full table-fixed text-left text-xs">
  <thead>
  <tr class="text-[10px] font-semibold uppercase tracking-wider text-slate-600">
  {this.sortHeader('level', 'Lv/iLv', 'w-14')}

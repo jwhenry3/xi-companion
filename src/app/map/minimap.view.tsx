@@ -87,7 +87,8 @@ export class MinimapView extends View implements OnInit, OnDestroy {
           img={this.mapImg.value}
           entHide={this.hiddenKinds.value}
           sel={this.sel.value}
-          tgt={this.api.party.value?.t?.i}
+          tgt={this.api.party.value?.t?.ix}
+          stgt={this.api.party.value?.stx}
           iconUrl={(id) => this.api.iconUrl(id)}
           scale={1.2}
         />

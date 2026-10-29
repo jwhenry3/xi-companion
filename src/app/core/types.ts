@@ -460,6 +460,8 @@ export interface TargetCast {
 
 export interface TargetState {
   i: number;
+  /** entity index in the zone mob array — same space as MapEntity.i */
+  ix?: number;
   n: string;
   hpp?: number;
   tp?: number;
@@ -517,6 +519,8 @@ export interface PartyState {
   a1?: PartyMember[];
   a2?: PartyMember[];
   t?: TargetState;
+  /** sub-target's entity index (<st>) — map marks it like the target */
+  stx?: number;
   /** the player's mob id — lets the UI skip its own casts */
   me?: number;
   /** any cast currently being tracked (actor may not be the target) */

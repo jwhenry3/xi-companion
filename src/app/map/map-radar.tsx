@@ -158,6 +158,8 @@ export function MapRadar(props: {
   /** entity index of the player's live target (party payload t.i) —
    *  an amber chevron floating over the dot, like the client's arrow */
   tgt?: number | null;
+  /** entity index of the sub-target (<st>) — same marker, cyan */
+  stgt?: number | null;
   /** resolves an item id to its /api/icon URL (the views own AddonApi) */
   iconUrl: (id: number) => string;
   class?: string;
@@ -403,13 +405,45 @@ export function MapRadar(props: {
               </>
             )}
             {e.i != null && e.i === props.tgt && (
-              <path
-                d={chev(1, 0.9, dot)}
-                transform={`translate(${x} ${y - dot * 2.2})`}
-                fill="#fbbf24"
-                stroke="#1e293b"
-                stroke-width={unit * 0.4}
-              />
+              <>
+                {/* ring on the dot itself + the floating chevron —
+                    visible even inside a crowded cluster */}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={dot * 0.95}
+                  fill="none"
+                  stroke="#60a5fa"
+                  stroke-width={unit * 0.9}
+                />
+                <path
+                  d={chev(1, 0.9, dot)}
+                  transform={`translate(${x} ${y - dot * 2.2})`}
+                  fill="#60a5fa"
+                  stroke="#1e293b"
+                  stroke-width={unit * 0.4}
+                />
+              </>
+            )}
+            {e.i != null && e.i === props.stgt && (
+              <>
+                {/* sub-target — same marker family, cyan */}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={dot * 0.95}
+                  fill="none"
+                  stroke="#22d3ee"
+                  stroke-width={unit * 0.9}
+                />
+                <path
+                  d={chev(1, 0.9, dot)}
+                  transform={`translate(${x} ${y - dot * 2.2})`}
+                  fill="#22d3ee"
+                  stroke="#1e293b"
+                  stroke-width={unit * 0.4}
+                />
+              </>
             )}
             <title>{`${e.n ?? '—'}${elText(el)}`}</title>
           </g>
