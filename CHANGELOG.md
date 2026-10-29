@@ -5,7 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.5] - unreleased
+## [0.1.6]
+
+### Added
+
+- **Nearby entities window** — `/entities` detached panel listing
+  mob-array entities, widescan entries (`???` examination points,
+  which often only appear via widescan), and map POIs in one
+  proximity-sorted list. `//xicompanion entities` / auto-spawn setting
+  / fab entry. Sticky header with a search field and group filter
+  chips (players / mob / npc / POI — `???`s ride the POI group), and
+  PC names colored by relationship (party / alliance / linkshell) like
+  the client's name display.
+- **Target + sub-target markers on the map/minimap** — the current
+  target's dot gets a ring + floating chevron (blue), the `<st>`
+  sub-target the same in cyan. The target payload now emits its
+  mob-array index (`ix`) so the markers key onto `MapEntity.i`.
+- **Con-style difficulty glyph on the target bar** — `/check` results
+  render as a leading glyph: `▼` chevrons for weaker targets,
+  `▲` for stronger (count = tier), `●` for even match, `★` for
+  impossible-to-gauge — a colored threat ramp instead of text.
+- **Party rows are targetable** — clicking a party/alliance row sends
+  `input /target <pN>`; the currently-targeted member highlights.
+- **Meter reset endpoint** — `POST /api/meter/reset` (the UI's reset
+  button uses it; `//xicompanion meter reset` still works).
+- **Window-skin extraction tooling** — `extract-winskin.py` accepts
+  `WINSKIN_BASE`/`WINSKIN_SRC` env overrides and XI View's DATs are
+  extracted under `themes/xiview/` (served via `/api/theme`).
+
+### Changed
+
+- **Combat meter** — rows split into independent dmg/heal group
+  sections (both togglable), the row list scrolls, and a reset button
+  sits in the header. Meter tally is party/alliance/trust-inclusive
+  (pets count under their master).
+- **Macro bar** — fixed-size 584×118, non-resizable (`DisableResize`);
+  book/page pickers no longer drive the client's own palette
+  (`/macro book`/`set` sync removed).
+- **Cooldowns window** — rows are single-line: name, inline fill bar,
+  countdown — matching the meter/party row shape.
+- **Spell-book times** — recast/cast/duration render at the highest
+  populated unit (`45s` → `5m` → `1m30s` → `2h15m`).
+- **Focus hand-back** — a plain click on a detached panel returns
+  keyboard focus to the game (`xicompanion:focus-game`, guarded so
+  drags/resizes/text inputs never trigger it); completed native
+  gestures do the same.
+- **Fab menu** — a panels group lists every window for show/hide, and
+  menus opened above the bar bottom-anchor flush to it.
+
+### Fixed
+
+- **`/check` reply capture** — replies persist per entity index
+  (difficulty doesn't expire after 60s), accept all phrasings
+  ("seems to be…", "seems…", or any known difficulty phrase while a
+  check is pending), and a 0x029 action-message parse covers servers
+  that send the reply as a packet.
+- **Macro editor clear** — a `clear` button blanks the selected cell's
+  label and all six lines; right-clicking a GearSwap slot unequips the
+  live piece.
+- **Inventory horizontal scrollbar** — dropped the table's fixed
+  `min-w` reserve.
+- **Smoke test** — `start_server` logs `listening on …` again (the
+  test reads the bound port from chat), and the mtime watch treats a
+  changed `mcrN.dat` as the departed palette index so `/api/macrosel`
+  tracks in-game book/page switches.
+
+## [0.1.5]
 ### Added
 
 - **ImagineXI feature port** — a batch of HUD features researched from
