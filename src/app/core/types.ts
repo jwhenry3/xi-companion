@@ -439,6 +439,8 @@ export interface PartyMember {
   sjl?: number;
   /** Trust role tag (TNK/HLR/RNG/CST/SUP/DD) — trusts have no job packets */
   tr?: string;
+  /** Trust role icon — item id to render via /api/icon (shield/sword/etc) */
+  tri?: number;
   /** estimated Treasure Hunter from job traits (THF main/sub) */
   th?: number;
   b?: PartyBuff[];
@@ -526,8 +528,11 @@ export interface PartyState {
   /** any cast currently being tracked (actor may not be the target) */
   cast?: TargetCast;
   /** combat meter — sorted damage rows + session elapsed seconds */
-  mt?: { n: string; d: number; h: number; hits: number; own?: number }[];
+  /** combat meter — cumulative totals + rolling-window sums (rd/rh) */
+  mt?: { n: string; d: number; h: number; hits: number; own?: number; rd?: number; rh?: number }[];
   mtt?: number;
+  /** combat-active seconds for the meter's /s rate (idle gaps excluded) */
+  mta?: number;
   /** skillchain / magic-burst tracking — active chains + recent WSs */
   sc?: {
     c?: ScChain[];

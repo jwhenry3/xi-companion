@@ -102,7 +102,15 @@ export class PartyView extends View implements OnInit {
           title={jobTitle(m) || undefined}
         >
           {m.tr ? (
-            <span class="text-[10px]">{m.tr}</span>
+            m.tri ? (
+              <img
+                class="h-6 w-6 rounded object-contain"
+                src={this.api.iconUrl(m.tri)}
+                alt={m.tr}
+              />
+            ) : (
+              <span class="text-[10px]">{m.tr}</span>
+            )
           ) : (
             <>
               <span class="text-[10px]">

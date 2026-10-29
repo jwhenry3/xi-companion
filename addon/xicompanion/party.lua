@@ -115,7 +115,7 @@ local out_seen = 0            -- 0x01A count for dbg
 -- stream (M.log_line, fed by xicompanion.lua's 'incoming text'). The
 -- autocheck below fires `input /check` once per new mob target; the
 -- reply then attaches to that target's index.
-local checked_ix = {}         -- mob index -> checked already
+local check_want = nil        -- {ix, tries} /check wish for the live target
 local last_check_cmd = 0      -- rate limit on auto /check
 local pending_check = nil     -- {ix, name} the issued check is about
 local last_check = nil        -- {ix?, name?, con?, lv?, at}
@@ -161,6 +161,8 @@ end
 -- hits; multi-target overflow reads the listed target only)
 local meter = {}              -- actor key -> {n, d(dmg), h(heal), hits}
 local meter_t0 = nil          -- session start (first seen action)
+local meter_last = nil        -- last action stamp — gaps don't count
+local meter_active = 0        -- combat-active seconds (the /s basis)
 local meter_dirty = false
 local member_names = {}       -- current party/alliance names (scan-built)
 local actor_name              -- fwd: declared below with the cast helpers
@@ -188,6 +190,24 @@ local function actor_friendly(actor, an)
     end
     -- unresolved wire id — fall back on the member-name list
     return an ~= nil and member_names[an] == true
+end
+
+-- combat activity pulse — sent AND received party damage both count:
+-- a >15s quiet gap is a new segment (previous totals drop); shorter
+-- gaps accumulate into the active-time basis for the /s rate
+local function meter_touch()
+    local now = os.time()
+    if meter_last and now - meter_last > 15 then
+        meter = {}
+        meter_t0 = nil
+        meter_active = 0
+        meter_last = nil
+    end
+    if not meter_t0 then meter_t0 = now end
+    if meter_last and now - meter_last <= 15 then
+        meter_active = meter_active + (now - meter_last)
+    end
+    meter_last = now
 end
 
 local function meter_add(cat, actor, spell_id, param, msg)
@@ -221,6 +241,9 @@ local function meter_add(cat, actor, spell_id, param, msg)
     end
     local an = actor_name(actor) or '???'
     if not actor_friendly(actor, an) then return end
+    -- activity pulse before the row lookup — a >15s gap wipes the
+    -- table, so `e` must be fetched after the segment check
+    meter_touch()
     -- key on the resolved entity index — the same actor shows up under
     -- both packed and unpacked 0x028 id forms, so keying on the raw id
     -- split one member/trust into two rows
@@ -230,7 +253,6 @@ local function meter_add(cat, actor, spell_id, param, msg)
         e = { n = an, d = 0, h = 0, hits = 0 }
         meter[key] = e
     end
-    if not meter_t0 then meter_t0 = os.clock() end
     e[kind == 'heal' and 'h' or 'd'] =
         (kind == 'heal' and e.h or e.d) + param
     e.hits = e.hits + 1
@@ -240,6 +262,8 @@ end
 function M.meter_reset()
     meter = {}
     meter_t0 = nil
+    meter_last = nil
+    meter_active = 0
     meter_dirty = true
 end
 
@@ -321,20 +345,49 @@ local TRUST_ROLE = {
     Brygid='SUP',['Ygnas']='SUP',Moogle='SUP',Sakura='SUP',
     ['Kupofried']='SUP',['Matsui-P']='SUP',
 }
+-- trust icon_id -> a real item icon for the role (mirrors
+-- abilities.lua's TRUST_ITEM_ICON — tanks shield, DD sword, RNG bow,
+-- caster staff, healer wand, support flute)
+local TRUST_ITEM_ICON = {
+    [1000]=12312,[1005]=12312,[1006]=12312,[1007]=12312,[1008]=12312,[1009]=16535,
+    [1010]=16535,[1011]=16535,[1012]=16535,[1013]=16535,[1014]=16535,
+    [1015]=16535,[1016]=16535,[1017]=16535,[1018]=16535,[1019]=16535,
+    [1021]=16535,[1026]=16535,[1027]=16535,[1028]=16535,
+    [1030]=16535,[1037]=16535,[1044]=16535,[1045]=16535,[1046]=16535,
+    [1048]=16535,[1057]=16535,[1058]=16535,[1059]=16535,[1060]=16535,
+    [1020]=17152,[1022]=17152,[1023]=17152,[1024]=17152,[1025]=17152,
+    [1029]=17088,[1031]=17088,[1032]=17088,[1033]=17088,[1035]=17088,
+    [1034]=17088,
+    [1036]=17050,[1038]=17050,[1039]=17050,[1040]=17050,[1041]=17050,
+    [1042]=17050,[1043]=17050,
+    [1047]=17345,[1049]=17345,[1050]=17345,[1051]=17345,[1052]=17345,
+    [1053]=17345,[1054]=17345,
+}
+local trust_icons              -- party_name -> role item icon id
+
 local function trust_role(name)
     if not name or name == '' then return nil end
     if not trust_names then
         trust_names = {}
+        trust_icons = {}
         if ctx.res and ctx.res.spells then
             for _, s in pairs(ctx.res.spells) do
                 if s.type == 'Trust' then
-                    trust_names[(s.party_name or s.en):lower()] = s.en
+                    local pn = (s.party_name or s.en):lower()
+                    trust_names[pn] = s.en
+                    trust_icons[pn] = TRUST_ITEM_ICON[s.icon_id]
                 end
             end
         end
     end
     local en = trust_names[name:lower()]
     return en and (TRUST_ROLE[en] or 'DD')
+end
+
+local function trust_icon(name)
+    if not name or name == '' then return nil end
+    if not trust_icons then trust_role(name) end -- lazy-build both maps
+    return trust_icons and trust_icons[name:lower()] or nil
 end
 
 -- cast→target matching falls back on the actor's name: resolve the
@@ -427,6 +480,7 @@ local function member_row(key, m, my_zone, leaders)
         sjl = jr and jr.sjl or nil,
         th = th,
         tr = key ~= 'p0' and trust_role(m.name) or nil,
+        tri = key ~= 'p0' and trust_icon(m.name) or nil,
         o = (m.zone and m.zone ~= my_zone) and 1 or nil,
         l = (mid and leaders[key]) and 1 or nil,
         b = buff_list(ids),
@@ -700,13 +754,21 @@ local function scan(now)
     s.sc = sc_json(nowc)
     -- combat meter rows — sorted by damage; rides the party payload so
     -- the /meter window needs no separate stream
-    s.mt = ctx.json_array(meter_json(me_ix))
-    if meter_dirty then
-        meter_dirty = false
-        s.mtt = math.floor(os.clock() - (meter_t0 or os.clock()))
-    else
-        s.mtt = meter_t0 and math.floor(os.clock() - meter_t0) or 0
+    -- segment expiry at snapshot time, not just on the next action:
+    -- >15s with nothing sent or received means the fight's over —
+    -- clear the tally so the window resets for the next pull instead
+    -- of holding the last fight's stats forever
+    if meter_last and os.time() - meter_last > 15
+        and next(meter) ~= nil then
+        meter = {}
+        meter_t0 = nil
+        meter_last = nil
+        meter_active = 0
+        meter_dirty = true
     end
+    s.mt = ctx.json_array(meter_json(me_ix))
+    s.mtt = meter_t0 and (os.time() - meter_t0) or 0
+    s.mta = meter_active
     local okm, me = pcall(plat.ffxi.get_mob_by_target, 'me')
     if okm and type(me) == 'table' then
         s.me = me.id
@@ -780,17 +842,35 @@ local function scan(now)
         local ismob = t.spawn_type == 16
             or (t.spawn_type == nil and t.is_npc == false)
         if ismob then
+            -- auto-/check queues on the live target: /check only ever
+            -- applies to what's targeted NOW, so a stale wish is
+            -- worthless — rapid switches just overwrite it. The client
+            -- also drops commands fired inside its input throttle, so
+            -- the wish retries every ~1.2s until a reply lands
+            -- (check_by_ix) — capped at 4 attempts so a server that
+            -- never answers can't spam forever
+            if t.index and (not ctx.autocheck or ctx.autocheck())
+                and not check_by_ix[t.index] then
+                if not (check_want and check_want.ix == t.index) then
+                    check_want = { ix = t.index, tries = 0 }
+                end
+                local now = os.clock()
+                if now - last_check_cmd > 1.2 then
+                    if check_want.tries >= 4 then
+                        -- unanswered — park it so the view shows the
+                        -- unknown-difficulty dot instead of retrying
+                        check_by_ix[t.index] = { ix = t.index,
+                                                 at = os.clock() }
+                    else
+                        last_check_cmd = now
+                        check_want.tries = check_want.tries + 1
+                        pending_check = { ix = t.index, name = t.name }
+                        plat.send_command('input /check')
+                    end
+                end
+            end
             if t.index and t.index ~= last_t_ix then
                 last_t_ix = t.index
-                local now = os.clock()
-                if (not ctx.autocheck or ctx.autocheck())
-                    and not checked_ix[t.index]
-                    and now - last_check_cmd > 1.2 then
-                    last_check_cmd = now
-                    checked_ix[t.index] = now
-                    pending_check = { ix = t.index, name = t.name }
-                    plat.send_command('input /check')
-                end
             end
             if pending_th and t.index then
                 if os.clock() - pending_th.at < 4 then
@@ -1059,6 +1139,11 @@ function M.handle_incoming(id, data)
         -- damage/heal figure for the categories that carry one
         meter_add(cat, actor, bits(data, 86, 16), bits(data, 213, 17),
                   bits(data, 230, 10))
+        -- received damage counts toward combat activity too — a mob
+        -- wailing on the party while nobody acts still means the
+        -- fight (and its /s window) is on
+        local tg_id = bits(data, 150, 32)
+        if actor_friendly(tg_id, actor_name(tg_id)) then meter_touch() end
         if cat == 8 or cat == 7 then
             -- ownness: a packed actor that resolves to a mapped entity
             -- is whoever that entity is (packed ids were ALWAYS unmapped

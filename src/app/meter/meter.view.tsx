@@ -30,7 +30,9 @@ export class MeterView extends View implements OnInit, OnDestroy {
     void this.tick.value; // re-render on the ticker
     const s = this.api.party.value;
     const rows = s?.mt ?? [];
-    const elapsed = Math.max(1, s?.mtt ?? 0);
+    // /s rate is over combat-active time — idle gaps between fights
+    // don't dilute it; the header clock shows the same span
+    const elapsed = Math.max(1, s?.mta ?? s?.mtt ?? 0);
     // inclusionary filters — dmg and heal are independent toggles;
     // both on shows each row's combined contribution
     const sel = { d: this.dmgOn.value, h: this.healOn.value };
@@ -49,9 +51,10 @@ export class MeterView extends View implements OnInit, OnDestroy {
       bc: string,
     ) => {
       if (!sel[k]) return null;
+      // own row pins to the top — easier to read your numbers mid-fight
       const g = rows
         .filter((r) => r[k] > 0)
-        .sort((a, b) => b[k] - a[k]);
+        .sort((a, b) => (b.own ?? 0) - (a.own ?? 0) || b[k] - a[k]);
       if (g.length === 0) return null;
       const gtot = g.reduce((a, r) => a + r[k], 0);
       const gmax = Math.max(...g.map((r) => r[k]));

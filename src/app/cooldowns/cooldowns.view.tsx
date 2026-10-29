@@ -13,9 +13,14 @@ import { cn } from '@/lib/utils';
 
 function fmtCd(secs: number): string {
   if (secs <= 0) return 'ready';
-  if (secs < 60) return `${Math.ceil(secs)}s`;
-  const m = Math.floor(secs / 60);
-  return `${m}:${String(Math.ceil(secs - m * 60)).padStart(2, '0')}`;
+  const s = Math.ceil(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return rs ? `${m}m${rs}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm ? `${h}h${rm}m` : `${h}h`;
 }
 
 @Component()
