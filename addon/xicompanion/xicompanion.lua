@@ -2444,6 +2444,11 @@ end
 
 -- force a journal rebroadcast: the tracker pokes this on mount so a
 -- diff-gated flush that fired while its SSE link was down gets re-sent
+routes['POST /api/meter/reset'] = function(conn)
+    if party then party.meter_reset() end
+    send_json(conn, 200, { ok = true })
+end
+
 routes['POST /api/journal/refresh'] = function(conn)
     if journal then
         sse_broadcast('journal', journal.snapshot_json())

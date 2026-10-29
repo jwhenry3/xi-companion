@@ -747,6 +747,10 @@ export class AddonApi {
     this.party.value = r;
   }
 
+  async meterReset() {
+    await this.req<{ ok: boolean }>('/api/meter/reset', { method: 'POST' });
+  }
+
   /** ask the server for a widescan refresh (same packet the map menu's
    *  Widescan option sends); results stream back via the `map` event */
   async mapScan() {

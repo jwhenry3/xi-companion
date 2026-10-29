@@ -150,7 +150,7 @@ export class MeterView extends View implements OnInit, OnDestroy {
           <button
             class="rounded p-0.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
             title="reset meter"
-            onClick={() => this.api.sendCommand('//xicompanion meter reset')}
+            onClick={() => this.api.meterReset()}
           >
             <RotateCcw size={11} />
           </button>
@@ -160,10 +160,10 @@ export class MeterView extends View implements OnInit, OnDestroy {
             no actions seen yet
           </p>
         ) : (
-          <>
+          <div class="min-h-0 flex-1 overflow-y-auto">
             {group('d', 'dmg', 'text-rose-300', 'bg-rose-500/80')}
             {group('h', 'heal', 'text-emerald-300', 'bg-emerald-500/80')}
-          </>
+          </div>
         )}
       </div>
     );
