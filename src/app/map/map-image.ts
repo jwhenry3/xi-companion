@@ -15,18 +15,36 @@
 const DXT0 = 0x44585430; // 'DXT0'
 const BITMAP = 0x0a;
 
-const cache = new Map<string, { t: number; p: Promise<string | null> }>();
+// `ok` resolves with the result: undefined = pending, true = decoded,
+// false = fetch/decode failed — failures age out fast so a spawn-time
+// race (window up before the addon's first map event / bridge
+// handshake) doesn't hold a blank image hostage for half a minute
+interface CacheEntry {
+  t: number;
+  p: Promise<string | null>;
+  ok?: boolean;
+}
+const cache = new Map<string, CacheEntry>();
 const RETRY_MS = 30000;
+const FAIL_RETRY_MS = 5000;
 
 export function resolveMapImage(
   url: string,
   key: string,
 ): Promise<string | null> {
   const e = cache.get(key);
-  if (e && Date.now() - e.t < RETRY_MS) return e.p;
-  const p = fetchAndDecode(url);
-  cache.set(key, { t: Date.now(), p });
-  return p;
+  if (e) {
+    const age = Date.now() - e.t;
+    if (e.ok !== false && age < RETRY_MS) return e.p;
+    if (e.ok === false && age < FAIL_RETRY_MS) return e.p;
+  }
+  const entry: CacheEntry = { t: Date.now(), p: null! };
+  entry.p = fetchAndDecode(url).then((v) => {
+    entry.ok = v != null;
+    return v;
+  });
+  cache.set(key, entry);
+  return entry.p;
 }
 
 async function fetchAndDecode(url: string): Promise<string | null> {
