@@ -32,6 +32,14 @@ API = 'https://www.bg-wiki.com/api.php'
 UA = {'User-Agent': 'xicompanion/1.0 (nm table generator)'}
 CATEGORY = 'Category:Notorious_Monster'
 
+# Shared names: a page titled "Foo (NM)"/"Foo (zone)" disambiguates an
+# NM that shares its name with a regular mob. Name-matching can't tell
+# the two apart in the wild, so they leave the global set and instead
+# emit into nm_shared.lua as name -> {zones where the NM exists}.
+SHARED_OUT = 'addon/xicompanion/nm_shared.lua'
+
+DISAMBIG = re.compile(r'\s*\((.*)\)\s*$')
+
 
 def get(params):
     url = API + '?' + urllib.parse.urlencode(params)
@@ -41,7 +49,9 @@ def get(params):
 
 
 def fetch_names():
-    names = set()
+    """Plain titles -> global set; disambiguated titles -> shared table
+    (title kept for the wikitext zone fetch)."""
+    names, shared = set(), {}
     params = {
         'action': 'query',
         'list': 'categorymembers',
@@ -54,15 +64,51 @@ def fetch_names():
         data = get(params)
         for m in data.get('query', {}).get('categorymembers', []):
             title = m.get('title', '')
-            # strip disambiguation suffixes: "Foo (NM)", "Foo (San d'Oria)"
             name = re.sub(r'\s*\(.*\)\s*$', '', title).strip().lower()
-            if name:
+            if not name:
+                continue
+            if DISAMBIG.search(title):
+                shared[name] = title
+            else:
                 names.add(name)
         cont = data.get('continue', {}).get('cmcontinue')
         if not cont:
             break
         params['cmcontinue'] = cont
-    return names
+    return names, shared
+
+
+def fetch_shared_zones(shared):
+    """Wikitext zone fields for each disambiguated page — the zones the
+    NM variant actually spawns in. Batched 50 titles per API call."""
+    zones = {}
+    titles = sorted(shared.values())
+    for i in range(0, len(titles), 50):
+        data = get({
+            'action': 'query',
+            'prop': 'revisions',
+            'rvprop': 'content',
+            'rvslots': 'main',
+            'titles': '|'.join(titles[i:i + 50]),
+            'format': 'json',
+        })
+        for page in data.get('query', {}).get('pages', {}).values():
+            title = page.get('title', '')
+            name = re.sub(r'\s*\(.*\)\s*$', '', title).strip().lower()
+            rev = page.get('revisions', [{}])[0]
+            text = rev.get('slots', {}).get('main', {}).get('*', '')
+            zs = set()
+            for zm in re.finditer(
+                    r'\|\s*zone[\w\s]*=\s*\[\[(?:[^\]|]*\|)?([^\]|]+)',
+                    text, re.I):
+                zs.add(zm.group(1).strip())
+            for zm in re.finditer(
+                    r'\|\s*zone[\w\s]*=\s*([^\n|]+)', text, re.I):
+                z = zm.group(1).strip().strip("'")
+                if z and '[[' not in z:
+                    zs.add(z)
+            zones.setdefault(name, set()).update(zs)
+    return zones
 
 
 def lua_str(s):
@@ -72,13 +118,20 @@ def lua_str(s):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='addon/xicompanion/nm_names.lua')
+    ap.add_argument('--shared', default=None,
+                    help='zone-scoped shared names out (default ' + SHARED_OUT + ')')
     args = ap.parse_args()
 
-    names = fetch_names()
+    names, shared = fetch_names()
     if not names:
         print('no names fetched — refusing to write an empty table',
               file=sys.stderr)
         return 1
+
+    # shared names can collide with a global NM name when an
+    # un-disambiguated page exists too — the plain title wins
+    zones = fetch_shared_zones({n: t for n, t in shared.items()
+                                if n not in names})
 
     lines = [
         '-- Notorious-monster name set for map.lua NM flagging.',
@@ -94,6 +147,25 @@ def main():
     with open(args.out, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     print('wrote %d names -> %s' % (len(names), args.out))
+
+    # zone-scoped shared names: {name} = { ['zone name'] = true, ... }
+    slines = [
+        '-- Shared-name NMs for map.lua — flag only inside the listed',
+        '-- zones (the name is also a regular mob elsewhere). Generated',
+        '-- by scripts/extract-nms.py — do not edit by hand.',
+        'return {',
+    ]
+    for name in sorted(zones):
+        if not zones[name]:
+            continue
+        zs = ', '.join('[%s] = true' % lua_str(z.lower())
+                       for z in sorted(zones[name]))
+        slines.append('    [%s] = { %s },' % (lua_str(name), zs))
+    slines.append('}')
+    out = (args.shared or SHARED_OUT)
+    with open(out, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('\n'.join(slines) + '\n')
+    print('wrote %d shared names -> %s' % (len(zones), out))
     return 0
 
 

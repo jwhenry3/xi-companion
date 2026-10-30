@@ -55,15 +55,17 @@ local function persist_windups()
     if ctx.data_dir and not plat.dir_exists(ctx.data_dir) then
         pcall(plat.create_dir, ctx.data_dir)
     end
-    local f = io.open(windups_path, 'wb')
-    if not f then return end
     local out = { 'return {' }
     for k, v in pairs(dur_learned) do
         out[#out + 1] = string.format('[%q]=%s,', k, tostring(v))
     end
     out[#out + 1] = '}'
-    f:write(table.concat(out))
-    f:close()
+    -- converge: data/ is per-install state and won't ride a git tag —
+    -- the shipped seed must absorb every learned row as it lands
+    for _, p in ipairs({ windups_path, plat.addon_path .. 'windups.lua' }) do
+        local f = io.open(p, 'wb')
+        if f then f:write(table.concat(out)) f:close() end
+    end
 end
 
 function M.setup(deps)
@@ -73,11 +75,18 @@ function M.setup(deps)
     if deps.data_dir and deps.join then
         windups_path = deps.join(deps.data_dir, 'windups.lua')
     end
-    if windups_path and plat.file_exists(windups_path) then
-        local ok, t = pcall(dofile, windups_path)
-        if ok and type(t) == 'table' then
-            for k, v in pairs(t) do
-                if type(v) == 'number' then dur_learned[k] = v end
+    -- shipped seed (windups.lua — merged on release so everyone gets
+    -- the learned timings) then the per-install overlay in data/
+    for _, p in ipairs({
+        plat.addon_path .. 'windups.lua',
+        windups_path,
+    }) do
+        if p and plat.file_exists(p) then
+            local ok, t = pcall(dofile, p)
+            if ok and type(t) == 'table' then
+                for k, v in pairs(t) do
+                    if type(v) == 'number' then dur_learned[k] = v end
+                end
             end
         end
     end

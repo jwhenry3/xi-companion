@@ -57,10 +57,74 @@ local poi_miss = {}          -- zone -> true: projection attempted, none usable
 -- nothing in widescan packets) — so it's matched by name against the
 -- generated nm_names.lua table (bg-wiki Category:Notorious_Monster via
 -- scripts/extract-nms.py). Missing file just means no NM colors.
-local nm_names = {}
+local zone_lower -- current zone name (lower), set each pump
+local nm_names, nm_shared = {}, {}
 do
     local ok, t = pcall(dofile, plat.addon_path .. 'nm_names.lua')
     if ok and type(t) == 'table' then nm_names = t end
+    -- zone-scoped shared names: {name} = {zone=true}. Shipped seed
+    -- (nm_shared.lua, generated/learned-merged on release) plus the
+    -- per-install overlay //xicompanion nm writes to data/ — both merge
+    for _, p in ipairs({
+        plat.addon_path .. 'nm_shared.lua',
+        plat.addon_path .. 'data/nm_shared.lua',
+    }) do
+        local ok2, t2 = pcall(dofile, p)
+        if ok2 and type(t2) == 'table' then
+            for n, zs in pairs(t2) do
+                local d = nm_shared[n] or {}
+                if type(zs) == 'table' then
+                    for z in pairs(zs) do d[z] = true end
+                end
+                nm_shared[n] = d
+            end
+        end
+    end
+end
+
+local function is_nm(name, zone_lower)
+    if nm_names[name] then return true end
+    local zs = nm_shared[name]
+    return zs ~= nil and zone_lower ~= nil and zs[zone_lower] == true
+end
+
+local function persist_shared()
+    if plat.create_dir then
+        pcall(plat.create_dir, plat.addon_path .. 'data')
+    end
+    local out = { 'return {' }
+    for n, zs in pairs(nm_shared) do
+        local parts = {}
+        for z in pairs(zs) do
+            parts[#parts + 1] = string.format('[%q]=true', z)
+        end
+        out[#out + 1] = string.format('    [%q] = { %s },',
+            n, table.concat(parts, ','))
+    end
+    out[#out + 1] = '}'
+    -- converge to the shipped seed too — data/ is per-install and a
+    -- git tag never picks it up
+    for _, p in ipairs({
+        plat.addon_path .. 'data/nm_shared.lua',
+        plat.addon_path .. 'nm_shared.lua',
+    }) do
+        local g = io.open(p, 'wb')
+        if g then g:write(table.concat(out, '\n')) g:close() end
+    end
+end
+
+-- //xicompanion nm <name>: mark a shared-name mob as an NM in the
+-- current zone (learned into the data/ overlay; merged to the shipped
+-- nm_shared.lua on release). Returns the name + zone marked.
+function M.learn_nm(name, zone_name)
+    if not name or name == '' then return nil end
+    name = name:lower()
+    if nm_names[name] then return name, nil end -- already globally NM
+    local d = nm_shared[name] or {}
+    d[zone_name:lower()] = true
+    nm_shared[name] = d
+    persist_shared()
+    return name, zone_name
 end
 
 function M.setup(deps)
@@ -172,6 +236,7 @@ local function scan(now)
     local zn
     local zr = ctx.res and ctx.res.zones and ctx.res.zones[zone]
     if zr then zn = zr.en end
+    zone_lower = zn and zn:lower() -- module cache for is_nm + learn_nm
 
     -- grid coord ("F-10") from the client's own pos function — the same
     -- string <pos> expands to; absent under Ashita (no mapinfo read)
@@ -202,7 +267,9 @@ local function scan(now)
                     if ls_names[1][e.name] or ls_names[2][e.name] then
                         fl = fl + 8
                     end
-                    if nm_names[e.name:lower()] then fl = fl + 16 end
+                    if is_nm(e.name:lower(), zone_lower) then
+                        fl = fl + 16
+                    end
                     -- height delta vs the player: the mob struct's z is
                     -- the vertical axis but increases DOWNWARD (mobs
                     -- below read positive), so flip it — +el = above.
@@ -321,7 +388,7 @@ function M.handle_incoming(id, data)
             local e = {
                 i = index, l = level, t = typ,
                 x = xo, y = yo, n = name,
-                nm = nm_names[name:lower()] and 1 or nil,
+                nm = is_nm(name:lower(), zone_lower) and 1 or nil,
             }
             -- xo/yo are world-yalm deltas from the player, not map px —
             -- project (player pos + delta) through the client's own

@@ -3290,6 +3290,19 @@ plat.on('addon command', function(cmd, ...)
         config.save(settings)
         log('auto-/check on new mob targets ' ..
             (settings.target_check and 'enabled' or 'disabled'))
+    elseif cmd == 'nm' then
+        -- mark a shared-name mob as an NM in this zone: //xicomp nm <name>
+        local name = table.concat(args, ' ')
+        local okz, info = pcall(plat.ffxi.get_info)
+        local zid = (okz and type(info) == 'table') and info.zone or 0
+        local zr = res and res.zones and res.zones[zid]
+        if not (map and map.learn_nm) or name == '' or not zr then
+            log_err('usage: nm <mob name> (needs zone + name)')
+        else
+            local n, z = map.learn_nm(name, zr.en)
+            if z then log('NM marked: ' .. n .. ' in ' .. z)
+            else log('already a global NM: ' .. tostring(n)) end
+        end
     elseif cmd == 'skillchain' or cmd == 'sc' then
         local sub = (args[1] or ''):lower()
         if sub == 'on' or sub == 'off' then
