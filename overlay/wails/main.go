@@ -627,11 +627,16 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 	pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r0)))
 	x0, y0 := r0.left, r0.top
 	w0, h0 := r0.right-r0.left, r0.bottom-r0.top
+	log.Printf("drag: start hwnd=%x hit=%d rect=%d,%d %dx%d",
+		hwnd, hitTest, x0, y0, w0, h0)
 	lEdge := hitTest == htLeft || hitTest == htTopLeft || hitTest == htBottomLeft
 	rEdge := hitTest == htRight || hitTest == htTopRight || hitTest == htBottomRight
 	tEdge := hitTest == htTop || hitTest == htTopLeft || hitTest == htTopRight
 	bEdge := hitTest == htBottom || hitTest == htBottomLeft || hitTest == htBottomRight
 
+	// live grid: the dragged rect snaps to 8px while the cursor roams
+	// free (same rounding the drop-snap applies below)
+	snap := func(v int32) int32 { return (v + 4) &^ 7 }
 	l, t, r, b := x0, y0, x0+w0, y0+h0
 	for {
 		time.Sleep(15 * time.Millisecond)
@@ -643,20 +648,20 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 		dx, dy := p.x-p0.x, p.y-p0.y
 		l, t, r, b = x0, y0, x0+w0, y0+h0
 		if hitTest == htCaption {
-			l, t = x0+dx, y0+dy
+			l, t = snap(x0+dx), snap(y0+dy)
 			r, b = l+w0, t+h0
 		} else {
 			if lEdge {
-				l = x0 + dx
+				l = snap(x0 + dx)
 			}
 			if rEdge {
-				r = x0 + w0 + dx
+				r = snap(x0 + w0 + dx)
 			}
 			if tEdge {
-				t = y0 + dy
+				t = snap(y0 + dy)
 			}
 			if bEdge {
-				b = y0 + h0 + dy
+				b = snap(y0 + h0 + dy)
 			}
 		}
 		// never collapse an edge past its opposite — pin whichever side
@@ -682,8 +687,9 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 	}
 	// drop-snap: pin the final rect to 8px intervals — edges AND size
 	// (snapping both edges keeps the delta a multiple of 8)
-	snap := func(v int32) int32 { return (v + 4) &^ 7 }
 	sl, st, sr, sb := snap(l), snap(t), snap(r), snap(b)
+	log.Printf("drag: end %d,%d %dx%d -> %d,%d %dx%d",
+		l, t, r-l, b-t, sl, st, sr-sl, sb-st)
 	pSetWindowPos.Call(hwnd, 0,
 		uintptr(int64(sl)), uintptr(int64(st)),
 		uintptr(int64(sr-sl)), uintptr(int64(sb-st)),

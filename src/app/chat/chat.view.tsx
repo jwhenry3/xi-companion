@@ -115,6 +115,20 @@ const SENDABLE = new Set([
   'politics',
 ]);
 
+// private-server extras — linkshell3 and the !-channels aren't real
+// FFXI channels; they only become send targets once the channel has
+// seen traffic (a server that doesn't offer them can't receive them)
+const PRIVATE = new Set([
+  'linkshell3',
+  'global',
+  'lfp',
+  'market',
+  'general',
+  'crafting',
+  'help',
+  'politics',
+]);
+
 // ---------- auto-translate phrases in the composer ----------
 //
 // A chosen phrase is inserted as {Name} — literal braces, the same
@@ -616,9 +630,15 @@ export class ChatView extends View implements OnInit, OnDestroy {
   });
 
   /** fixed sidebar order — channels never regroup on traffic; only
-   *  user pins float a row to the PINNED section */
+   *  user pins float a row to the PINNED section. Private-server
+   *  extras hide entirely until their channel sees traffic (same rule
+   *  as the composer's sendable gate) */
   private listedChannels = computed(() =>
-    CHANNELS.filter((c) => !this.pins.value.has(c.key)),
+    CHANNELS.filter(
+      (c) =>
+        !this.pins.value.has(c.key) &&
+        (!PRIVATE.has(c.key) || this.chanHasTraffic(c.key)),
+    ),
   );
 
   /** channel row label — linkshell channels show the equipped pearl's
@@ -712,6 +732,18 @@ export class ChatView extends View implements OnInit, OnDestroy {
   private splitDraft = signal('');
   private splitSendTarget = signal('party');
 
+  /** any chat history on this channel — the gate for private-server
+   *  extras everywhere they could be picked */
+  private chanHasTraffic(c: string): boolean {
+    return this.api.chat.value.some((m) => m.channel === c);
+  }
+
+  /** sendable + (private ⇒ has traffic) — hides !-channels/linkshell3
+   *  on retail where they'd just 400 on send */
+  private sendable(c: string): boolean {
+    return SENDABLE.has(c) && (!PRIVATE.has(c) || this.chanHasTraffic(c));
+  }
+
   /** sendable members of the split pane's thread (empty for tell:/read-
    *  only threads) */
   private splitTargets(): string[] {
@@ -722,7 +754,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
         ? (this.api.chatCustom.value.find((c) => `custom:${c.name}` === t)
             ?.channels ?? [])
         : PRESET_THREADS[t] ?? (t.startsWith('tell:') ? [] : [t]);
-    return members.filter((c) => SENDABLE.has(c));
+    return members.filter((c) => this.sendable(c));
   }
 
   private splitSendChannel(): string | null {
@@ -838,19 +870,19 @@ export class ChatView extends View implements OnInit, OnDestroy {
   private sendTargets(): string[] | null {
     const thread = this.api.activeChat.value;
     if (thread === 'split') {
-      return CHANNELS.filter((c) => SENDABLE.has(c.key)).map((c) => c.key);
+      return CHANNELS.filter((c) => this.sendable(c.key)).map((c) => c.key);
     }
     if (thread === 'all') {
-      return CHANNELS.filter((c) => SENDABLE.has(c.key)).map((c) => c.key);
+      return CHANNELS.filter((c) => this.sendable(c.key)).map((c) => c.key);
     }
     if (thread.startsWith('custom:')) {
       const def = this.api.chatCustom.value.find(
         (c) => `custom:${c.name}` === thread,
       );
-      return (def?.channels ?? []).filter((c) => SENDABLE.has(c));
+      return (def?.channels ?? []).filter((c) => this.sendable(c));
     }
     if (PRESET_THREADS[thread]) {
-      return PRESET_THREADS[thread].filter((c) => SENDABLE.has(c));
+      return PRESET_THREADS[thread].filter((c) => this.sendable(c));
     }
     return null;
   }
@@ -860,7 +892,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
     const targets = this.sendTargets();
     if (!targets) {
       const thread = this.api.activeChat.value;
-      return SENDABLE.has(thread) ? thread : null;
+      return this.sendable(thread) ? thread : null;
     }
     return targets.includes(this.sendTarget.value)
       ? this.sendTarget.value
@@ -985,7 +1017,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
     const targets = this.sendTargets();
     const canSend =
       isTell ||
-      (targets ? targets.length > 0 : SENDABLE.has(chan));
+      (targets ? targets.length > 0 : this.sendable(chan));
     // chips on rows when the pane mixes channels
     const mixed =
       this.searchAll.value || isAll || isSplit || thread.startsWith('custom:');
@@ -1346,7 +1378,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             onClick={() => (this.clearAllArm.value = false)}
           >
             <div
-              class="w-72 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
+              class="w-72 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 class="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1385,7 +1417,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             onClick={() => (this.dmOpen.value = false)}
           >
             <div
-              class="w-72 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
+              class="w-72 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1425,7 +1457,7 @@ export class ChatView extends View implements OnInit, OnDestroy {
             onClick={() => (this.customOpen.value = false)}
           >
             <div
-              class="w-80 rounded border border-slate-600 bg-black/30 p-4 shadow-xl"
+              class="w-80 rounded border border-slate-600 bg-slate-900 p-4 shadow-xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1445,7 +1477,9 @@ export class ChatView extends View implements OnInit, OnDestroy {
                 include messages from
               </p>
               <div class="grid grid-cols-2 gap-x-3 gap-y-1">
-                {CUSTOM_SOURCES.map((c) => (
+                {CUSTOM_SOURCES.filter(
+                  (c) => !PRIVATE.has(c.key) || this.chanHasTraffic(c.key),
+                ).map((c) => (
                   <label
                     key={c.key}
                     class="flex items-center gap-1.5 text-xs text-slate-300"
