@@ -1,10 +1,13 @@
 import { bootstrap } from '@preact-mvc/core';
 import { AppModule } from './app/app.module';
+import { installErrorLog } from './app/core/errlog';
 import { host, fabMode, detachedMode, menuMode, tooltipMode, installWindowChrome } from './app/core/host';
 import './styles.css';
 
-// Esc collapses the overlay back to the floating button — in Electron the
-// shell intercepts the key before the page; under Wails we handle it here.
+installErrorLog('page');
+
+// Esc collapses the overlay back to the floating button — handled here in
+// the page (capture phase).
 // Detached (?window=) panels ignore Esc — destroying a HUD window off a
 // stray keystroke was too easy; close them via × or the Panels menu.
 // Capture phase so it behaves the same either way (expand via //xicompanion

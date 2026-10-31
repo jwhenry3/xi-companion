@@ -49,7 +49,7 @@ export const POI_KIND: Record<
 
 /** one POI icon at (p.x, p.y); `s` is the half-size in viewBox units.
  *  The kind-colored disc stays underneath as a fallback when the icon
- *  fetch 404s (Ashita, missing DATs) — image/bmp renders in every
+ *  fetch 404s (missing DATs) — image/bmp renders in every
  *  WebView we target. */
 function PoiGlyph({
   p,

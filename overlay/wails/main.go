@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,6 +76,8 @@ var (
 	pSetWindowLongPtr    = user32.NewProc("SetWindowLongPtrW")
 	pGetAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
 	pGetCursorPos        = user32.NewProc("GetCursorPos")
+	pWindowFromPoint     = user32.NewProc("WindowFromPoint")
+	pGetAncestor         = user32.NewProc("GetAncestor")
 	pSetCursor           = user32.NewProc("SetCursor")
 	pLoadImage           = user32.NewProc("LoadImageW")
 	pGetWindowRect       = user32.NewProc("GetWindowRect")
@@ -348,12 +351,228 @@ func watchGameHwnd() {
 				app.Quit()
 				return
 			}
+			gameScaleTick(ffxi)
 			continue
 		}
 		if g := gameHwnd(); g != 0 {
 			ownAllToGame()
 		}
 	}
+}
+
+// ---------------------------------------------------- game-follow scaling
+// Resizing the FFXI window rescales every overlay window: bounds move
+// proportionally with the game rect and content zooms to match. The game
+// rect is read in raw screen px like the rest of the shell's geometry —
+// window positions are Wails units, consistent with the existing code.
+var (
+	uiScale      = 1.0 // cumulative content zoom, persisted in window.json
+	scaleMu      sync.Mutex
+	lastGameHwnd uintptr
+	lastGame     wRect
+	dragCount    atomic.Int32 // startMoveLoop drags in flight
+)
+
+// gameScaleTick runs on the watchGameHwnd beat: anchor on the first valid
+// game rect, then rescale whenever the rect's height changes (pure moves
+// don't chase windows; minimized/degenerate rects are ignored).
+func gameScaleTick(hwnd uintptr) {
+	var cur wRect
+	pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&cur)))
+	if cur.bottom-cur.top < 100 || cur.right-cur.left < 100 {
+		return // minimized or a boot flash — keep the last good anchor
+	}
+	if hwnd != lastGameHwnd {
+		lastGameHwnd, lastGame = hwnd, cur
+		return
+	}
+	old := lastGame
+	lastGame = cur
+	if old.bottom-old.top < 100 {
+		return // first valid rect — becomes the anchor
+	}
+	if dragCount.Load() > 0 {
+		lastGame = old // a user drag owns its window — replay the delta next tick
+		return
+	}
+	k := float64(cur.bottom-cur.top) / float64(old.bottom-old.top)
+	if math.Abs(k-1) < 0.01 {
+		return
+	}
+	if scaleFollowOn() {
+		rescaleWindows(k)
+	}
+}
+
+func curScale() float64 {
+	scaleMu.Lock()
+	defer scaleMu.Unlock()
+	return uiScale
+}
+
+// scaleFollowOn reports the settings toggle — on unless explicitly off.
+// The /settings window itself never scales (bounds or zoom) so the
+// control always stays readable.
+func scaleFollowOn() bool {
+	g := geomSnapshot()
+	return g.ScaleFollow == nil || *g.ScaleFollow
+}
+
+// routes exempt from game-follow scaling — the settings window holds the
+// toggle, so it must stay at 100% or a shrunken game could bury it
+func scaleExempt(key string) bool {
+	return key == "/settings"
+}
+
+// spawnZoom gives the creation-time Zoom for a route — exempt windows
+// get 0 (no PutZoomFactor → native 100%)
+func spawnZoom(key string) float64 {
+	if scaleExempt(key) {
+		return 0
+	}
+	return curScale()
+}
+
+// rescaleWindows applies a game-size delta: window SIZES and content
+// zoom scale, but nothing ever moves — positions stay exactly where the
+// user put them (top-left anchored, since SetSize grows from the origin
+// corner anyway).
+func rescaleWindows(k float64) {
+	scaleMu.Lock()
+	uiScale = math.Max(0.4, math.Min(3.0, uiScale*k))
+	z := uiScale
+	scaleMu.Unlock()
+
+	spawnMu.Lock()
+	ws := make([]*application.WebviewWindow, 0, len(spawned))
+	for key, w := range spawned {
+		if scaleExempt(key) {
+			continue
+		}
+		ws = append(ws, w)
+	}
+	spawnMu.Unlock()
+	for _, w := range ws {
+		if w.NativeWindow() == nil {
+			continue
+		}
+		ww, wh := w.Size()
+		if ww <= 0 || wh <= 0 {
+			continue
+		}
+		x, y := w.Position()
+		if x < -30000 || y < -30000 {
+			continue // minimized
+		}
+		w.SetSize(int(math.Round(float64(ww)*k)),
+			int(math.Round(float64(wh)*k)))
+		applyZoom(w, z)
+	}
+	if tooltipWin != nil && tooltipWin.NativeWindow() != nil {
+		applyZoom(tooltipWin, z)
+	}
+
+	geomMu.Lock()
+	geom.Scale = z
+	geomMu.Unlock()
+	saveGeometry()
+	log.Printf("game resized %.0f%% — ui scale now %.2f", k*100, z)
+}
+
+// scaleFollowSet flips the settings toggle ("1"/"0"), persists it, and
+// pushes the refreshed geometry snapshot back to the page. Disabling
+// also resets every window's zoom to 100% so a mid-scaled session exits
+// cleanly (bounds stay — they're just window geometry now).
+func scaleFollowSet(arg string, w application.Window) {
+	on := arg == "1"
+	geomMu.Lock()
+	geom.ScaleFollow = &on
+	geomMu.Unlock()
+	saveGeometry()
+	if !on {
+		scaleMu.Lock()
+		uiScale = 1.0
+		scaleMu.Unlock()
+		geomMu.Lock()
+		geom.Scale = 1.0
+		geomMu.Unlock()
+		spawnMu.Lock()
+		ws := make([]*application.WebviewWindow, 0, len(spawned)+1)
+		for _, sw := range spawned {
+			ws = append(ws, sw)
+		}
+		spawnMu.Unlock()
+		for _, sw := range ws {
+			if sw.NativeWindow() != nil {
+				applyZoom(sw, 1.0)
+			}
+		}
+		saveGeometry()
+	}
+	go geomReport(w)
+}
+
+// winScaleSet applies a per-window scale pick (view-prefs cog): resizes
+// the window's bounds by the delta against its last stored scale —
+// content zoom is already handled page-side (body zoom × game-follow
+// emulation). Persisted so bounds stay proportional across restarts.
+func winScaleSet(arg string, w application.Window) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(arg), 64)
+	if err != nil {
+		return
+	}
+	f = math.Max(0.5, math.Min(4, f))
+	spawnMu.Lock()
+	key := ""
+	for k, sw := range spawned {
+		if sw == w {
+			key = k
+			break
+		}
+	}
+	spawnMu.Unlock()
+	if key == "" {
+		return
+	}
+	geomMu.Lock()
+	if geom.Scales == nil {
+		geom.Scales = map[string]float64{}
+	}
+	old := geom.Scales[key]
+	if old <= 0 {
+		old = 1
+	}
+	if f == 1 {
+		delete(geom.Scales, key)
+	} else {
+		geom.Scales[key] = f
+	}
+	geomMu.Unlock()
+	saveGeometry()
+	d := f / old
+	if math.Abs(d-1) < 0.01 {
+		return
+	}
+	ww, wh := w.Size()
+	if ww <= 0 || wh <= 0 {
+		return
+	}
+	w.SetSize(int(math.Round(float64(ww)*d)),
+		int(math.Round(float64(wh)*d)))
+}
+
+// applyZoom scales a window's content: WebView2 ZoomFactor at ≥100%
+// (real layout reflow) and a body-zoom emulation below it — the runtime
+// SetZoom floors at 1.0 on Windows (only spawn-time opts.Zoom honors
+// <1.0, which is why new windows get it via options instead).
+func applyZoom(w *application.WebviewWindow, z float64) {
+	if z >= 1.0 {
+		w.SetZoom(z)
+		w.ExecJS("window.__xicZoom&&window.__xicZoom(1)")
+		return
+	}
+	w.SetZoom(1)
+	w.ExecJS(fmt.Sprintf("window.__xicZoom&&window.__xicZoom(%g)", z))
 }
 
 // No focus manipulation anywhere: panels that must never take keyboard
@@ -398,6 +617,10 @@ func startMoveLoop(hwnd uintptr, hitTest uintptr) {
 	if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
 		return
 	}
+	// a live drag owns the window's rect — the game-follow scaler must
+	// not move it out from under the cursor
+	dragCount.Add(1)
+	defer dragCount.Add(-1)
 	var p0 wPoint
 	pGetCursorPos.Call(uintptr(unsafe.Pointer(&p0)))
 	var r0 wRect
@@ -700,6 +923,14 @@ type geometry struct {
 	// collapse-all toggle — persists so a reload can't strand the UI
 	// hidden with no way back (a //xicompanion relaunch uncollapses)
 	Collapsed bool `json:"collapsed,omitempty"`
+	// cumulative content zoom from game-follow scaling — applied to every
+	// window's opts.Zoom at spawn so a relaunch keeps the current scale
+	Scale float64 `json:"scale,omitempty"`
+	// game-follow scaling toggle from settings — nil = on (default)
+	ScaleFollow *bool `json:"scaleFollow,omitempty"`
+	// per-window scale picks (view-prefs cog, 0.5–4) — lets a rescale
+	// compute bounds deltas and a relaunch restore each window's zoom
+	Scales map[string]float64 `json:"scales,omitempty"`
 }
 
 var (
@@ -721,6 +952,9 @@ func loadGeometry() {
 		if r == nil || r.W <= 0 || r.H <= 0 {
 			delete(geom.Windows, k)
 		}
+	}
+	if geom.Scale >= 0.4 && geom.Scale <= 3.0 {
+		uiScale = geom.Scale
 	}
 }
 
@@ -1156,7 +1390,7 @@ func spawnWindow(route string) {
 		mw, mh = 620, 380
 	}
 	opts := application.WebviewWindowOptions{
-		Title:            windowTitle + " — " + title,
+		Title:            windowTitle + " · " + title,
 		Frameless:        true,
 		Hidden:           true,
 		BackgroundType:   application.BackgroundTypeTranslucent,
@@ -1165,6 +1399,7 @@ func spawnWindow(route string) {
 		Height:           420,
 		MinWidth:         mw,
 		MinHeight:        mh,
+		Zoom:             spawnZoom(key),
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
@@ -1712,13 +1947,14 @@ func tooltipShow(caller application.Window, raw string) {
 
 func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 	opts := application.WebviewWindowOptions{
-		Title:            windowTitle + " — item",
+		Title:            windowTitle + " · item",
 		Frameless:        true,
 		Hidden:           true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
 		Width:            320,
 		Height:           440,
+		Zoom:             curScale(),
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
 			DisableFramelessWindowDecorations: true,
@@ -1811,12 +2047,50 @@ var (
 	fabMenuWin  *application.WebviewWindow
 	fabMenuHwnd atomic.Uintptr
 	fabMenuMu   sync.Mutex
+	// menuKind tracks what the shared menu window currently renders:
+	// "g" = fab group menu, "j" = a page-spec'd dropdown (group "j:<json>"
+	// pushed by pickMenu). Same-kind retargets stay on ExecJS; kind
+	// flips force a SetURL so the right component mounts.
+	menuKind      string
+	menuRequester application.Window // spec-menu owner — picks relay here
+	menuWatchGen  atomic.Int32       // click-watcher generation (per show)
+	// a show deferred until the new page reports loaded — kills the
+	// stale-content flash when a retarget reloads the menu window
+	menuPendingShow bool
+	// when the last show was requested — passive dismiss paths (outside
+	// clicks, interaction messages) can't close a menu younger than
+	// this, which guarantees a hide can never outrun its show
+	menuShownAt time.Time
 )
+
+// virtualScreen is the union of all monitors — the shared menu window
+// spans it transparently so backdrop clicks land inside our own window
+// (dismiss) instead of passing through to the game
+func virtualScreen() (x, y, w, h int) {
+	x1, _, _ := pGetSystemMetrics.Call(76) // SM_XVIRTUALSCREEN
+	y1, _, _ := pGetSystemMetrics.Call(77) // SM_YVIRTUALSCREEN
+	w1, _, _ := pGetSystemMetrics.Call(78) // SM_CXVIRTUALSCREEN
+	h1, _, _ := pGetSystemMetrics.Call(79) // SM_CYVIRTUALSCREEN
+	return int(int32(x1)), int(int32(y1)), int(w1), int(h1)
+}
+
+// interaction on ANY other window dismisses the shared menu — every
+// overlay window is WS_EX_NOACTIVATE so clicks never move OS focus;
+// these messages are the only "focus changed" signal that exists
+func menuDismissable(m string) bool {
+	return strings.HasPrefix(m, "xicompanion:raise") ||
+		strings.HasPrefix(m, "xicompanion:drag") ||
+		strings.HasPrefix(m, "xicompanion:resize:") ||
+		strings.HasPrefix(m, "xicompanion:geom-set:") ||
+		strings.HasPrefix(m, "xicompanion:spawn:") ||
+		strings.HasPrefix(m, "xicompanion:toggle:") ||
+		strings.HasPrefix(m, "xicompanion:main:")
+}
 
 // xicompanion:fabmenu-show:<group>:<x>,<y>,<w>,<h>[,<up>] — x/y/w/h are
 // screen px; the optional up flag (default 1) tells the menu whether it
 // opened above the bar so it bottom-anchors flush to the buttons
-func fabMenuShow(arg string) {
+func fabMenuShow(arg string, req application.Window) {
 	sep := strings.LastIndexByte(arg, ':')
 	if sep < 0 {
 		return
@@ -1828,11 +2102,11 @@ func fabMenuShow(arg string) {
 	}
 	var v [4]int
 	for i, s := range f[:4] {
-		n, err := strconv.Atoi(strings.TrimSpace(s))
+		n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 		if err != nil {
 			return
 		}
-		v[i] = n
+		v[i] = int(math.Round(n))
 	}
 	x, y, w, h := v[0], v[1], v[2], v[3]
 	if w <= 0 || h <= 0 {
@@ -1842,7 +2116,38 @@ func fabMenuShow(arg string) {
 	if len(f) == 5 {
 		up = strings.TrimSpace(f[4]) != "0"
 	}
+	kind := "g"
+	if strings.HasPrefix(group, "j:") {
+		kind = "j"
+		// spec payloads arrive URL-encoded (JSON colons/commas would
+		// break the <group>:<nums> split) — decode once here so the
+		// URL/ExecJS paths downstream carry plain "j:{...}"
+		if d, err := url.QueryUnescape(group); err == nil {
+			group = d
+		}
+		// spec menus post CLIENT coords (viewport px of the requesting
+		// window — screenX/Y misreport on NOACTIVATE webviews) — shift
+		// to screen px via the requester's own window position
+		if req != nil {
+			wx, wy := req.Position()
+			x += wx
+			y += wy
+		}
+	}
+	// the menu window spans the virtual screen — the content rect it was
+	// asked for becomes page coords (origin at the virtual screen corner)
+	vx, vy, vw, vh := virtualScreen()
+	// arm the outside-click watcher — clicks on the game (or any other
+	// app) never reach the message channel, so the only way to catch
+	// them is polling the button + WindowFromPoint while the menu's up
+	menuWatchGen.Add(1)
+	go menuClickWatch(menuWatchGen.Load())
 	fabMenuMu.Lock()
+	menuShownAt = time.Now()
+	menuRequester = nil
+	if kind == "j" {
+		menuRequester = req
+	}
 	mw := fabMenuWin
 	fabMenuMu.Unlock()
 	mh := fabMenuHwnd.Load()
@@ -1856,33 +2161,72 @@ func fabMenuShow(arg string) {
 		fabMenuCreate(group, x, y, w, h, up)
 		return
 	}
-	mw.ExecJS(fmt.Sprintf(
-		"window.__xicMenu&&window.__xicMenu(%s,%v)", strconv.Quote(group), up))
-	mw.SetPosition(x, y)
-	mw.SetSize(w, h)
+	if kind != menuKind {
+		// different content type than what's mounted — reload it via
+		// the URL so the right component boots (ExecJS would target a
+		// handler the other kind doesn't define)
+		menuKind = kind
+		if addonTarget != "" {
+			mp := fmt.Sprintf("fabmenu?window=1&g=%s&x=%d&y=%d&w=%d&h=%d",
+				url.QueryEscape(group), x-vx, y-vy, w, h)
+			if !up {
+				mp += "&up=0"
+			}
+			// hide the stale page first — SetURL reloads and the old
+			// content would flash at fullscreen until the new one
+			// commits; reveal when it reports loaded
+			if hwnd := hwndOf(mw); hwnd != 0 {
+				pShowWindow.Call(hwnd, swHide)
+			}
+			mw.SetURL(navURL(addonTarget + mp))
+			fabMenuMu.Lock()
+			menuPendingShow = true
+			fabMenuMu.Unlock()
+		}
+	} else {
+		mw.ExecJS(fmt.Sprintf(
+			"window.__xicMenu&&window.__xicMenu(%s,%v,%d,%d,%d,%d)",
+			strconv.Quote(group), up, x-vx, y-vy, w, h))
+	}
+	mw.SetPosition(vx, vy)
+	mw.SetSize(vw, vh)
+	fabMenuMu.Lock()
+	pending := menuPendingShow
+	fabMenuMu.Unlock()
+	if pending {
+		return // reveal on xicompanion:loaded
+	}
 	// w.Show() (not a raw reshow) — the window was created Hidden so
 	// its WebView2 controller needs waking; NOACTIVATE holds so the
 	// SW_SHOW inside can't activate it
 	mw.Show()
+	// lift to the top of the band — the requesting panel can otherwise
+	// cover the menu and it reads as a flash-on-then-off
+	pSetWindowPos.Call(hwndOf(mw), hwndTop, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoActivate)
 	// refresh the ● open marks — a freshly-created menu's ExecJS queue
 	// flushes on page load, so this covers the create path too
 	go windowsReport()
 }
 
 func fabMenuCreate(group string, x, y, w, h int, up bool) {
+	// fullscreen transparent host — the window spans the virtual screen;
+	// x/y/w/h become URL params telling the page where to draw the card
+	vx, vy, vw, vh := virtualScreen()
 	opts := application.WebviewWindowOptions{
-		Title:            windowTitle + " — menu",
+		Title:            windowTitle + " · menu",
 		Frameless:        true,
 		Hidden:           true,
 		DisableResize:    true,
 		BackgroundType:   application.BackgroundTypeTranslucent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
-		Width:            w,
-		Height:           h,
+		Width:            vw,
+		Height:           vh,
 		MinWidth:         100,
 		MinHeight:        40,
-		X:                x,
-		Y:                y,
+		Zoom:             curScale(),
+		X:                vx,
+		Y:                vy,
 		InitialPosition:  application.WindowXY,
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
@@ -1891,8 +2235,10 @@ func fabMenuCreate(group string, x, y, w, h int, up bool) {
 			NonClientRegionSupport:            true,
 		},
 	}
-	// URL at creation skips the splash hop (see spawnWindow)
-	menuPath := "fabmenu?window=1&g=" + url.QueryEscape(group)
+	// x/y/w/h tell the page where inside the fullscreen window to draw
+	// the menu card (virtual-screen-relative coords)
+	menuPath := fmt.Sprintf("fabmenu?window=1&g=%s&x=%d&y=%d&w=%d&h=%d",
+		url.QueryEscape(group), x-vx, y-vy, w, h)
 	if !up {
 		menuPath += "&up=0"
 	}
@@ -1904,12 +2250,15 @@ func fabMenuCreate(group string, x, y, w, h int, up bool) {
 	mw := app.Window.NewWithOptions(opts)
 	fabMenuMu.Lock()
 	fabMenuWin = mw
+	if strings.HasPrefix(group, "j:") {
+		menuKind = "j"
+	} else {
+		menuKind = "g"
+	}
+	// reveal only once the page boots — showing the splash-sized
+	// window first flashed stale/blank content at fullscreen
+	menuPendingShow = true
 	fabMenuMu.Unlock()
-	// created Hidden — the retarget path (fabMenuShow -> mw != nil)
-	// calls Show(), but the create path itself never did, so the very
-	// first menu click produced an invisible window. The page carries
-	// ?g=<group> in its URL, so no ExecJS retarget is needed here.
-	mw.Show()
 
 	mw.OnWindowEvent(events.Common.WindowMinimise, func(e *application.WindowEvent) {
 		pShowWindow.Call(hwndOf(mw), swShowNA)
@@ -1954,10 +2303,64 @@ func fabMenuCreate(group string, x, y, w, h int, up bool) {
 	log.Printf("fab menu window created")
 }
 
+// menuClickWatch dismisses the shared menu when a click lands outside
+// it — runs only while the menu is visible. Generation guards against
+// stacking: a retarget bumps the gen and the previous watcher exits.
+func menuClickWatch(gen int32) {
+	// let the click that opened the menu release before arming — it
+	// lands on the cog/bar itself and would instantly close it
+	for i := 0; i < 60; i++ {
+		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	for menuWatchGen.Load() == gen {
+		mh := fabMenuHwnd.Load()
+		if mh == 0 {
+			// hwnd not resolved yet (fresh create) — give it a moment
+			time.Sleep(200 * time.Millisecond)
+			if fabMenuHwnd.Load() == 0 {
+				return
+			}
+			continue
+		}
+		if r, _, _ := pIsWindowVisible.Call(mh); r == 0 {
+			return // hidden — done
+		}
+		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 != 0 {
+			var pt wPoint
+			pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+			// POINT packs by value into one arg on x64 (x low, y high)
+			h, _, _ := pWindowFromPoint.Call(
+				uintptr(uint64(uint32(pt.y))<<32 | uint64(uint32(pt.x))))
+			// WindowFromPoint returns the deepest child — the webview's
+			// own hwnd isn't the top-level menu window, so compare ROOT
+			// windows or clicks inside the menu read as "outside". The
+			// age guard keeps the opener's own held/late press from
+			// counting as a dismiss click
+			root, _, _ := pGetAncestor.Call(h, 2 /*GA_ROOT*/)
+			if root != mh && time.Since(menuShownAt) > 300*time.Millisecond {
+				fabMenuHide()
+			}
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+}
+
 func fabMenuHide() {
 	fabMenuMu.Lock()
 	w := fabMenuWin
+	// a dismiss also cancels a deferred reveal — hiding between the
+	// SetURL and the loaded event must not spring back open
+	menuPendingShow = false
 	fabMenuMu.Unlock()
+	// nil pointer boxed into the Window interface isn't == nil inside
+	// hwndOf — bail early or a hide with no menu up panics on it
+	if w == nil {
+		return
+	}
 	// raw SW_HIDE — w.Hide() also drops the WebView2 controller's
 	// IsVisible, which our swShowNA reshow never restores (the menu
 	// would "open" as an invisible frame). Raw hide/show pairs match
@@ -1978,15 +2381,28 @@ func fabMenuHide() {
 // It also hides the fab while the addon reports "hidden" (zoning
 // blackout, cutscenes) — the same states in-render addons stop drawing
 // for. Only the fab hides: the full UI and spawned windows stay up.
-func watchBackend(target string) {
+// httpGet adapts watchBackend's polls to plain fetch — xport builds
+// the same shape over the active backend (xpGet in transport.go).
+func httpGet(base string) func(string) ([]byte, error) {
 	client := &http.Client{Timeout: 2 * time.Second}
+	return func(p string) ([]byte, error) {
+		resp, err := client.Get(base + p)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+}
+
+func watchBackend(get func(string) ([]byte, error)) {
 	misses := 0
 	lastBoot := 0          // addon reload marker from /api/status
 	hidden := false        // currently applied fab-visibility, not the raw flag
 	spawnedHidden := false // fab-layer spawned windows during the blackout
 	for {
 		time.Sleep(2 * time.Second)
-		resp, err := client.Get(target + "api/status")
+		body, err := get("api/status")
 		if err != nil {
 			misses++
 			if misses >= 5 {
@@ -2001,8 +2417,7 @@ func watchBackend(target string) {
 			Hidden bool `json:"hidden"`
 			Boot   int  `json:"boot"`
 		}
-		json.NewDecoder(resp.Body).Decode(&st)
-		resp.Body.Close()
+		json.Unmarshal(body, &st)
 		// addon reload: the server only blips for a second — too short
 		// for the misses counter — but it comes back with a new boot
 		// marker. Quit so the fresh deploy (and its fixes) launches.
@@ -2052,12 +2467,11 @@ func watchBackend(target string) {
 		// detached windows, '!show' surfaces the bar. Enqueued spawns
 		// avoid relaunching the exe per panel (every launch flashed a
 		// taskbar entry)
-		if sresp, err := client.Get(target + "api/spawn"); err == nil {
+		if sbody, serr := get("api/spawn"); serr == nil {
 			var sq struct {
 				Routes []string `json:"routes"`
 			}
-			json.NewDecoder(sresp.Body).Decode(&sq)
-			sresp.Body.Close()
+			json.Unmarshal(sbody, &sq)
 			for _, r := range sq.Routes {
 				if r == "!show" {
 					applyCollapsed(false)
@@ -2084,10 +2498,13 @@ func main() {
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err == nil {
 		log.SetOutput(logf)
+		// every relaunch appends to the same file — tag lines with pid so
+		// a doomed second instance's traces can't masquerade as ours
+		log.SetPrefix(fmt.Sprintf("[pid %d] ", os.Getpid()))
 		defer logf.Close()
 	}
 
-	app = application.New(application.Options{
+	appOpts := application.Options{
 		Name: "xicompanion-overlay",
 		// //xicompanion overlay (and the addon's auto-fab spawn on load) can fire
 		// repeatedly — surface the existing window instead of stacking.
@@ -2125,6 +2542,25 @@ func main() {
 		// win methods go through InvokeSync internally, so they must run
 		// off the main thread that invokes this handler — hence the gos.
 		RawMessageHandler: func(w application.Window, message string, _ *application.OriginInfo) {
+			// clicks on any other window dismiss the shared menu —
+			// NOACTIVATE windows never take OS focus, so interaction
+			// messages are the only "focus moved" signal available.
+			// Debounced: a raise always precedes a cog's pickMenu on the
+			// same window, and the show bumps the gen — the stale hide
+			// must not land after it
+			if fabMenuWin != nil && w != fabMenuWin && menuDismissable(message) {
+				gen := menuWatchGen.Load()
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					// gen guards a same-channel show; the age guard is
+					// the backstop — nothing that predates the menu may
+					// close it, whatever path it took
+					if menuWatchGen.Load() == gen &&
+						time.Since(menuShownAt) > 300*time.Millisecond {
+						fabMenuHide()
+					}
+				}()
+			}
 			log.Printf("page message: %q", message)
 			switch {
 			case message == "xicompanion:expand":
@@ -2178,12 +2614,48 @@ func main() {
 					default:
 					}
 				}
+				// a menu swapped/created hidden reveals here — the new
+				// page is up, so no stale-content flash. Only the menu
+				// window's own loaded may consume the flag — any other
+				// window's load would silently cancel the reveal
+				if w == fabMenuWin {
+					fabMenuMu.Lock()
+					pending := menuPendingShow
+					menuPendingShow = false
+					fabMenuMu.Unlock()
+					if pending {
+						go func() {
+							w.Show()
+							pSetWindowPos.Call(hwndOf(w), hwndTop, 0, 0, 0, 0,
+								swpNoMove|swpNoSize|swpNoActivate)
+						}()
+					}
+				}
 			case message == "xicompanion:windows":
 				go windowsReport()
 			case strings.HasPrefix(message, "xicompanion:fabmenu:"):
 				go fabMenu(strings.TrimPrefix(message, "xicompanion:fabmenu:"))
 			case strings.HasPrefix(message, "xicompanion:fabmenu-show:"):
-				go fabMenuShow(strings.TrimPrefix(message, "xicompanion:fabmenu-show:"))
+				// bump synchronously at message time — the channel
+				// orders this after the cog's raise, so the debounced
+				// hide cancels no matter when the goroutine runs
+				menuWatchGen.Add(1)
+				go fabMenuShow(strings.TrimPrefix(message, "xicompanion:fabmenu-show:"), w)
+			case strings.HasPrefix(message, "xicompanion:menu-pick:"):
+				// spec-menu item click — relay the id to the window
+				// that requested it. The menu STAYS OPEN: multi-pick
+				// menus (view prefs) can take several choices; the
+				// requester, backdrop, or Esc decides when to close.
+				go func() {
+					fabMenuMu.Lock()
+					rw := menuRequester
+					fabMenuMu.Unlock()
+					if wv, ok := rw.(*application.WebviewWindow); ok && wv != nil {
+						wv.ExecJS(fmt.Sprintf(
+							"window.__xicMenuPick&&window.__xicMenuPick(%s)",
+							strconv.Quote(strings.TrimPrefix(message, "xicompanion:menu-pick:"))))
+					}
+				}()
 			case message == "xicompanion:fabmenu-hide":
 				go fabMenuHide()
 			case strings.HasPrefix(message, "xicompanion:main:"):
@@ -2192,6 +2664,10 @@ func main() {
 				go geomReport(w)
 			case strings.HasPrefix(message, "xicompanion:geom-set:"):
 				go geomSet(strings.TrimPrefix(message, "xicompanion:geom-set:"))
+			case strings.HasPrefix(message, "xicompanion:scale-follow:"):
+				go scaleFollowSet(strings.TrimPrefix(message, "xicompanion:scale-follow:"), w)
+			case strings.HasPrefix(message, "xicompanion:winscale:"):
+				go winScaleSet(strings.TrimPrefix(message, "xicompanion:winscale:"), w)
 			case message == "xicompanion:raise":
 				// panels are NOACTIVATE — clicking can't raise them
 				// naturally, so the page asks on mousedown. HWND_TOP
@@ -2227,7 +2703,43 @@ func main() {
 			// own UDF so we never collide with another app's WebView2 profile
 			WebviewUserDataPath: filepath.Join(dataDir(), "webview2"),
 		},
-	})
+	}
+
+	// addon-launched mode (--pid <inst>): the file mailbox replaces the
+	// socket server as the page's backend, and a ws://127.0.0.1 socket
+	// carries events/requests — SSE can't stream through the assetserver.
+	// The Assets handler serves ui/ + proxies /api/* over the backend, so
+	// the page sees the same http://wails.localhost surface either way.
+	xa := xportArgsFrom(os.Args[1:])
+	if xa.inst != "" {
+		exe, _ := os.Executable()
+		exeDir := filepath.Dir(exe)
+		if xa.ui == "" {
+			xa.ui = filepath.Join(exeDir, "..", "ui")
+		}
+		dataDir := filepath.Join(exeDir, "..", "data")
+		addonTarget = "http://wails.localhost/"
+		appOpts.Assets = application.AssetOptions{Handler: apiHandler(xa.ui)}
+		if !xportClaim(xa.inst) {
+			// a relaunched copy — Wails' SingleInstance check quits us in
+			// app.Run. Starting the backend here would let this doomed
+			// process drainOut() and delete out/ files addressed to the
+			// survivor; skipping it keeps the mailbox safe.
+			log.Printf("xport: inst %s already owned — backend skipped (second instance)", xa.inst)
+		} else {
+			b := newMailboxBackend(xa.inst, dataDir)
+			b.start()
+			xp = b
+			go xpDispatch(xp.recv())
+			if err := wsStart(); err != nil {
+				log.Printf("xport: events socket failed: %v", err)
+			} else {
+				log.Printf("xport: events ws on ws://%s/events", wsAddr)
+			}
+			log.Printf("xport: mailbox backend for inst %s (ui %s)", xa.inst, xa.ui)
+		}
+	}
+	app = application.New(appOpts)
 
 	opts := application.WebviewWindowOptions{
 		Title:     windowTitle,
@@ -2300,7 +2812,10 @@ func main() {
 	go trackGeometry()
 	go watchGameHwnd()
 	navigateWhenReady(win, func() string {
-		addonTarget = probeTarget()
+		// preset in xport mode — probing is an http-mode concern
+		if addonTarget == "" {
+			addonTarget = probeTarget()
+		}
 		// restore windows the user left open — same persistence path as
 		// bounds, but for visibility state (spawn/close writes geom.Open)
 		snap := geomSnapshot()
@@ -2330,7 +2845,14 @@ func main() {
 				spawnWindow(route)
 			}
 		}()
-		go watchBackend(addonTarget)
+		// status/spawn polling rides whichever backend is active
+		var apiGet func(string) ([]byte, error)
+		if xp != nil {
+			apiGet = xpGet
+		} else {
+			apiGet = httpGet(addonTarget)
+		}
+		go watchBackend(apiGet)
 		// foreign-foreground hiding removed — windows stay up when the
 		// game loses focus; the zoning/cutscene blackout still applies
 		return navURL(addonTarget)

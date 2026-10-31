@@ -12,41 +12,22 @@ localStorage keys (read as a fallback, written only to `xicompanion.sets.v2`).
 
 Single target: a **browser UI** (`src/app/`, Preact + `@preact-mvc/core`) served
 by the Windower addon over localhost, viewed either in a normal browser tab
-(`//xicompanion open`), in the **Wails/WebView2 overlay** (distributed build,
-`overlay/wails/` → `addon/xicompanion/overlay/xicompanion-overlay.exe`), or in the
-**Electron overlay** (dev, `overlay/`, `npm run overlay`). `//xicompanion overlay`
-prefers the bundled exe and falls back to the Electron dev launcher.
+(`//xicompanion open`) or in the **Wails/WebView2 overlay** (`overlay/wails/` →
+`addon/xicompanion/overlay/xicompanion-overlay.exe`). `//xicompanion overlay`
+launches the bundled exe — there is no dev fallback.
 
 ### Addon — `addon/xicompanion/`
 
-- `plat.lua` — **platform adapter dispatch** (dual-target: the same
-  `addon/xicompanion/` tree installs under Windower *and* Ashita — Ashita loads
-  `addons/xicompanion/xicompanion.lua` as its entry). Picks `plat_windower` or
-  `plat_ashita` on `windower ~= nil`. Every host-runtime call —
-  `windower.ffxi.*` reads, `send_command`, `add_to_chat`, `open_url`,
-  `file_exists`/`dir_exists`/`create_dir`/`get_dir`,
+- `plat.lua` — **platform adapter** (Windower-only). Every host-runtime
+  call — `windower.ffxi.*` reads, `send_command`, `add_to_chat`,
+  `open_url`, `file_exists`/`dir_exists`/`create_dir`/`get_dir`,
   `addon_path`/`windower_path`/`ffxi_path`, and `register_event` — is
   exposed as `plat.*` / `plat.on(...)`. The event contract is
   signature-normalized: chunk handlers get `fn(id, data, modified,
-  injected, blocked)` (Ashita feeds `e.data_modified`), `addon command`
-  gets `fn(cmd, ...)` (Ashita parses the raw `e.command`), and
-  `login`/`logout` are synthesized from party-name edges under Ashita.
-  Module files call `require('plat')` directly; nothing outside
-  `plat_*.lua` should touch `windower.*`/`AshitaCore`.
+  injected, blocked)`, `addon command` gets `fn(cmd, ...)`. Module
+  files call `require('plat')` directly; nothing outside
+  `plat_windower.lua` should touch `windower.*`.
 - `plat_windower.lua` — Windower binding (thin alias over windower.*).
-- `plat_ashita.lua` — Ashita v4 binding: memory-manager ffxi reads
-  (entity/party/inventory/recast/player), ffi fs helpers, registry-based
-  `ffxi_path`, `QueueCommand(-1,...)` commands, packet injection via
-  `AddOutgoingPacket`, and `package.preload` shims for `resources`
-  (IResourceManager-backed lazy res.items/spells/ability_recasts/
-  key_items/zones + static jobs/slots/bags), `config` (data/settings.lua
-  serialize), `packets` (byte-layout builders for the 6 outgoing packets
-  we inject). **Untested against a live client** — sites marked
-  `[UNVERIFIED]`/`[NOT PORTED]` in the file; `get_map_data` is stubbed
-  nil (map radar degrades; needs the client's mapinfo transform) and
-  GearSwap-facing dirs just won't exist under Ashita (Sets tab shows no
-  files — correct, there's no GearSwap). Deploy to Ashita with
-  `node scripts/deploy.mjs <ashita>\addons\xicompanion`.
 - `xicompanion.lua` — LuaSocket HTTP server (default port 17890, `//xicompanion port`),
   SSE state stream, GearSwap file CRUD, `/api/icon` (DAT extraction via
   `icon_extractor`, cached under `data/icons/`), `POST /api/command`
@@ -55,7 +36,8 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   `move` → outgoing 0x029, `unequip` → outgoing 0x050 with Item
   Index 0 — there is no `/unequip` client command), static UI serving with
   `Cache-Control: no-cache` on HTML. `//xicompanion` commands: `open`, `overlay`,
-  `fab`, `start`, `stop`, `status`, `port`, `refresh`, `swap` (scanner commands),
+  `fab`, `start`, `stop`, `status`, `port`, `refresh`,
+  `swap` (scanner commands),
   `equip <set>`. **Chat**: an `incoming chunk` handler parses chat packets
   0x017 (mode @0x04 → channel via the res/chat.lua ids — say/shout/tell/
   party/linkshell/emote/yell/linkshell2/unity/assistj/assiste + system for
@@ -81,6 +63,33 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   filter channels (`settings.chat_custom_channels` — `{name,channels[]}`
   merged-view metadata; membership resolved client-side). `json_decode`
   is a byte-walk JSON parser for structured route bodies.
+- `xport.lua` — the overlay's JS<->Lua backend, always on: a pure-io
+  file mailbox (no ffi needed). The overlay writes
+  `data/ipc/<inst>/in/q-*.json`, the addon consumes + deletes them and
+  batches replies into `out/m-*.jsonl` (tmp+rename, watched via
+  ReadDirectoryChangesW on the Go side; out/ prunes past 60 files when
+  no host drains). `<inst>` = game pid when ffi is present, else
+  `p<bound_port>` (`inst_key()`). Inbound scan is throttled (~4Hz) so
+  the per-frame pump doesn't burn a FindFirstFile every tick. Overlay
+  `transport.go` proxies `/api/*` + serves ui/ through the Wails Assets
+  handler at `http://wails.localhost`, and hosts a real
+  `ws://127.0.0.1:0` socket for `{t:'req'|'res'|'sse'|'sub'}` frames —
+  SSE can't stream through the assetserver (Windows buffers whole
+  responses until the handler returns), so each window discovers the
+  socket at `GET /api/xport/info` and rides events on its own conn —
+  per-window sockets are fine since the ~6-conn/origin cap doesn't
+  apply to a real ws and `xpInflight` dedupes GETs Go-side;
+  fetch/EventSource remain the browser surface.
+  `xportClaim(inst)` gates backend startup on an inst-scoped named
+  mutex — every relaunch reaches the mailbox code before Wails'
+  SingleInstance check kills it, and an unguarded `b.start()` let
+  doomed second instances `drainOut()`+delete `out/` files addressed to
+  the survivor (the "ws eaten" bug). Debug logging: every overlay.log
+  line carries a `[pid]` prefix (processes share the file); the page
+  side logs via `POST /api/xport/log` (`xlog` in xport-socket.ts) or
+  `host.debugLog` over the raw-message channel (`xicompanion:log:*`),
+  and `core/errlog.ts` forwards window.onerror/unhandledrejection/
+  console.error through the same pipe.
 - `swapui.lua` — headless GearSwap profile scanner powering `//xicompanion equip`,
   `swap list/add/remove/scan`. No UI.
 - `macros.lua` — FFXI macro file r/w under `<ffxi>/USER/<content id>/`:
@@ -247,16 +256,15 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   every message forever.
 - `core/addon-api.service.ts` — same-origin API client (state SSE, files,
   `sendCommand`, `iconUrl`, `reloadGearswap`); `VITE_GSUI_API` for dev.
-  All traffic rides `core/bridge.worker.ts` when `SharedWorker` exists —
-  a single shared worker owns the ONE `/api/events` SSE stream + request
-  proxy for every window (Chromium caps ~6 conns/origin; each held SSE
-  stream starved fetches once several detached panels were open). New
-  ports get the cached snapshot events (state/journal/recasts/map)
-  replayed; `chat` stays pull-based per window (per-window seq/unread).
-  GETs dedupe in-flight across windows and `/api/itemmeta`,
-  `/api/journal/names`, `/api/chat/phrases` cache worker-side (the
-  ~1MB names pull happens once, not per window). `dispatchSse`/`onConn`
-  unify the worker messages and the direct-EventSource fallback.
+  Every window owns its transport directly (no SharedWorker — worker
+  subresource requests can't reach the wails.localhost assetserver, so
+  the old bridge worker died with no network): under the overlay
+  (`/api/xport/info` answers) each window opens its own
+  `core/xport-socket.ts` WebSocket and events ride `{t:'sse'}` frames —
+  the assetserver can't stream SSE — while requests stay plain `/api/*`
+  fetches. Browser tabs take the `fetch` + `EventSource` path.
+  `dispatchSse`/`onConn` unify both transports; the 75s ping watchdog
+  in `tick()` rebuilds a silently-dead conn.
   Data fetches go through TanStack Query (`core/query.ts`): `fetchQuery`
   for imperative reads (files, itemmeta, journal-names, chat-phrases,
   macros — static resources use `staleTime: Infinity`), writes call
@@ -298,8 +306,7 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   hovered element to screen coords; `showInMain(url)` (`xicompanion:main:`) lets
   detached windows navigate the main one via `__xicNavigate`.
   Esc-hide/close is wired in `main.tsx` (capture phase; skips while a
-  `[data-modal]` dialog is open; in tooltip mode Esc closes the tip —
-  Electron handles Esc natively via `before-input-event`).
+  `[data-modal]` dialog is open; in tooltip mode Esc closes the tip).
 - `core/item-utils.ts` — shared item helpers (catalog merge, flag/tag
   formatting) used by inventory/sets pickers and the tooltip page.
 - `src/styles.css` — theme palettes. `host.ts` `applyTheme` toggles
@@ -363,6 +370,18 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   persist in `%LOCALAPPDATA%/xicompanion/window.json`. `trackGeometry`
   snapshots live bounds every 300ms and saves once settled — the native
   drag loop gives no end-of-move callback and taskkill beats `quit()`.
+  **Game-follow scaling**: `watchGameHwnd`'s tick also feeds
+  `gameScaleTick` — a game-window *height* change rescales every overlay
+  window's SIZE in place (positions never move) and bumps the cumulative
+  `uiScale` (clamped 0.4–3, persisted as `scale` in window.json). Content
+  zoom is native `PutZoomFactor` at ≥100% (`opts.Zoom` is unclamped at
+  spawn, runtime `SetZoom` floors at 1.0 on Windows), so sub-100%
+  shrink-fits fall back to the page's `__xicZoom` CSS emulation
+  (expand root to 1/z then `body{zoom}` down). `dragCount` defers a
+  rescale while a user move/size drag is in flight. Gated by the
+  `scaleFollow` window.json flag (settings page →
+  `xicompanion:scale-follow:<0|1>`; disabling also resets zoom to 100%);
+  `/settings` is `scaleExempt` — never bounds- or zoom-scaled.
   `watchBackend` polls `/api/status` every 2s: it quits the overlay when
   the server disappears (~10s; game exit never reaches the unload
   handler) and hides/shows the window on the response's `hidden` flag —
@@ -425,16 +444,6 @@ prefers the bundled exe and falls back to the Electron dev launcher.
   tracker window itself stays up.
   Logs to `%LOCALAPPDATA%/xicompanion/overlay.log`; WebView2 UDF at
   `%LOCALAPPDATA%/xicompanion/webview2`.
-- `launch.mjs` — dev path: spawns Electron detached, strips
-  `ELECTRON_RUN_AS_NODE` / `ELECTRON_NO_ATTACH_CONSOLE` (set in this
-  machine's env), pipes child stdio to `overlay.log`, exits immediately.
-- `main.cjs` — borderless always-on-top (`screen-saver` level) window loading
-  `http://127.0.0.1:<GSUI_PORT|17890>/`; single-instance lock (re-invoke =
-  focus + `reloadIgnoringCache`, which doubles as the refresh path);
-  `disableHardwareAcceleration` (frameless resize crashed some GPU stacks);
-  `minimize` → `restore` (frameless+skipTaskbar auto-minimize quirk);
-  periodic `moveTop` re-pin; `Esc` hides. Header is the drag region via
-  injected CSS.
 
 
 ### xicdbg — diagnostic "MCP" addon (installed-side only)
@@ -494,3 +503,6 @@ client saw vs. ones a bind/hook ate (blocked flag).
 - `fenestra/` + `src/fenestra/` — dev-Windower port scaffold; Fenestra has no
   releases, failing CI, missing console/stack-traces, and a known unfixed
   action-injection bug.
+- `overlay/launch.mjs` + `overlay/main.cjs` — Electron dev overlay; dropped
+  because it had no parity with the Wails shell (no fab mode, detached
+  windows, tooltip window, or xport transport).

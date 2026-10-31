@@ -232,9 +232,10 @@ export class JournalView extends View implements OnInit, OnDestroy {
       sel.kind === 'mission'
         ? names?.mission_lines?.[sel.key]
         : names?.quest_areas?.[sel.key];
-    // union names-table ids with the live packet bits — an extraction gap
-    // must never hide a quest the client reports as current/completed
-    // (a bit with no record still gets a row so its ▶/✓ shows)
+    // union names-table ids with the live packet bits — the addon already
+    // drops bits its quest records can't name (internal flags), so this
+    // only fires when names failed to load and the payload passed through
+    // raw (a bit with no record still gets a row so its ▶/✓ shows)
     const ids = new Set(sortedIds(names, sel.kind, sel.key));
     if (sel.kind === 'quest') {
       const area = j?.quests?.[sel.key];

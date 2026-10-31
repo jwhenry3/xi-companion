@@ -652,6 +652,14 @@ if (process.env.GSUI_DEBUG) {
 
 fireEvent('load');
 
+// the server is lazy — nothing binds on load; //xicompanion open/start
+// is what brings it up (the overlay rides the mailbox, not this port)
+assert.ok(
+  !chats.some((m) => m.includes('listening on')),
+  'server bound on load — should stay lazy',
+);
+fireEvent('addon command', 'start');
+
 // Parse the bound port out of the chat log.
 const portLine = chats.find((m) => m.includes('listening on'));
 const port = Number(portLine?.match(/127\.0\.0\.1:(\d+)/)?.[1]);

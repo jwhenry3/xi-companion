@@ -239,7 +239,7 @@ local function scan(now)
     zone_lower = zn and zn:lower() -- module cache for is_nm + learn_nm
 
     -- grid coord ("F-10") from the client's own pos function — the same
-    -- string <pos> expands to; absent under Ashita (no mapinfo read)
+    -- string <pos> expands to (get_position may be absent — guard it)
     local pos
     if plat.ffxi.get_position then
         local okp, p = pcall(plat.ffxi.get_position, me.index)

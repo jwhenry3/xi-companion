@@ -1,11 +1,12 @@
-import { Component, View, inject, RouterOutlet, Link, Router } from '@preact-mvc/core';
-import { ExternalLink, Cog } from 'lucide-preact';
+import { Component, View, inject, signal, RouterOutlet, Link, Router } from '@preact-mvc/core';
+import { ExternalLink, Cog, X } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
-import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, entitiesMode, theme, setTheme, THEMES, type Theme, winOpacity, setWinView } from './core/host';
+import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, entitiesMode, theme, setTheme, THEMES, type Theme, winOpacity, winScale, setWinView, showPlayerName } from './core/host';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { cn } from '@/lib/utils';
 import { Fab, FabMenu } from './fab';
+import { SpecMenu } from './menu.view';
 
 import { TooltipView } from './tooltip/tooltip.view';
 import { MacroBarChrome } from './macrobar/macrobar.chrome';
@@ -28,90 +29,93 @@ const NAV = [
 // per-window theme + alpha — ImagineXI's per-panel prefs sliders.
 // Same in-page popover approach as Dropdown (native popups need window
 // activation, which these panels never get)
+// per-window view prefs — the staged popover layout (theme chips,
+// scale/alpha sliders, save/revert) hosted in the shared fullscreen
+// menu window so it can't clip at the window edge. Pick ids are JSON:
+// {prefs:{theme,scale,opacity}} from the panel's save/revert buttons.
 function ViewPrefs() {
- const [open, setOpen] = useState(false);
- const root = useRef<HTMLSpanElement>(null);
- useLayoutEffect(() => {
- if (!open) return;
- const onDown = (e: MouseEvent) => {
- if (!root.current?.contains(e.target as Node)) setOpen(false);
- };
- const onKey = (e: KeyboardEvent) => {
- if (e.key === 'Escape') setOpen(false);
- };
- document.addEventListener('mousedown', onDown);
- document.addEventListener('keydown', onKey);
- return () => {
- document.removeEventListener('mousedown', onDown);
- document.removeEventListener('keydown', onKey);
- };
- }, [open]);
- const row = (
- label: string,
- v: number,
- lo: number,
- hi: number,
- set: (n: number) => void,
- ) => (
- <label class="flex items-center gap-2 px-2 py-1">
- <span class="w-8 text-[10px] text-slate-400">{label}</span>
- <input
- type="range"
- min={lo}
- max={hi}
- step={0.05}
- value={v}
- class="w-24 accent-indigo-400"
- onInput={(e) => set(parseFloat((e.target as HTMLInputElement).value))}
- />
- <span class="w-8 text-right text-[10px] text-slate-400">
- {Math.round(v * 100)}%
- </span>
- </label>
+ const openMenu = (e: MouseEvent) => {
+ e.stopPropagation();
+ const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+ const W = 240;
+ const H = 150;
+ // client coords — the shell adds this window's screen position
+ const x = r.right - W;
+ let y = r.bottom + 2;
+ let up = false;
+ if (y + H > window.innerHeight - 8) {
+ y = Math.max(0, r.top - H - 2);
+ up = true;
+ }
+ host.pickMenu(
+ x,
+ y,
+ W,
+ H,
+ {
+ type: 'prefs',
+ theme: theme.value,
+ scale: winScale.value,
+ opacity: winOpacity.value,
+ },
+ (id) => {
+ try {
+ const p = JSON.parse(id);
+ if (p?.prefs) {
+ setTheme(p.prefs.theme as Theme);
+ setWinView({
+ scale: p.prefs.scale,
+ opacity: p.prefs.opacity,
+ });
+ host.winScaleBounds(p.prefs.scale);
+ }
+ } catch {
+ /* not a prefs payload — ignore */
+ }
+ host.fabMenuHide();
+ },
+ up,
  );
+ };
  return (
- <span ref={root} class="relative inline-flex">
+ <span class="relative inline-flex">
  <button
  class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-indigo-200/80 hover:bg-indigo-300/20 hover:text-white"
- title="this window's opacity"
- onClick={(e) => {
- e.stopPropagation();
- setOpen(!open);
- }}
+ title="this window's view prefs"
+ onClick={openMenu}
  >
  <Cog size={12} />
  </button>
- {open && (
- <span
- class="absolute right-0 top-full z-50 mt-0.5 flex flex-col rounded border border-slate-600 bg-slate-900 py-1 shadow-lg"
- onClick={(e) => e.stopPropagation()}
- >
- <span class="flex flex-wrap gap-1 px-2 pb-1 pt-0.5">
- {THEMES.map((t) => (
- <button
- class={cn(
- 'rounded px-1.5 py-0.5 text-[10px] capitalize',
- t === theme.value
- ? 'bg-indigo-500/40 text-indigo-100'
- : 'text-slate-400 hover:bg-slate-700',
- )}
- onClick={() => setTheme(t as Theme)}
- >
- {t}
- </button>
- ))}
- </span>
- {row('alpha', winOpacity.value, 0.3, 1, (n) => setWinView({ opacity: n }))}
- <button
- class="mx-2 mt-0.5 rounded px-1 py-0.5 text-left text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200"
- onClick={() => setWinView({ scale: 1, opacity: 1 })}
- >
- reset
- </button>
- </span>
- )}
  </span>
  );
+}
+
+// /tracker refresh, inline in the detached title bar with the prefs cog
+@Component()
+class HeaderRefresh extends View {
+  private api = inject(AddonApi);
+  private spin = signal(false);
+  render() {
+    return (
+      <button
+        class={cn(
+          'flex h-5 w-5 items-center justify-center rounded text-indigo-200/80 hover:bg-indigo-300/20 hover:text-white',
+          this.spin.value && 'animate-spin',
+        )}
+        title="refresh objectives & quests"
+        onClick={() => {
+          this.spin.value = true;
+          void this.api
+            .refreshJournal()
+            .finally(() => setTimeout(() => (this.spin.value = false), 400));
+        }}
+      >
+        <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+        </svg>
+      </button>
+    );
+  }
 }
 
 @Component()
@@ -134,8 +138,12 @@ export class AppShell extends View {
  // this window IS the floating item tooltip — just the card
  if (tooltipMode) return <TooltipView />;
 
- // this window IS the shared fab dropdown — bare menu, no chrome
- if (menuMode) return <FabMenu />;
+ // this window IS the shared dropdown — spec menus (g=j:<json>) get
+ // the generic item renderer, fab groups get FabMenu
+ if (menuMode) {
+ const g = new URLSearchParams(window.location.search).get('g') ?? '';
+ return g.startsWith('j:') ? <SpecMenu /> : <FabMenu />;
+ }
 
 
  // the shell is in fab mode — just the floating button
@@ -150,7 +158,8 @@ export class AppShell extends View {
  // /target) keep tighter padding so they read as overlay panels.
  const panelMode =
  trackerMode || cooldownsMode || macrobarMode || minimapMode ||
- partyMode || targetMode || skillchainMode || entitiesMode;
+ partyMode || targetMode || skillchainMode || entitiesMode ||
+ window.location.pathname === '/meter';
  if (detachedMode) {
  // router.url carries the ?window=1 query — compare the bare path
  const path = url.split('?')[0];
@@ -172,6 +181,7 @@ export class AppShell extends View {
  (n) => (n.match === '/' ? path === '/' : path.startsWith(n.match)),
  )?.label ??
  path;
+ const pname = showPlayerName.value ? this.api.state.value?.player?.name : null;
  return (
  <div class="ffxi-panel main-window flex h-screen flex-col overflow-hidden text-slate-200">
  <header class="ffxi-panel-title flex h-7 shrink-0 items-center gap-2 pl-2 pr-1">
@@ -179,20 +189,26 @@ export class AppShell extends View {
  // bar pickers live inline on the title bar; the controls
  // share state with the view via macrobar.state
  <div class="flex min-w-0 flex-1 items-center gap-1.5">
+ {pname && (
+ <span class="shrink-0 truncate text-[10px] font-medium leading-7 text-indigo-100">
+ {pname} ·
+ </span>
+ )}
  <MacroBarChrome />
  </div>
  ) : (
  <span class="min-w-0 flex-1 truncate text-[10px] font-medium leading-7 text-indigo-100">
- {title}
+ {pname ? `${pname} · ` : ''}{title}
  </span>
  )}
+ {path === '/tracker' && <HeaderRefresh />}
  <ViewPrefs />
  <button
- class="flex h-6 w-6 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
+ class="flex h-5 w-5 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"
  title="close (Esc does the same)"
  onClick={() => host.closeWindow()}
  >
- ×
+ <X class="h-3 w-3" />
  </button>
  </header>
  {/* PanelShell views run edge-to-edge — their own layout

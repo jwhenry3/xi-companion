@@ -286,7 +286,7 @@ export class EntitiesView extends View implements OnInit, OnDestroy {
       <div class="flex h-full flex-col px-1">
         {/* header stays put — only the row list scrolls */}
         {this.kinds.length > 0 && (
-          <div class="flex flex-wrap items-center gap-1 bg-slate-900/90 py-1">
+          <div class="-mx-2 flex flex-wrap items-center gap-1 bg-slate-900/90 px-2 py-1">
             <input
               class="h-5 min-w-0 flex-1 rounded border border-slate-700 bg-slate-800/70 px-1 text-[10px] text-slate-200 placeholder:text-slate-600 focus:border-slate-500 focus:outline-none"
               placeholder="search"

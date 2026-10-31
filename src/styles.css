@@ -609,8 +609,8 @@ html.bare .ffxi-panel main {
 
 /* frameless overlay drag region — WebView2 reads app-region natively
    (NonClientRegionSupport): the title is a real caption, edges are real
-   HTSIZExxx borders. --wails-draggable kept alongside: the Electron dev
-   shell and the page's own edge/drag detection read it */
+   HTSIZExxx borders. --wails-draggable kept alongside: the page's own
+   edge/drag detection reads it */
 header,
 [style*='--wails-draggable: drag'],
 [style*='--wails-draggable:drag'] {

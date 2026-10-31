@@ -6,7 +6,7 @@ import { Component, View, inject, signal, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { Dropdown } from '../core/dropdown';
-import { host, setTheme, shellGeom, theme, THEMES, getWinTheme, setWinTheme, type Theme } from '../core/host';
+import { host, setTheme, shellGeom, theme, THEMES, getWinTheme, setWinTheme, showPlayerName, setPlayerNameVisible, type Theme } from '../core/host';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
@@ -37,7 +37,6 @@ export class SettingsView extends View implements OnInit, OnDestroy {
   // position editors — filled once when the shell's geom snapshot lands
   private geomLoaded = false;
   private fabPos = signal({ x: '', y: '' });
-  private fullRect = signal({ x: '', y: '', w: '', h: '' });
   private winRects = signal<Record<string, { x: string; y: string; w: string; h: string }>>({});
   private disposeGeom?: () => void;
   /** per-route theme picks — '' follows the global theme */
@@ -58,14 +57,6 @@ export class SettingsView extends View implements OnInit, OnDestroy {
         this.geomLoaded = true;
         if (g.fab) {
           this.fabPos.value = { x: String(g.fab.x), y: String(g.fab.y) };
-        }
-        if (g.full) {
-          this.fullRect.value = {
-            x: String(g.full.x),
-            y: String(g.full.y),
-            w: String(g.full.w),
-            h: String(g.full.h),
-          };
         }
         const rects: typeof this.winRects.value = {};
         for (const [key, r] of Object.entries(g.windows ?? {})) {
@@ -174,21 +165,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
     host.refreshGeom();
   }
 
-  private applyFull() {
-    const t = this.fullRect.value;
-    const x = Number(t.x);
-    const y = Number(t.y);
-    const w = Number(t.w);
-    const h = Number(t.h);
-    if ([x, y].some(Number.isNaN)) return;
-    host.setGeom(
-      'full',
-      Number.isNaN(w) || Number.isNaN(h) ? { x, y } : { x, y, w, h },
-    );
-    host.refreshGeom();
-  }
-
-  // ImagineXI's autolayout: pull the foreign-UI obstacle list, then
+  // ImagineXI's autolayout: pull the foreign-UI obstacle list, then  // ImagineXI's autolayout: pull the foreign-UI obstacle list, then
   // slot the fab + every open window into free screen zones (corners
   // and edges), avoiding xivbar/equipviewer/etc. and the retail chrome
   private async autolayout() {
@@ -323,14 +300,42 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                       show frame + corner markers on all windows
                     </span>
                   </label>
+                  <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={shellGeom.value?.scaleFollow !== false}
+                      onChange={(e) => {
+                        const on = e.currentTarget.checked;
+                        // optimistic — the shell echoes its state back
+                        // via __xicGeom; off also resets zoom to 100%
+                        shellGeom.value = {
+                          ...(shellGeom.value ?? {}),
+                          scaleFollow: on,
+                        };
+                        host.setScaleFollow(on);
+                      }}
+                    />
+                    follow game resize
+                    <span class="text-[10px] text-slate-500">
+                      scale window sizes + content with the FFXI window
+                    </span>
+                  </label>
+                  <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={showPlayerName.value}
+                      onChange={(e) => setPlayerNameVisible(e.currentTarget.checked)}
+                    />
+                    player name
+                    <span class="text-[10px] text-slate-500">
+                      prefix window titles with your character name
+                    </span>
+                  </label>
                 </>,
               )}
               {this.section(
-                'Server & chat',
+                'Chat',
                 <>
-                  {this.boolRow('autostart', 'start server with addon')}
-                  {this.numRow('port', 'port', 'applies on next start')}
-                  {this.numRow('poll_interval', 'poll interval (s)')}
                   {this.numRow('chat_history', 'chat history per thread')}
                   {this.numRow('chat_tell_threads', 'tell threads kept')}
                 </>,
@@ -346,20 +351,6 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                       {this.posInput(this.fabPos.value.y, (v) =>
                         this.fabPos.value = { ...this.fabPos.value, y: v }, 'y')}
                       <button class={applyBtn} onClick={() => this.applyFab()}>
-                        apply
-                      </button>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 py-1 text-sm text-slate-300">
-                      <span class="w-20 shrink-0">main</span>
-                      {this.posInput(this.fullRect.value.x, (v) =>
-                        this.fullRect.value = { ...this.fullRect.value, x: v }, 'x')}
-                      {this.posInput(this.fullRect.value.y, (v) =>
-                        this.fullRect.value = { ...this.fullRect.value, y: v }, 'y')}
-                      {this.posInput(this.fullRect.value.w, (v) =>
-                        this.fullRect.value = { ...this.fullRect.value, w: v }, 'w')}
-                      {this.posInput(this.fullRect.value.h, (v) =>
-                        this.fullRect.value = { ...this.fullRect.value, h: v }, 'h')}
-                      <button class={applyBtn} onClick={() => this.applyFull()}>
                         apply
                       </button>
                     </div>

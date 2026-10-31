@@ -1,5 +1,10 @@
 import { Injectable, inject, signal, DestroyRef } from '@preact-mvc/core';
 import { queryClient } from './query';
+import {
+  eventsSocketURL,
+  openXportSocket,
+  type XportSocket,
+} from './xport-socket';
 import type {
   InventoryState,
   GearswapFileList,
@@ -39,25 +44,18 @@ export class AddonApi {
   readonly lastError = signal<string | null>(null);
 
   private es: EventSource | null = null;
+  private ws: XportSocket | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private removeListeners?: () => void;
   /** last SSE message of any kind — the addon pings every 25s */
   private lastEventAt = 0;
   private resyncAt = 0;
 
-  // transport: proxied through the bridge SharedWorker when it attaches
-  // (one SSE + one request queue for ALL windows — Chromium's ~6
-  // connection-per-origin cap made per-window streams starve fetches);
-  // direct fetch/EventSource is the fallback
+  // transport: every window owns its own channel — the xport ws under
+  // the overlay (a real socket; the ~6-conn/origin cap doesn't apply,
+  // and the Go side dedupes in-flight GETs), fetch+EventSource in a
+  // browser tab
   private req: typeof directReq = directReq;
-  private wport: MessagePort | null = null;
-  /** worker script failed at runtime — don't retry every reconnect */
-  private bridgeFailed = false;
-  private reqSeq = 0;
-  private pending = new Map<
-    number,
-    { resolve: (v: any) => void; reject: (e: any) => void }
-  >();
   /** same-origin window bus — 'macros' means another window wrote macro
    *  files (editor save/title); refetch so sibling views (the detached
    *  macro bars) update without waiting on the SSE/file-watch round
@@ -92,18 +90,57 @@ export class AddonApi {
 
   private disconnect() {
     this.es?.close();
+    const stale = this.ws;
+    this.ws = null;
+    stale?.socket.close();
     this.bc?.close();
-    this.wport?.postMessage({ t: 'close' });
-    this.wport?.close();
     if (this.pollTimer != null) clearInterval(this.pollTimer);
     this.removeListeners?.();
   }
 
   private connect() {
-    if (this.attachBridge()) return;
-    // direct path — one EventSource for this window only. Reached when
-    // SharedWorker is unavailable (old WebView2 runtimes, tests).
-    this.req = directReq;
+    void this.route();
+  }
+
+  // The xport probe answers only under the wails overlay's assetserver
+  // — a ws per window there; everywhere else it's the plain
+  // fetch + EventSource surface (browser tab / Lua http server).
+  private async route() {
+    try {
+      const wsUrl = await eventsSocketURL(API_BASE);
+      if (wsUrl) {
+        this.connectWs(wsUrl);
+        return;
+      }
+    } catch {}
+    this.connectDirect();
+  }
+
+  // overlay xport mode: the assetserver buffers whole responses, so a
+  // held EventSource can never deliver — the ws socket carries events
+  private connectWs(wsUrl: string) {
+    const sock = (this.ws = openXportSocket(wsUrl, {
+      onEvent: (e, d) => {
+        if (sock !== this.ws) return;
+        this.lastEventAt = Date.now();
+        this.dispatchSse(e, d);
+      },
+      onState: (ok) => {
+        if (sock === this.ws) this.onConn(ok);
+      },
+      onDead: () => {
+        if (sock !== this.ws) return;
+        this.ws = null;
+        // EventSource self-reconnects; a socket needs an explicit retry
+        setTimeout(() => {
+          if (this.ws == null) this.connect();
+        }, 2000);
+      },
+    }));
+    void this.refreshChat();
+  }
+
+  private connectDirect() {
     const es = new EventSource(`${API_BASE}/api/events`);
     this.es = es;
     const bump = () => (this.lastEventAt = Date.now());
@@ -121,107 +158,8 @@ export class AddonApi {
     es.onerror = () => this.onConn(false);
   }
 
-  /** SharedWorker transport — attaches a port to the single bridge
-   *  worker that owns the one SSE stream + request queue shared by
-   *  every window (main, panels, tooltip, spawned tabs). New ports get
-   *  the cached snapshot events replayed so a just-spawned window
-   *  hydrates without extra fetches. */
-  private attachBridge(): boolean {
-    if (this.bridgeFailed || typeof SharedWorker !== 'function') return false;
-    try {
-      const w = new SharedWorker(
-        new URL('./bridge.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
-      const port = w.port;
-      let alive = false;
-      const fail = () => {
-        if (alive || this.wport !== port) return;
-        // worker script errored or produced nothing — requests would
-        // hang on a dead port, so tear down and use the direct path
-        this.bridgeFailed = true;
-        this.dropBridge(port);
-        this.connect();
-      };
-      // a script-level failure surfaces here; a load that silently
-      // produces no messages is caught by the timeout — the worker
-      // always posts a `conn` as its first message on attach
-      w.onerror = fail;
-      setTimeout(fail, 3000);
-      port.onmessage = (m) => {
-        alive = true;
-        this.onBridgeMessage(m.data);
-      };
-      port.start();
-      this.wport = port;
-      this.req = this.workerReq;
-      return true;
-    } catch {
-      this.wport = null;
-      return false;
-    }
-  }
-
-  /** tear down a dead bridge port — pending calls reject rather than
-   *  hang, and the transport returns to direct fetch */
-  private dropBridge(port: MessagePort) {
-    if (this.wport === port) this.wport = null;
-    try {
-      port.close();
-    } catch {
-      // already dead
-    }
-    for (const [, p] of this.pending) p.reject(new Error('bridge lost'));
-    this.pending.clear();
-    this.req = directReq;
-  }
-
-  private workerReq: typeof directReq = <T>(
-    path: string,
-    init?: RequestInit,
-  ) =>
-    new Promise<T>((resolve, reject) => {
-      const port = this.wport;
-      if (!port) return reject(new Error('bridge disconnected'));
-      const id = ++this.reqSeq;
-      this.pending.set(id, { resolve, reject });
-      port.postMessage({
-        t: 'req',
-        id,
-        method: init?.method ?? 'GET',
-        path,
-        headers: init?.headers as Record<string, string> | undefined,
-        body: typeof init?.body === 'string' ? init.body : undefined,
-      });
-    });
-
-  private onBridgeMessage(msg: any) {
-    if (msg?.t === 'res') {
-      const p = this.pending.get(msg.id);
-      if (p) {
-        this.pending.delete(msg.id);
-        if (msg.ok) {
-          try {
-            p.resolve(JSON.parse(msg.body));
-          } catch {
-            p.resolve(msg.body);
-          }
-        } else {
-          p.reject(new Error(`${msg.status}: ${msg.body}`));
-        }
-      }
-      return;
-    }
-    if (msg?.t === 'sse') {
-      this.lastEventAt = Date.now();
-      this.dispatchSse(msg.e, msg.d);
-      return;
-    }
-    if (msg?.t === 'conn') this.onConn(msg.ok);
-  }
-
-  /** SSE event fan-in — the worker's `sse` messages and the fallback
-   *  EventSource both land here */
+  /** SSE event fan-in — the xport socket's `sse` frames and the
+   *  EventSource fallback both land here */
   private dispatchSse(e: string, d: string) {
     try {
       switch (e) {
@@ -296,9 +234,8 @@ export class AddonApi {
     const now = Date.now();
     if (this.connected.value) {
       // the addon emits `ping` every 25s; >75s of silence means the
-      // conn died without the browser noticing — rebuild it (the bridge
-      // worker runs this watchdog itself; only the direct path needs it)
-      if (!this.wport && now - this.lastEventAt > 75_000) {
+      // conn died without the browser noticing — rebuild it
+      if (now - this.lastEventAt > 75_000) {
         this.es?.close();
         this.connect();
         return;

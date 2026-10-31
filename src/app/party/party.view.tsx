@@ -115,12 +115,14 @@ export class PartyView extends View implements OnInit {
             <>
               <span class="text-[10px]">
                 {m.j ?? ''}
-                {m.jl ?? ''}
+                {'\u2009'}
+                {m.jl != null ? String(m.jl).padStart(2, '0') : ''}
               </span>
               {m.sj && (
                 <span class="text-[9px] opacity-80">
                   {m.sj}
-                  {m.sjl ?? ''}
+                  {'\u2009'}
+                  {m.sjl != null ? String(m.sjl).padStart(2, '0') : ''}
                 </span>
               )}
             </>
@@ -227,7 +229,7 @@ export class PartyView extends View implements OnInit {
     return (
       <div
         class={cn(
-          'h-full overflow-y-auto overflow-x-hidden p-1',
+          'h-full overflow-y-auto overflow-x-hidden',
           empty && 'flex items-center justify-center',
         )}
       >

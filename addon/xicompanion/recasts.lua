@@ -1,6 +1,9 @@
 -- recasts.lua: ability + spell cooldowns for the detached /cooldowns
--- window. plat.ffxi.get_ability_recasts()/get_spell_recasts() expose
--- remaining seconds keyed by recast_id / spell_id; the client never tells
+-- window. plat.ffxi.get_ability_recasts() exposes remaining SECONDS;
+-- get_spell_recasts() exposes TICKS (60ths of a second — the client
+-- stores spell recasts in 1/60s units, abilities in seconds). Both are
+-- keyed by recast_id, which for spells equals spell_id since the 2014
+-- resource change. The client never tells
 -- us the FULL recast for abilities, so `maxes` remembers the largest
 -- remaining each key has shown (first sighting is the post-use full
 -- cooldown unless the addon loads mid-recast — it converges on next use).
@@ -48,8 +51,10 @@ local function scan()
     end
     local ok2, spl = pcall(plat.ffxi.get_spell_recasts)
     if ok2 and type(spl) == 'table' then
-        for sid, secs in pairs(spl) do
-            secs = tonumber(secs) or 0
+        for sid, ticks in pairs(spl) do
+            -- get_spell_recasts is 60ths of a second — a 5s recast
+            -- arrives as 300 and would read as minutes unconverted
+            local secs = (tonumber(ticks) or 0) / 60
             if secs > 0.05 then
                 local meta = res.spells and res.spells[sid]
                 local k = 's' .. tostring(sid)

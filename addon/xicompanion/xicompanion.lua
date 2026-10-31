@@ -3,16 +3,8 @@ _addon.author = 'XI Companion'
 _addon.version = '1.0.0'
 _addon.commands = { 'xicompanion', 'xicomp' }
 
--- Ashita v4 reads `addon.*` instead of `_addon.*`; harmless under Windower.
-addon = addon or {}
-addon.name = 'xicompanion'
-addon.author = 'XI Companion'
-addon.version = '1.0.0'
-addon.desc = 'XI Companion overlay server (GearSwap/inventory/chat/macros/journal)'
-addon.commands = { '/xicompanion', '/xicomp' }
-
 --[[
-    XI Companion — GearSwap, inventory, chat, macros & journal overlay.
+    XI Companion  -  GearSwap, inventory, chat, macros & journal overlay.
 
     Runs a small local HTTP server (LuaSocket) that:
       * serves the bundled frontend from ./ui
@@ -32,12 +24,11 @@ addon.commands = { '/xicompanion', '/xicomp' }
 ]]
 local plat = require('plat')
 
--- socket comes from the host's libs (Windower addons/libs, Ashita
--- addons/libs). Under Ashita this is the only unguarded host dep with no
--- fallback — surface failures loudly rather than dying silently.
+-- socket comes from Windower's addons/libs  -  surface failures loudly
+-- rather than dying silently.
 local socket_ok, socket = pcall(require, 'socket')
 if not socket_ok then
-    local msg = '[xicompanion] LuaSocket unavailable — ' .. tostring(socket)
+    local msg = '[xicompanion] LuaSocket unavailable  -  ' .. tostring(socket)
     if plat and plat.add_to_chat then
         pcall(plat.add_to_chat, 39, msg)
     end
@@ -50,7 +41,6 @@ if not ok_macros then macrofs = nil end
 
 local defaults = {
     port = 17890,
-    autostart = true,
     -- auto-launch the floating overlay button once a character logs in;
     -- //xicompanion fab off disables it (then use //xicompanion overlay to open manually)
     fab = true,
@@ -83,7 +73,7 @@ local defaults = {
     -- player-defined filter channels: { { name, channels = {...} } }
     chat_custom_channels = {},
     -- opt-in: steal a key combo to open/focus our chat window while one
-    -- is open — our composer opens instead of the client's chat line.
+    -- is open  -  our composer opens instead of the client's chat line.
     swapui = {
         -- headless set scanner: custom[] holds sets added via `//xicompanion swap add`
         custom = {},
@@ -191,7 +181,7 @@ do
 end
 
 -- minimal JSON decoder for structured route bodies (our own UI's output
--- — byte-walked like everything else, never pattern machinery). `null`
+--  -  byte-walked like everything else, never pattern machinery). `null`
 -- decodes to false, which the validators reject as a wrong type anyway.
 local function json_decode(s)
     if type(s) ~= 'string' then return nil end
@@ -395,7 +385,7 @@ local function decode_flags(flagset)
     return out
 end
 
--- Optional: reuse the shared extdata augment decoder (addons/libs/extdata.lua —
+-- Optional: reuse the shared extdata augment decoder (addons/libs/extdata.lua  - 
 -- the same one GearSwap's `require 'extdata'` resolves).
 local extdata_decoder = nil
 local extdata_tried = false
@@ -524,7 +514,7 @@ local function collect_state()
     }
     local equipment = type(all_items) == 'table' and all_items.equipment or nil
     if type(equipment) ~= 'table' then
-        -- the no-arg call doesn't always carry it — the dedicated form does
+        -- the no-arg call doesn't always carry it  -  the dedicated form does
         local ok_eq, eq_t = pcall(plat.ffxi.get_items, 'equipment')
         if ok_eq and type(eq_t) == 'table' then equipment = eq_t end
     end
@@ -720,6 +710,7 @@ local MIME = {
 
 local server = nil
 local bound_port = nil
+local xport = nil         -- xport.lua: overlay mailbox transport (msg conns)
 local conns = {}          -- all accepted connections: {sock, buf}
 local last_state_json = nil
 local last_poll = 0
@@ -766,6 +757,12 @@ local function send_all(sock, data)
 end
 
 local function send_and_close(conn, code, body, ctype, no_cache)
+    -- msg conns (xport mailbox) answer in protocol messages, not
+    -- HTTP bytes  -  the host reassembles the response for the page
+    if conn.msg then
+        conn.closed = true
+        return xport.respond(conn, code, body or '', ctype)
+    end
     body = body or ''
     local resp = status_line(code) .. '\r\n'
         .. 'Content-Type: ' .. (ctype or 'text/plain; charset=utf-8') .. '\r\n'
@@ -792,6 +789,7 @@ local function current_state_json()
 end
 
 local function sse_broadcast(event, payload)
+    if xport then pcall(xport.push_event, event, payload) end
     local body = 'event: ' .. event .. '\ndata: ' .. payload .. '\n\n'
     for _, conn in ipairs(conns) do
         if conn.sse and not conn.closed then
@@ -811,7 +809,7 @@ end
 ----------------------------------------------------------------------
 -- Chat: incoming chat packets (0x017) are parsed into a bounded ring
 -- buffer streamed to clients over SSE; POST /api/chat sends through
--- `input /<cmd>` — the same path as the game's own chat line.
+-- `input /<cmd>`  -  the same path as the game's own chat line.
 -- Layout per addons/libs/packets/fields.lua: Mode @0x04, GM @0x05,
 -- Sender Name char[0xF] @0x08, Message char* @0x17.
 ----------------------------------------------------------------------
@@ -823,7 +821,7 @@ local chat_threads = {}
 local chat_focus_windows = 0 -- chat views mounted; spacebar steal gates on >0
 local chat_log_dirty = {}     -- thread keys changed → debounced writes
 local chat_log_save_at = 0
--- rendered-line dedupe: texts the 0x017 parse pushed in the last ~3s —
+-- rendered-line dedupe: texts the 0x017 parse pushed in the last ~3s  - 
 -- 'incoming text' skips a packet-mode line only when the packet really
 -- delivered it; client-rendered lines at those modes (assist notices,
 -- add_to_chat) get captured rather than falling through both paths
@@ -835,7 +833,7 @@ local ls_names = {}
 local ls_poll_n = 0
 
 -- mode byte -> channel key (res/chat.lua). Anything outside the named
--- set still lands in 'system' — 0x017 is always chat-log text, so an
+-- set still lands in 'system'  -  0x017 is always chat-log text, so an
 -- unmapped mode is better surfaced there than dropped
 local CHAT_CHANNELS = {
     [0] = 'say', [1] = 'shout', [3] = 'tell', [4] = 'party',
@@ -844,7 +842,7 @@ local CHAT_CHANNELS = {
     [34] = 'assistj', [35] = 'assiste',
 }
 -- channel -> chat-line command for sending (system/assist are read-only).
--- linkshell3 + the !channels are private-server extras — harmless on
+-- linkshell3 + the !channels are private-server extras  -  harmless on
 -- retail, only reachable if the server offers them
 local CHAT_SEND = {
     say = '/say', shout = '/shout', yell = '/yell', emote = '/emote',
@@ -855,7 +853,7 @@ local CHAT_SEND = {
     politics = '!politics',
 }
 -- private-server custom channels: rendered lines carry a [Tag] prefix
--- ('[Global] Name: msg') — tag -> channel key
+-- ('[Global] Name: msg')  -  tag -> channel key
 local CUSTOM_TAGS = {
     global = 'global', lfp = 'lfp', market = 'market',
     general = 'general', crafting = 'crafting', help = 'help',
@@ -899,10 +897,10 @@ local function push_chat(m, quiet)
     end
 end
 
--- Chat persistence: every thread survives sessions — each writes its
+-- Chat persistence: every thread survives sessions  -  each writes its
 -- own flat row list under data/chat/<char>/<thread>.lua (per-character,
 -- per-thread, like data/journal/), capped at CHAT_LOG_MAX lines per
--- file and written debounced from pump() — the dirty set marks which
+-- file and written debounced from pump()  -  the dirty set marks which
 -- threads changed so quiet threads' files aren't rewritten. Clears map
 -- straight to file deletes. Restored messages keep their timestamps
 -- and carry restored=true so clients can tell them apart from live
@@ -1015,7 +1013,7 @@ local function load_chat_log()
         local ok, t = pcall(dofile, path)
         if ok and type(t) == 'table' then
             if t[1] ~= nil then
-                -- flat seq-ordered rows — ipairs keeps recorded order
+                -- flat seq-ordered rows  -  ipairs keeps recorded order
                 for _, m in ipairs(t) do
                     tail = restore_chat_msg(m) or tail
                 end
@@ -1048,7 +1046,7 @@ end
 -- Lazy because resources resolves on first access; false == unavailable.
 local auto_translates
 -- id -> en name, generated by scripts/extract-autotranslate.py straight
--- from the client's AT DAT — newer than res when phrases were added
+-- from the client's AT DAT  -  newer than res when phrases were added
 -- after the last resources regeneration
 local at_names
 local res_items, res_key_items
@@ -1085,7 +1083,7 @@ end
 
 local function at_phrase(id)
     local n = at_names_table()[id]
-    -- DAT placeholders store '@X' markers as the 'name' — treat them as
+    -- DAT placeholders store '@X' markers as the 'name'  -  treat them as
     -- unresolved and fall through to res.auto_translates
     if n and n:sub(1, 1) ~= '@' then return n end
     if auto_translates == nil then
@@ -1126,7 +1124,7 @@ end
 -- packet text is fixed-width / auto-translate encoded: byte-walk it
 -- instead of gsub so malformed content can never trip strings.lua's
 -- pattern machinery; printable ASCII survives, auto-translate blocks
--- (0xFD <type> <lang> <id hi> <id lo> 0xFD — 6 bytes; type selects the
+-- (0xFD <type> <lang> <id hi> <id lo> 0xFD  -  6 bytes; type selects the
 -- id's source: 0x02 phrase, 0x07/09/0A item, 0x13/15/16 key item) decode
 -- to their real text, everything else is dropped
 local function sanitize_chat(text)
@@ -1165,14 +1163,14 @@ local function sanitize_chat(text)
 end
 
 -- outbound side of auto-translate: the composer wraps chosen phrases in
--- braces — {Hello!} — the same convention Windower's chat line uses.
+-- braces  -  {Hello!}  -  the same convention Windower's chat line uses.
 -- Names that resolve decode into the real wire bytes the client would
 -- produce; anything between braces that doesn't resolve stays literal.
 local AT_OPEN = '{'
 local AT_CLOSE = '}'
 
 -- name -> {type, id} reverse map, lazy + cached. Phrases win on name
--- collisions, then items, then key items — the same precedence a player
+-- collisions, then items, then key items  -  the same precedence a player
 -- picking from the AT menu effectively gets.
 local at_id_by_name
 local function at_target(name)
@@ -1202,7 +1200,7 @@ end
 
 -- {type, id} -> FD wire bytes. Item/key-item ids with a 0x00 byte must
 -- be masked (see at_resolve); phrase ids containing 0x00 are category
--- headers — un-sendable, so the braces stay literal.
+-- headers  -  un-sendable, so the braces stay literal.
 local function at_encode(tgt)
     local typ, id = tgt[1], tgt[2]
     local hi = math.floor(id / 256) % 256
@@ -1247,7 +1245,7 @@ local function decode_outgoing_chat(text)
             wire[#wire + 1] = enc
             disp[#disp + 1] = '{' .. name .. '}'
         else
-            -- not a phrase — the braces are literal text
+            -- not a phrase  -  the braces are literal text
             local lit = '{' .. name .. '}'
             wire[#wire + 1] = lit
             disp[#disp + 1] = lit
@@ -1264,13 +1262,13 @@ local function read_cstr(data, off, max)
     return data:sub(off, hi)
 end
 
--- outgoing channel messages are appended optimistically (like tells) —
+-- outgoing channel messages are appended optimistically (like tells)  - 
 -- channels may or may not echo back as 0x017 depending on the command
 -- path. pending_self[channel][text] = send time, so a real echo that
 -- DOES arrive inside the window is dropped as a duplicate.
 local pending_self = {}
 
--- sender names come out of the same binary packet as message text —
+-- sender names come out of the same binary packet as message text  - 
 -- keep to a byte walk (no gsub, see sanitize_chat) so junk can't trip
 -- the wrapped string library
 local function sanitize_name(s)
@@ -1286,7 +1284,7 @@ local function handle_chat_packet(data)
     if type(data) ~= 'string' or #data < 0x17 then return end
     local channel = CHAT_CHANNELS[data:byte(5)]
     -- unknown channel id (private-server extras like a third linkshell):
-    -- don't push as 'system' — the rendered log line carries the same
+    -- don't push as 'system'  -  the rendered log line carries the same
     -- text and classifies it properly (linkshell3, [Tag] channels);
     -- pushing here would mislabel it and dedupe the real one
     if not channel then return end
@@ -1294,14 +1292,14 @@ local function handle_chat_packet(data)
     if sender == '' then sender = nil end
     local text = sanitize_chat(read_cstr(data, 24))
     if text == '' then return end
-    -- machine hex dumps injected as chat (comma-separated hex runs —
+    -- machine hex dumps injected as chat (comma-separated hex runs  - 
     -- e.g. '0a,00c7,00000004,...' showing under unity) aren't
     -- conversation; drop them at the packet edge
     if text:match('^%x+,%x+,%x+') then return end
     local m = { channel = channel, sender = sender, text = text,
                 mode = data:byte(5) }
     if channel == 'yell' and #data >= 8 then
-        -- Zone u16 @0x06 is only meaningful on yells — resolve it so
+        -- Zone u16 @0x06 is only meaningful on yells  -  resolve it so
         -- the row can show where the shouter is
         local zid = data:byte(7) + data:byte(8) * 256
         local okz, zn = pcall(function()
@@ -1335,20 +1333,20 @@ end
 
 plat.on('incoming chunk', function(id, data)
     if id ~= 0x017 then return end
-    -- never let a malformed packet kill the routing path — log and move on
+    -- never let a malformed packet kill the routing path  -  log and move on
     local ok, err = pcall(handle_chat_packet, data)
     if not ok then log_err('chat: ' .. tostring(err)) end
 end)
 
--- 'incoming text' — the client's rendered log-line stream: packet chat,
+-- 'incoming text'  -  the client's rendered log-line stream: packet chat,
 -- combat text, system lines, and every addon/plugin add_to_chat all
 -- funnel through here (with the client's filters already applied). The
--- 0x017 packet parse stays for the social channels — sender metadata
--- powers grouping and tell threads — so lines at a packet-covered
+-- 0x017 packet parse stays for the social channels  -  sender metadata
+-- powers grouping and tell threads  -  so lines at a packet-covered
 -- display mode are skipped; the rest classify into 'battle' (combat
 -- colors), 'system' (basic system color), or 'echo'.
 local PACKET_TEXT_MODES = {
-    -- res/chat.lua incoming ∪ outgoing columns — rendered packet chat
+    -- res/chat.lua incoming ∪ outgoing columns  -  rendered packet chat
     [1]=true,[2]=true,[3]=true,[4]=true,[5]=true,[6]=true,[7]=true,
     [9]=true,[10]=true,[11]=true,[12]=true,[13]=true,[14]=true,[15]=true,
     [200]=true,[211]=true,[212]=true,[213]=true,[214]=true,
@@ -1357,7 +1355,7 @@ local PACKET_TEXT_MODES = {
 
 -- combat colors: the Font-Colors battle ids (self/other hurt/heal/
 -- evade/buff/resist + calls-for-help + standard battle) plus every
--- numeric action_messages color — rendered 0x029 text is combat too
+-- numeric action_messages color  -  rendered 0x029 text is combat too
 local BATTLE_MODES = {
     [8]=true,[20]=true,[21]=true,[22]=true,[28]=true,[29]=true,[30]=true,
     [50]=true,[56]=true,[57]=true,[59]=true,[60]=true,[61]=true,[63]=true,
@@ -1378,7 +1376,7 @@ local SYSTEM_TEXT_MODE = 121
 -- display-mode → channel: a rendered line at a packet-chat color that
 -- did NOT come from a 0x017 packet (NPC dialog rendered at unity's
 -- color, addon output mimicking a channel) still belongs to the channel
--- its mode says it is — the map is built from res/chat.lua's
+-- its mode says it is  -  the map is built from res/chat.lua's
 -- incoming/outgoing columns so it tracks the client's mode table
 local DISPLAY_CHANNEL = {}
 do
@@ -1403,8 +1401,8 @@ do
     end
 end
 -- informational text modes (readable.lua's set + NPC conversations
--- 142): game-rendered announcements — conquest results, signet/besieged
--- notices, NPC dialog — are 'system', not 'echo'
+-- 142): game-rendered announcements  -  conquest results, signet/besieged
+-- notices, NPC dialog  -  are 'system', not 'echo'
 for _, m in ipairs({ 121, 142, 148, 150, 151, 152, 190, 210 }) do
     DISPLAY_CHANNEL[m] = 'system'
 end
@@ -1432,7 +1430,7 @@ end
 local OWN_CHAT_PREFIX = '[xicompanion]'
 
 -- normalize for dedupe: trim edges + canonicalize auto-translate
--- markers — the packet path decodes FD..FD into names ({box}) while a
+-- markers  -  the packet path decodes FD..FD into names ({box}) while a
 -- rendered line may keep raw ids ({AT} / {AT:xxxx}) or drop a trailing
 -- marker entirely, so neither is byte-identical to the other
 local function atnorm(x)
@@ -1442,7 +1440,7 @@ end
 
 local function packet_recent(text)
     -- rendered lines prepend sender metadata the packet doesn't carry
-    -- ('Fczjsgdl[BastokMine]: msg' vs 'msg') and can truncate the tail —
+    -- ('Fczjsgdl[BastokMine]: msg' vs 'msg') and can truncate the tail  - 
     -- compare in BOTH directions after normalization, plus the
     -- post-prefix tail as a fallback (senderless re-renders)
     local now = os.time()
@@ -1473,17 +1471,17 @@ end
 local party = nil
 
 plat.on('incoming text', function(original, modified, original_mode, modified_mode, blocked)
-    if blocked then return end -- another addon hid the line — it's invisible
+    if blocked then return end -- another addon hid the line  -  it's invisible
     local mode = modified_mode or original_mode or 0
     local text = sanitize_log_text(modified or original or '')
     if text == '' then return end
-    -- /check replies + TH procs feed party's target tracking — parse
+    -- /check replies + TH procs feed party's target tracking  -  parse
     -- before the packet-dedupe below could skip the line
     if party then
         local okp, e = pcall(party.log_line, text)
         if not okp then log_err('party logline: ' .. tostring(e)) end
     end
-    -- client-rendered unknown ATs show as {@id} markers — at_names.lua
+    -- client-rendered unknown ATs show as {@id} markers  -  at_names.lua
     -- maps id -> marker (the DAT's own placeholder, e.g. [5297]='@A25'),
     -- so invert it and resolve the real name via res.auto_translates
     if text:find('{@') then
@@ -1493,19 +1491,19 @@ plat.on('incoming text', function(original, modified, original_mode, modified_mo
         end)
     end
     -- packet-mode lines are only skipped when the 0x017 handler actually
-    -- pushed this text — otherwise it's a client-rendered line (assist
+    -- pushed this text  -  otherwise it's a client-rendered line (assist
     -- notice, add_to_chat at a shared mode) and it's ours to capture
     if PACKET_TEXT_MODES[mode] and packet_recent(text) then return end
     -- same packet-edge filter for machine hex dumps rendered as lines
     if text:match('^%x+,%x+,%x+') then return end
     local own = text:sub(1, #OWN_CHAT_PREFIX) == OWN_CHAT_PREFIX
-    -- private-server custom channels render '[Tag] Name: msg' — the tag
+    -- private-server custom channels render '[Tag] Name: msg'  -  the tag
     -- outranks the color-mode guess since it's the channel's own marker
     local tagch, tagrest = text:match('^%[([%a]+)%]%s*(.*)$')
     tagch = tagch and CUSTOM_TAGS[tagch:lower()] or nil
     local channel
     if own then
-        channel = 'echo' -- our own log() lines — surface, don't drop
+        channel = 'echo' -- our own log() lines  -  surface, don't drop
     elseif tagch then
         channel = tagch
     elseif DISPLAY_CHANNEL[mode] then
@@ -1518,11 +1516,11 @@ plat.on('incoming text', function(original, modified, original_mode, modified_mo
     local m = { channel = channel, text = text, self = own or nil,
                 mode = mode }
     if tagch then
-        -- '[Tag] Speaker: body' — grab the speaker for grouping
+        -- '[Tag] Speaker: body'  -  grab the speaker for grouping
         local sp = tagrest and tagrest:match('^([^:]+):%s*') or nil
         if sp and sp ~= '' then m.sender = sp end
     end
-    -- learn notices flag for the ★ badge — mode 81/91 colors are shared
+    -- learn notices flag for the ★ badge  -  mode 81/91 colors are shared
     -- with unrelated lines, so it's a text match not a mode check
     if text:lower():find('learn', 1, true) then
         m.kind = 'learn'
@@ -1582,7 +1580,7 @@ end)
 -- outgoing 0x0F5 records which widescan target the player tracks
 plat.on('outgoing chunk', function(id, data, modified, injected, blocked)
     if injected or blocked then
-        -- GearSwap fires injected 0x01As for /ma — they're still OUR
+        -- GearSwap fires injected 0x01As for /ma  -  they're still OUR
         -- casts; only the arm needs to see them
         if party and id == 0x01A then
             local ok3, err3 = pcall(party.handle_outgoing, id, data)
@@ -1646,7 +1644,7 @@ local function serve_static(conn, url_path)
 end
 
 -- Hidden from the overlay's perspective: in the zoning blackout or an
--- event/cutscene (player status 4) — the same states in-render addons
+-- event/cutscene (player status 4)  -  the same states in-render addons
 -- stop drawing for. The overlay polls this via /api/status.
 local function overlay_hidden()
     if zoning then return true end
@@ -1658,7 +1656,7 @@ local routes = {}
 
 -- detached-window spawn queue: the overlay drains it via /api/spawn
 -- on its status poll. Routes open as panels; '!show' surfaces the
--- fab/uncollapses. Enqueuing beats launching the exe per panel — every
+-- fab/uncollapses. Enqueuing beats launching the exe per panel  -  every
 -- launch blipped a taskbar entry (login = fab + up to 7 panels).
 local spawn_queue = {}
 local last_spawn_drain = 0
@@ -1811,7 +1809,7 @@ routes['POST /api/item'] = function(conn, req)
         return send_json(conn, 200, { ok = true })
     elseif action == 'unequip' then
         -- There is no /unequip client command: unequipping is an equip
-        -- packet (0x050) with Item Index 0 — the same chunk GearSwap
+        -- packet (0x050) with Item Index 0  -  the same chunk GearSwap
         -- emits when a slot should be emptied.
         local slot = body:match('"slot"%s*:%s*"([^"]+)"')
         local slot_id = slot and UNEQUIP_SLOT[slot]
@@ -1865,7 +1863,7 @@ end
 
 -- Map: player position + nearby entities + widescan for the /map page
 -- and the detached /minimap window. `map` was forward-declared above the
--- packet handlers — this assigns it.
+-- packet handlers  -  this assigns it.
 do
     local ok, mod = pcall(dofile, join(plat.addon_path, 'map.lua'))
     if ok and type(mod) == 'table' then
@@ -1887,7 +1885,7 @@ end
 
 -- Party: member vitals/buffs + target + casting tracker for the /party
 -- and /target detached windows. `party` was forward-declared above the
--- packet handlers — this assigns it.
+-- packet handlers  -  this assigns it.
 do
     local ok, mod = pcall(dofile, join(plat.addon_path, 'party.lua'))
     if ok and type(mod) == 'table' then
@@ -1907,7 +1905,7 @@ do
     end
 end
 
--- Ability/spell book for the /abilities page — obtainable-vs-learned
+-- Ability/spell book for the /abilities page  -  obtainable-vs-learned
 -- lists for the current job plus the command lines to trigger them.
 local abilities = nil
 do
@@ -1946,9 +1944,9 @@ end
 
 -- Active-palette + macro-content tracking. mcr.sys holds the client's
 -- active palette index and is rewritten on every in-game book/page
--- switch — the authoritative sel source (the newest-written mcr*.dat
--- only names the page just left). Any stamp move on mcr* — client
--- writes, our PUT writes, external edits — pings views to refetch
+-- switch  -  the authoritative sel source (the newest-written mcr*.dat
+-- only names the page just left). Any stamp move on mcr*  -  client
+-- writes, our PUT writes, external edits  -  pings views to refetch
 -- ('macros'). macro_watch holds the last-seen stamp per file so each
 -- poll diffs rather than re-stating.
 local macro_sel = {}
@@ -1961,7 +1959,7 @@ local function poll_macro_sel()
         -- mcr.sys mirrors the client's live palette index; when the
         -- memory dll is present, the in-memory copy is the same read
         -- without disk latency (mem_index returns nil until a verified
-        -- signature exists — file stays authoritative)
+        -- signature exists  -  file stays authoritative)
         local idx = (macrofs.mem_index and plat.memory)
             and macrofs.mem_index(d.path)
             or macrofs.read_sys_index(d.path)
@@ -1985,7 +1983,7 @@ local function poll_macro_sel()
                     if prev[fname] ~= stamp then
                         sse_broadcast('macros', '{}')
                         -- the client rewrites the outgoing palette's
-                        -- file on every move — the changed mcrN.dat IS
+                        -- file on every move  -  the changed mcrN.dat IS
                         -- the departed index, which is the only sel
                         -- observable short of mcr.sys
                         local n = tonumber(fname:match('^mcr(%d*)%.dat$')
@@ -2040,7 +2038,7 @@ routes['GET /api/macros'] = function(conn)
 end
 
 -- Delay between client macro-book switches. PR #1892: loading a book twice
--- in rapid succession can corrupt + wipe its files — pace commands at the
+-- in rapid succession can corrupt + wipe its files  -  pace commands at the
 -- client's own minimum delay.
 local MACRO_SWITCH_DELAY = 1.5
 local macro_schedule = coroutine.schedule or function(f) f() end
@@ -2049,7 +2047,7 @@ local macro_sel_n = 0
 -- body: {"char":"<content id>","index":<0-399>,
 --        "macros":[{"name":"x","lines":["/a",...x6]}, ... x20]}
 -- ?apply=1 (and logged in): force the client to re-read the book by
--- switching away before writing, then switching back — the file lands
+-- switching away before writing, then switching back  -  the file lands
 -- while the book is unloaded so the stale in-memory copy can't clobber it.
 routes['PUT /api/macros/palette'] = function(conn, req)
     if not macrofs then
@@ -2073,7 +2071,7 @@ routes['PUT /api/macros/palette'] = function(conn, req)
 
     local apply = (req.query.apply == '1' or req.query.apply == 'true')
         and logged_in()
-    -- book switches via ffxi.run — the client's command parser, no
+    -- book switches via ffxi.run  -  the client's command parser, no
     -- input-line involvement (an `input` firing while the user has the
     -- chat line open is what wedged the input modal)
     local function macro_cmd(cmd)
@@ -2083,7 +2081,7 @@ routes['PUT /api/macros/palette'] = function(conn, req)
             plat.send_command('input ' .. cmd)
         end
     end
-    -- self-heal: probe the client's menu state after the apply chain —
+    -- self-heal: probe the client's menu state after the apply chain  - 
     -- a wedged chat-input line reports as an open chat/input menu;
     -- dismiss it like a physical Esc (sendkey injects at the client
     -- input level, past whatever ate the real keypress)
@@ -2243,7 +2241,7 @@ local function serve_icon(conn, req, subdir, fn_name)
     local dir = join(join(plat.addon_path, 'data'), subdir)
     local path = dir .. '\\' .. tostring(id) .. '.bmp'
     if not plat.file_exists(path) then
-        -- dofile by path, not require — 'icon_extractor' also exists in
+        -- dofile by path, not require  -  'icon_extractor' also exists in
         -- other addons (equipviewer) and require may resolve theirs,
         -- which lacks the alpha fixup
         local ok_x, icon_extractor = pcall(
@@ -2279,14 +2277,14 @@ routes['GET /api/icon'] = function(conn, req)
 end
 
 
--- menu spell/JA icons — pre-extracted from ROM/280/15.DAT + 324/95.DAT
+-- menu spell/JA icons  -  pre-extracted from ROM/280/15.DAT + 324/95.DAT
 -- into data/menuicons/<idx>.bmp by scripts/extract-menuicons.py;
 -- menu_icon_names.lua maps index → "group/name" (e.g. "white/cure").
 routes['GET /api/menuicon'] = function(conn, req)
     -- ws=<tile> serves one 32x32 tile out of the misc/ws weapon sheet;
     -- id=<n> a whole menuicon chunk (≥330 = tile in a spabi sheet).
     -- Decoded lazily from ROM/280/15 + 324/95 by menu_extractor and
-    -- cached under data/menuicons/ — no pre-extracted assets ship.
+    -- cached under data/menuicons/  -  no pre-extracted assets ship.
     local ws = req.query.ws
     local id = tonumber(req.query.id)
     if not ws and not id then
@@ -2319,11 +2317,11 @@ routes['GET /api/menuicon'] = function(conn, req)
     send_and_close(conn, 200, bmp, 'image/bmp')
 end
 
--- FFXI window-skin textures — PNGs extracted by scripts/extract-winskin.py
+-- FFXI window-skin textures  -  PNGs extracted by scripts/extract-winskin.py
 -- into themes/<dat>/<nn>_<name>.png (client menu DAT chrome pieces).
 routes['GET /api/theme'] = function(conn, req)
     local f = req.query.f
-    -- path must stay inside themes/ — reject traversal outright
+    -- path must stay inside themes/  -  reject traversal outright
     if not f or f:find('%.%.') or not f:match('^[%w_%-%/]+%.png$') then
         return send_json(conn, 400, { error = 'bad path' })
     end
@@ -2357,9 +2355,9 @@ routes['GET /api/layout'] = function(conn, req)
     send_json(conn, 200, { obstacles = json_array(obs) })
 end
 
--- status-effect icons (buffs/debuffs) — ROM/119/57.DAT via buff_by_id.
+-- status-effect icons (buffs/debuffs)  -  ROM/119/57.DAT via buff_by_id.
 -- Ids ≥640 live in the second store (ROM/324/95: Trust faces, SP
--- abilities, mounts, emotes) — pre-extracted by name under
+-- abilities, mounts, emotes)  -  pre-extracted by name under
 -- data/statusicons2/ with statusicons2_map.lua as the id→name map.
 local statusicons2_map
 routes['GET /api/statusicon'] = function(conn, req)
@@ -2388,7 +2386,7 @@ routes['GET /api/statusicon'] = function(conn, req)
 end
 
 -- full item meta + the client's blue-text description (stats/passives
--- live there — res.items has no damage/defense/stat fields). Lazy per-id
+-- live there  -  res.items has no damage/defense/stat fields). Lazy per-id
 -- endpoint: descriptions are static and ~300B each, so they stay out of
 -- the catalog that every state broadcast re-sends.
 routes['GET /api/itemmeta'] = function(conn, req)
@@ -2404,7 +2402,31 @@ routes['GET /api/itemmeta'] = function(conn, req)
     send_json(conn, 200, meta)
 end
 
+-- the snapshot every fresh subscriber gets  -  /api/events writes these
+-- as SSE lines; xport pushes them as {t:'sse'} messages on 'sub'
+local function snapshot_events()
+    local out = { { e = 'state', d = current_state_json() } }
+    if journal then
+        out[#out + 1] = { e = 'journal', d = journal.snapshot_json() }
+    end
+    if recasts then
+        out[#out + 1] = { e = 'recasts', d = recasts.snapshot_json() }
+    end
+    if map then
+        out[#out + 1] = { e = 'map', d = map.snapshot_json() }
+    end
+    if party then
+        out[#out + 1] = { e = 'party', d = party.snapshot_json() }
+    end
+    out[#out + 1] = { e = 'macrosel', d = json.encode(macro_sel) }
+    return out
+end
+
 routes['GET /api/events'] = function(conn)
+    if conn.msg then
+        -- msg conns can't stream; xport clients use the ws socket
+        return send_json(conn, 501, { error = 'events over xport is a websocket - /api/xport/info' })
+    end
     conn.sse = true
     local head = status_line(200) .. '\r\n'
         .. 'Content-Type: text/event-stream\r\n'
@@ -2417,20 +2439,9 @@ routes['GET /api/events'] = function(conn)
         return
     end
     -- Send an immediate snapshot so the UI renders without waiting for a diff.
-    send_all(conn.sock, 'event: state\ndata: ' .. current_state_json() .. '\n\n')
-    if journal then
-        send_all(conn.sock, 'event: journal\ndata: ' .. journal.snapshot_json() .. '\n\n')
+    for _, m in ipairs(snapshot_events()) do
+        send_all(conn.sock, 'event: ' .. m.e .. '\ndata: ' .. m.d .. '\n\n')
     end
-    if recasts then
-        send_all(conn.sock, 'event: recasts\ndata: ' .. recasts.snapshot_json() .. '\n\n')
-    end
-    if map then
-        send_all(conn.sock, 'event: map\ndata: ' .. map.snapshot_json() .. '\n\n')
-    end
-    if party then
-        send_all(conn.sock, 'event: party\ndata: ' .. party.snapshot_json() .. '\n\n')
-    end
-    send_all(conn.sock, 'event: macrosel\ndata: ' .. json.encode(macro_sel) .. '\n\n')
 end
 
 -- Chat history: ?after=<seq> returns newer messages across all threads
@@ -2457,21 +2468,21 @@ routes['POST /api/journal/refresh'] = function(conn)
     send_json(conn, 200, { char = nil })
 end
 
--- Recast timers for the detached cooldowns window — snapshot for new
+-- Recast timers for the detached cooldowns window  -  snapshot for new
 -- clients; live updates ride the `recasts` SSE event.
 routes['GET /api/recasts'] = function(conn)
     local body = recasts and recasts.snapshot_json() or '{"list":[]}'
     send_and_close(conn, 200, body, 'application/json; charset=utf-8')
 end
 
--- Map state for the /map page + /minimap window — snapshot for new
+-- Map state for the /map page + /minimap window  -  snapshot for new
 -- clients; live updates ride the `map` SSE event.
 routes['GET /api/map'] = function(conn)
     local body = map and map.snapshot_json() or '{"on":0}'
     send_and_close(conn, 200, body, 'application/json; charset=utf-8')
 end
 
--- Party vitals + target/cast for the /party + /target windows — snapshot
+-- Party vitals + target/cast for the /party + /target windows  -  snapshot
 -- for new clients; live updates ride the `party` SSE event.
 routes['GET /api/party'] = function(conn)
     local body = party and party.snapshot_json() or '{"on":0}'
@@ -2479,13 +2490,13 @@ routes['GET /api/party'] = function(conn)
 end
 
 -- cast-tracker diagnostics: action packets the handler has seen +
--- the current cast — for chasing "mob cast bar never shows"
+-- the current cast  -  for chasing "mob cast bar never shows"
 routes['GET /api/party/dbg'] = function(conn)
     local body = party and party.dbg_json() or '{"ac":0}'
     send_and_close(conn, 200, body, 'application/json; charset=utf-8')
 end
 
--- Skill/spell book for /abilities — recomputed per call (job changes
+-- Skill/spell book for /abilities  -  recomputed per call (job changes
 -- invalidate everything anyway); a logged-out/nil read reports {on:0}.
 routes['GET /api/abilities'] = function(conn)
     if not abilities or not logged_in() then
@@ -2502,7 +2513,7 @@ routes['GET /api/abilities'] = function(conn)
 end
 
 -- Zone map image. User-dropped PNGs take precedence: data/maps/
--- <zone>_<map>.png (or <zone>.png for single-map zones) — the remapster
+-- <zone>_<map>.png (or <zone>.png for single-map zones)  -  the remapster
 -- FFXIDB packs use this convention. Otherwise the client's own map DAT is
 -- served as application/x-ffxi-map and the browser decodes the DXT/bitmap
 -- payload. 404 = radar-only fallback.
@@ -2531,7 +2542,7 @@ routes['GET /api/map/img'] = function(conn, req)
     send_and_close(conn, 404, 'no map image')
 end
 
--- Ask the server for a widescan refresh — injects the same 0x0F4 request
+-- Ask the server for a widescan refresh  -  injects the same 0x0F4 request
 -- the map menu's Widescan option sends (Flags=1).
 routes['POST /api/map/scan'] = function(conn)
     local ok_p, packets = pcall(require, 'packets')
@@ -2578,7 +2589,7 @@ end
 -- are tracked by default; untracked keys persist in the journal file and
 -- reach the tracker through the normal journal SSE broadcast.
 -- body: {"kind":"quest|mission|roe","key":"<group>","tracked":<bool>,
---        "id":<n>} — omit id to toggle the whole group
+--        "id":<n>}  -  omit id to toggle the whole group
 routes['POST /api/journal/track'] = function(conn, req)
     if not journal then
         return send_json(conn, 503, { error = 'journal unavailable' })
@@ -2598,7 +2609,7 @@ routes['POST /api/journal/track'] = function(conn, req)
     send_json(conn, 200, { ok = true })
 end
 
--- Addon settings (data/settings.xml via the config lib) — flat scalar
+-- Addon settings (data/settings.xml via the config lib)  -  flat scalar
 -- keys only; swapui stays command-managed. `port` takes effect on the
 -- next server start.
 local SETTABLE = {
@@ -2695,7 +2706,7 @@ routes['POST /api/chat'] = function(conn, req)
             return send_json(conn, 400, { error = 'tell requires to' })
         end
         plat.send_command('input /tell ' .. to .. ' ' .. wire)
-        -- sent tells don't echo back as packets — record the local half
+        -- sent tells don't echo back as packets  -  record the local half
         -- of the DM so the thread shows both sides
         push_chat({ channel = 'tell', peer = to, sender = player_name(), self = true, text = display })
         return send_json(conn, 200, { ok = true })
@@ -2705,7 +2716,7 @@ routes['POST /api/chat'] = function(conn, req)
         return send_json(conn, 400, { error = 'cannot send to ' .. tostring(channel) })
     end
     plat.send_command('input ' .. cmd .. ' ' .. wire)
-    -- the outgoing half may never come back as a packet — append it like
+    -- the outgoing half may never come back as a packet  -  append it like
     -- the tell path. pending_self guards against a real echo doubling it
     local pend = pending_self[channel] or {}
     pending_self[channel] = pend
@@ -2718,7 +2729,7 @@ end
 -- for everything. Drops the bucket(s) (tell threads leave the order
 -- list too) and deletes the matching per-thread file(s) under
 -- data/chat/<char>/, then broadcasts a real-seqd control row so every
--- connected window clears the same thread — the seq bump keeps it out
+-- connected window clears the same thread  -  the seq bump keeps it out
 -- of client dedupe.
 routes['POST /api/chat/clear'] = function(conn, req)
     local body = json_decode(req.body or '')
@@ -2745,7 +2756,7 @@ routes['POST /api/chat/clear'] = function(conn, req)
 end
 
 -- Player-defined filter channels: a named set of source channels the UI
--- merges into one view. Pure metadata — messages keep their real
+-- merges into one view. Pure metadata  -  messages keep their real
 -- channel; membership is resolved client-side.
 local CUSTOM_CHANNELS_VALID = {
     say = true, shout = true, yell = true, emote = true, party = true,
@@ -2799,7 +2810,7 @@ routes['PUT /api/chat/channels'] = function(conn, req)
     send_json(conn, 200, { ok = true, channels = json_array(out) })
 end
 
--- a mounted chat view registers/deregisters here — the spacebar steal
+-- a mounted chat view registers/deregisters here  -  the spacebar steal
 -- only intercepts while at least one chat window is actually open
 routes['POST /api/chatfocus'] = function(conn, req)
     local open = (req.body or ''):match('"open"%s*:%s*(%a+)')
@@ -2808,6 +2819,21 @@ routes['POST /api/chatfocus'] = function(conn, req)
     end
     chat_focus_windows = math.max(0, chat_focus_windows + (open == 'true' and 1 or -1))
     send_json(conn, 200, { ok = true, count = chat_focus_windows })
+end
+
+-- '/api/x?a=b' → path + decoded query table (socket requests and
+-- xport msg requests share this)
+local function split_target(target)
+    local path, qs = target:match('^([^?]*)%??(.*)$')
+    local query = {}
+    for pair in (qs or ''):gmatch('[^&]+') do
+        local k, v = pair:match('^([^=]+)=?(.*)$')
+        if k then
+            v = v:gsub('+', ' '):gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end)
+            query[k] = v
+        end
+    end
+    return path, query
 end
 
 local function parse_request(conn)
@@ -2838,15 +2864,7 @@ local function parse_request(conn)
     end
     local body = buf:sub(body_start, body_start + clen - 1)
 
-    local path, qs = target:match('^([^?]*)%??(.*)$')
-    local query = {}
-    for pair in (qs or ''):gmatch('[^&]+') do
-        local k, v = pair:match('^([^=]+)=?(.*)$')
-        if k then
-            v = v:gsub('+', ' '):gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end)
-            query[k] = v
-        end
-    end
+    local path, query = split_target(target)
 
     return {
         method = method,
@@ -2857,12 +2875,7 @@ local function parse_request(conn)
     }
 end
 
-local function handle_request(conn, req)
-    if req.method == 'OPTIONS' then
-        return send_and_close(conn, 204, '')
-    end
-    if conn.sse then return end -- already streaming
-
+local function dispatch_route(conn, req)
     local handler = routes[req.method .. ' ' .. req.path]
     if handler then
         local ok, err = pcall(handler, conn, req)
@@ -2879,6 +2892,28 @@ local function handle_request(conn, req)
         return serve_static(conn, req.path)
     end
     send_and_close(conn, 405, 'method not allowed')
+end
+
+local function handle_request(conn, req)
+    if req.method == 'OPTIONS' then
+        return send_and_close(conn, 204, '')
+    end
+    if conn.sse then return end -- already streaming
+    dispatch_route(conn, req)
+end
+
+-- a 'req' message off an xport backend  -  the virtual conn answers in
+-- protocol messages via send_and_close's msg branch
+local function msg_dispatch(msg)
+    local path, query = split_target(msg.path or '')
+    local vconn = { msg = true, id = msg.id, closed = false }
+    dispatch_route(vconn, {
+        method = msg.method or 'GET',
+        path = path,
+        query = query,
+        headers = type(msg.headers) == 'table' and msg.headers or {},
+        body = msg.body or '',
+    })
 end
 
 local function service_sockets()
@@ -2974,7 +3009,7 @@ local function poll_state()
         local jid = state.player.main_job_id
         if last_job_id ~= nil and jid ~= last_job_id then
             pcall(swapui.rescan)
-            -- recast ids are reused across jobs — stale observed maxes
+            -- recast ids are reused across jobs  -  stale observed maxes
             -- would skew the cooldown bars
             if recasts then pcall(recasts.reset) end
         end
@@ -3004,10 +3039,19 @@ local function heartbeat()
             end
         end
     end
+    if xport then pcall(xport.push_event, 'ping', '{}') end
 end
 
 local function pump()
-    if not server then return end
+    if xport then
+        local okx, errx = pcall(xport.pump)
+        if not okx then
+            log_err('xport pump: ' .. tostring(errx))
+        end
+    end
+    -- service_sockets self-guards on `server`; everything below feeds
+    -- sse_broadcast -> xport msg conns, which needs no socket server —
+    -- gating pump on it starved map/party/entities polls under lazy bind
     local ok, err = pcall(service_sockets)
     if not ok then
         log_err('socket error: ' .. tostring(err))
@@ -3057,7 +3101,7 @@ local function pump()
             end
         end
     end
-    -- linkpearl names: equipped pearls change on equip/zone — poll
+    -- linkpearl names: equipped pearls change on equip/zone  -  poll
     -- ~every 2s of pump ticks and broadcast so the chat sidebar can
     -- label ls1/ls2/ls3 with the real linkshell names
     ls_poll_n = ls_poll_n + 1
@@ -3087,15 +3131,26 @@ plat.on('incoming chunk', pump)
 
 -- opt-in hotkey → chat focus: when chat_space_focus is set and a chat
 -- window is open, eat the configured combo before the client sees it
--- and push 'chatfocus' — the UI raises our window + composer.
--- default shift+space — plain space still opens the native chat line.
+-- and push 'chatfocus'  -  the UI raises our window + composer.
+-- default shift+space  -  plain space still opens the native chat line.
 -- hotkey key-steal removed: the addon must never block key
--- input — only a focused input field may claim keys. The
+-- input  -  only a focused input field may claim keys. The
 -- chatfocus SSE plumbing stays but nothing broadcasts it.
 
+-- per-instance key for the xport channels: the character name once
+-- logged in (FFXI names are alpha-only, filesystem/pipe safe), the
+-- bound port pre-login or at the title screen. Evaluated lazily -
+-- relogging to a different character re-keys the channel.
+local function inst_key()
+    local name = player_name and player_name()
+    if name and name ~= '' and name ~= 'me' then return name end
+    local p = plat.pid()
+    if p and p > 0 then return tostring(p) end
+    return 'p' .. tostring(bound_port or settings.port or 0)
+end
+
 -- spawn the overlay shell. fab=true launches the collapsed floating
--- button (bundled exe only — no Electron fallback, it's too heavy to
--- auto-spawn). Returns true if something was launched.
+-- button. Returns true if something was launched.
 local function launch_overlay(fab, extra)
     local spawned = false
     for route in (extra or ''):gmatch('%-%-spawn[=%s]+(%S+)') do
@@ -3105,14 +3160,17 @@ local function launch_overlay(fab, extra)
     if not spawned then
         spawn_queue[#spawn_queue + 1] = '!show'
     end
-    -- overlay alive ⇒ it drains the queue within ~2s — no launch
+    -- overlay alive ⇒ it drains the queue within ~2s  -  no launch
     -- needed (every exe start flashed a taskbar entry)
     if os.time() - last_spawn_drain < 6 then
         return true
     end
     local exe = plat.addon_path .. 'overlay\\xicompanion-overlay.exe'
     if plat.file_exists(exe) then
-        local params = fab and '--fab' or ''
+        -- inst identifies this instance to the overlay  -  the mailbox
+        -- dir is keyed on it
+        local params = (fab and '--fab ' or '')
+            .. '--pid ' .. inst_key()
         -- plat.spawn is console-free (ShellExecuteW); os.execute's
         -- cmd /c fallback flashes a console that steals game focus
         if not plat.spawn(exe, params) then
@@ -3120,20 +3178,11 @@ local function launch_overlay(fab, extra)
         end
         return true
     end
-    if fab then return false end
-    -- dev build: Electron via the repo sibling (needs node + npm i);
-    -- launch.mjs scrubs ELECTRON_RUN_AS_NODE from the inherited env
-    local script = plat.addon_path ..
-        '..\\..\\gearswapui\\overlay\\launch.mjs'
-    if plat.file_exists(script) then
-        if not plat.spawn('node.exe', '"' .. script .. '"', true) then
-            os.execute('start "" node "' .. script .. '"')
-        end
-        return true
-    end
     log_err('no overlay found (expected ' .. exe .. ')')
     return false
 end
+
+local kill_overlay -- forward-declared: defined after the command table
 
 plat.on('addon command', function(cmd, ...)
     cmd = (cmd or ''):lower()
@@ -3146,7 +3195,6 @@ plat.on('addon command', function(cmd, ...)
             plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
         end
     elseif cmd == 'overlay' then
-        if not (server or start_server()) then return end
         if launch_overlay(false) then
             log('overlay launched')
         end
@@ -3156,8 +3204,6 @@ plat.on('addon command', function(cmd, ...)
             settings.fab = (sub == 'on')
             config.save(settings)
             log('auto-fab ' .. (settings.fab and 'enabled' or 'disabled'))
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true) then
             log('fab launched')
         end
@@ -3167,11 +3213,9 @@ plat.on('addon command', function(cmd, ...)
             settings.tracker = (sub == 'on')
             config.save(settings)
             log('auto-tracker ' .. (settings.tracker and 'enabled' or 'disabled'))
-            if settings.tracker and server and logged_in() then
+            if settings.tracker and logged_in() then
                 launch_overlay(true, '--spawn /tracker')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /tracker') then
             log('tracker launched')
         else
@@ -3183,11 +3227,9 @@ plat.on('addon command', function(cmd, ...)
             settings.macrobar = (sub == 'on')
             config.save(settings)
             log('auto-macrobar ' .. (settings.macrobar and 'enabled' or 'disabled'))
-            if settings.macrobar and server and logged_in() then
+            if settings.macrobar and logged_in() then
                 launch_overlay(true, '--spawn /macrobar')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /macrobar') then
             log('macro bar launched')
         else
@@ -3199,11 +3241,9 @@ plat.on('addon command', function(cmd, ...)
             settings.cooldowns = (sub == 'on')
             config.save(settings)
             log('auto-cooldowns ' .. (settings.cooldowns and 'enabled' or 'disabled'))
-            if settings.cooldowns and server and logged_in() then
+            if settings.cooldowns and logged_in() then
                 launch_overlay(true, '--spawn /cooldowns')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /cooldowns') then
             log('cooldowns launched')
         else
@@ -3215,11 +3255,9 @@ plat.on('addon command', function(cmd, ...)
             settings.minimap = (sub == 'on')
             config.save(settings)
             log('auto-minimap ' .. (settings.minimap and 'enabled' or 'disabled'))
-            if settings.minimap and server and logged_in() then
+            if settings.minimap and logged_in() then
                 launch_overlay(true, '--spawn /minimap')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /minimap') then
             log('minimap launched')
         else
@@ -3231,11 +3269,9 @@ plat.on('addon command', function(cmd, ...)
             settings.party = (sub == 'on')
             config.save(settings)
             log('auto-party ' .. (settings.party and 'enabled' or 'disabled'))
-            if settings.party and server and logged_in() then
+            if settings.party and logged_in() then
                 launch_overlay(true, '--spawn /party')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /party') then
             log('party window launched')
         else
@@ -3247,11 +3283,9 @@ plat.on('addon command', function(cmd, ...)
             settings.target = (sub == 'on')
             config.save(settings)
             log('auto-target ' .. (settings.target and 'enabled' or 'disabled'))
-            if settings.target and server and logged_in() then
+            if settings.target and logged_in() then
                 launch_overlay(true, '--spawn /target')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /target') then
             log('target window launched')
         else
@@ -3263,11 +3297,9 @@ plat.on('addon command', function(cmd, ...)
             settings.entities = (sub == 'on')
             config.save(settings)
             log('auto-entities ' .. (settings.entities and 'enabled' or 'disabled'))
-            if settings.entities and server and logged_in() then
+            if settings.entities and logged_in() then
                 launch_overlay(true, '--spawn /entities')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /entities') then
             log('entities window launched')
         else
@@ -3278,8 +3310,6 @@ plat.on('addon command', function(cmd, ...)
         if sub == 'reset' then
             if party then party.meter_reset() end
             log('combat meter reset')
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /meter') then
             log('combat meter launched')
         else
@@ -3309,11 +3339,9 @@ plat.on('addon command', function(cmd, ...)
             settings.skillchain = (sub == 'on')
             config.save(settings)
             log('auto-skillchain ' .. (settings.skillchain and 'enabled' or 'disabled'))
-            if settings.skillchain and server and logged_in() then
+            if settings.skillchain and logged_in() then
                 launch_overlay(true, '--spawn /skillchain')
             end
-        elseif not (server or start_server()) then
-            return
         elseif launch_overlay(true, '--spawn /skillchain') then
             log('skillchain tracker launched')
         else
@@ -3353,7 +3381,7 @@ plat.on('addon command', function(cmd, ...)
     elseif cmd == 'memscan' then
         -- value-diff hunt for the live palette index: seeds from
         -- mcr.sys (or an explicit index), then flip a page/book in
-        -- game and re-run `memscan <new index>` — each pass keeps
+        -- game and re-run `memscan <new index>`  -  each pass keeps
         -- only addresses still holding the new value.
         -- pass keeps only addresses still holding the new value.
         -- Candidate list is dumped to data/memscan.txt.
@@ -3461,7 +3489,7 @@ plat.on('incoming chunk', function(id, data, modified, injected, blocked)
     if id == 0x00B then
         zoning = true
         -- zone-out: last zone's widescan list, entity positions, and
-        -- in-flight cast are stale now — clear before new data lands
+        -- in-flight cast are stale now  -  clear before new data lands
         if map then pcall(map.reset) end
         if party then pcall(party.reset) end
     elseif id == 0x00A then
@@ -3486,8 +3514,8 @@ local function reset_state()
     if swapui then pcall(swapui.rescan) end
 end
 
-local function kill_overlay()
-    -- plat.kill_image TerminateProcess()es directly — taskkill.exe is
+kill_overlay = function()
+    -- plat.kill_image TerminateProcess()es directly  -  taskkill.exe is
     -- a console app and its window flashes even under SW_HIDE
     if not plat.kill_image('xicompanion-overlay.exe') then
         os.execute('taskkill /F /IM xicompanion-overlay.exe >nul 2>nul')
@@ -3499,25 +3527,22 @@ local function kill_overlay()
 end
 
 local function session_start()
-    if settings.autostart and not server then
-        start_server()
-    end
     reset_state()
     pcall(load_chat_log) -- restore the persisted log for this session
 end
 
--- the fab only exists while a character is in the world — spawn it on
+-- the fab only exists while a character is in the world  -  spawn it on
 -- login (or on load while already logged in), kill it on logout
 local function spawn_fab()
     -- on reload the running instance ignores --fab and just stays visible
     if not settings.fab then
-        -- //xicompanion fab off persists per character — say so instead of
+        -- //xicompanion fab off persists per character  -  say so instead of
         -- silently skipping, a stale override reads as "fab didn't spawn"
         log('auto-fab disabled for this character (//xicompanion fab on to re-enable)')
-    elseif server then
+    else
         launch_overlay(true)
     end
-    -- the tracker lives on the same always-up layer as the fab — spawn
+    -- the tracker lives on the same always-up layer as the fab  -  spawn
     -- it alongside (the exe's --spawn goes through the single-instance
     -- handoff, so a running overlay just opens the window)
     if settings.tracker then
@@ -3548,7 +3573,7 @@ end
 
 plat.on('load', function()
     session_start()
-    -- //lua load mid-session lands after login — spawn directly; at the
+    -- //lua load mid-session lands after login  -  spawn directly; at the
     -- title screen 'login' picks it up instead
     if logged_in() then
         spawn_fab()
@@ -3571,6 +3596,29 @@ plat.on('unload', function()
     kill_overlay()
 end)
 
-if settings.autostart then
-    start_server()
+-- the overlay's JS<->Lua mailbox (xport.lua). Loaded last so every dep
+-- it needs (routes, msg_dispatch, snapshot_events, json) already exists.
+do
+    local okx, xp = pcall(require, 'xport')
+    if okx and type(xp) == 'table' then
+        xport = xp
+        local oki, erri = pcall(xport.init, {
+            plat = plat,
+            json = json.encode,
+            json_decode = json_decode,
+            dispatch = msg_dispatch,
+            snapshot = snapshot_events,
+            inst = inst_key,
+            log = log,
+            log_err = log_err,
+        })
+        if not oki then
+            log_err('xport init: ' .. tostring(erri))
+            xport = nil
+        end
+    end
 end
+
+-- the LuaSocket server is lazy: nothing binds 17890 until a client
+-- actually needs it — //xicompanion open (browser tab) or //xicompanion
+-- start. The overlay rides the xport mailbox + ws and never touches it.

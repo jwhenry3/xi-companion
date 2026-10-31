@@ -30,7 +30,7 @@ const activeCls = 'bg-accent text-accent-foreground';
 /**
  * Flat dropdown — the same shell/behavior as NestedDropdown without the
  * cascade. Pure DOM content (no native popup), so it behaves in the
- * frameless Electron overlay where native <select> popups get killed.
+ * frameless overlay where native <select> popups get killed.
  * `filterable` adds a text filter; `allowCustom` turns the filter text
  * into a free-form value row.
  */

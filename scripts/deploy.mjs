@@ -23,7 +23,7 @@ mkdirSync(dst, { recursive: true });
 const assets = path.join(dst, 'ui', 'assets');
 if (existsSync(assets)) {
   for (const f of readdirSync(assets)) {
-    if (/^index-.*\.(js|css)$/.test(f)) rmSync(path.join(assets, f));
+    if (/^(index|bridge\.worker)-.*\.(js|css)$/.test(f)) rmSync(path.join(assets, f));
   }
 }
 

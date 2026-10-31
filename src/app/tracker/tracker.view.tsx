@@ -228,26 +228,6 @@ export class TrackerView extends View implements OnInit, OnDestroy {
           items.length === 0 && 'flex items-center justify-center',
         )}
       >
-        <div class="flex items-center justify-end px-1 pb-0.5">
-          <button
-            class={cn(
-              'rounded p-0.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200',
-              this.refreshing.value && 'animate-spin',
-            )}
-            title="refresh objectives & quests"
-            onClick={() => this.refresh()}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              class="h-3 w-3"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
-            </svg>
-          </button>
-        </div>
         {items.length === 0 ? (
           <p class="px-2 py-1 text-[10px] text-slate-400">
             {this.api.journal.value?.char

@@ -374,9 +374,19 @@ local function state_payload()
     pointer_completion()
     local quests = {}
     for area, q in pairs(st.quests) do
+        -- the log fields are wider than the real quest space — SE parks
+        -- internal flags in the tail (Crystal War bit 128), and unmatched
+        -- bits can only ever render as phantom "Quest #N" rows. Keep raw
+        -- state, but only surface ids the DAT records can name.
+        local ids = names and names.quest_areas[area]
+            and names.quest_areas[area].ids
         local cur, done = {}, {}
-        for id in pairs(q.current or {}) do cur[#cur + 1] = id end
-        for id in pairs(q.done or {}) do done[#done + 1] = id end
+        for id in pairs(q.current or {}) do
+            if not ids or ids[id] then cur[#cur + 1] = id end
+        end
+        for id in pairs(q.done or {}) do
+            if not ids or ids[id] then done[#done + 1] = id end
+        end
         table.sort(cur)
         table.sort(done)
         quests[area] = { current = json_array(cur), done = json_array(done) }

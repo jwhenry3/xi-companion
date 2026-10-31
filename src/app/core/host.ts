@@ -1,5 +1,5 @@
-// Host-shell abstraction: the UI runs inside either the Wails v3 overlay
-// (distributed build) or the Electron overlay (dev) / a plain browser.
+// Host-shell abstraction: the UI runs inside the Wails v3 overlay or a
+// plain browser tab.
 //
 // The overlay window has two modes — a tiny floating button ("fab") and
 // the full UI. The page picks which to render from the viewport size
@@ -31,7 +31,7 @@ declare global {
 
 // window.chrome.webview is WebView2's own host object — present on every
 // page inside the wails shell. That's the reliable "am I in the overlay"
-// check (Electron and plain browsers don't expose it).
+// check (plain browsers don't expose it).
 const inWebView = () => !!window.chrome?.webview;
 
 const tell = (msg: string) => window.chrome?.webview?.postMessage(msg);
@@ -159,8 +159,9 @@ export interface WinRect {
  *  detached windows ("/tracker" etc.) */
 export interface ShellGeom {
   fab?: WinRect;
-  full?: WinRect;
   windows?: Record<string, WinRect>;
+  /** game-follow scaling toggle — undefined means on (default) */
+  scaleFollow?: boolean;
 }
 export const shellGeom = signal<ShellGeom | null>(null);
 
@@ -207,10 +208,46 @@ if (inWebView()) {
   (window as any).__xicCollapsed = (c: boolean) => {
     uiCollapsed.value = !!c;
   };
+  // sub-100% content zoom pushed by the shell — runtime SetZoom floors
+  // at 1.0, so shrink-fits emulate ZoomFactor via body zoom. It feeds
+  // applyViewPrefs so it multiplies with this window's own scale pick.
+  (window as any).__xicZoom = (z: number) => {
+    shellEmu = !z || z >= 1 ? 1 : z;
+    applyViewPrefs();
+  };
   // the shell only reports on change — ask once at load so a page that
   // mounted after windows were already up starts with the right list
   if (!detachedMode && !tooltipMode) tell('xicompanion:windows');
 }
+
+/** a spec-menu row — data-driven items the shared menu window renders */
+export interface MenuItem {
+  id: string;
+  label: string;
+  hint?: string;
+  checked?: boolean;
+}
+// spec-menu pick callback — the shell relays menu-pick ids back to the
+// requesting window via __xicMenuPick. It STAYS armed across picks so
+// multi-choice menus (view prefs) can fire repeatedly; the next
+// pickMenu call or a backdrop dismiss simply replaces/abandons it.
+let menuPickCb: ((id: string) => void) | null = null;
+if (inWebView()) {
+  (window as any).__xicMenuPick = (id: string) => {
+    menuPickCb?.(id);
+  };
+}
+
+/** player-name prefix on window header text — localStorage key shared
+ *  by every window, so storage events keep all title bars in sync */
+export const showPlayerName = signal(localStorage.getItem('xic.pname') !== '0');
+export function setPlayerNameVisible(on: boolean) {
+  localStorage.setItem('xic.pname', on ? '1' : '0');
+  showPlayerName.value = on;
+}
+window.addEventListener('storage', (e) => {
+  if (e.key === 'xic.pname') showPlayerName.value = e.newValue !== '0';
+});
 
 // ---------- theme ----------
 // 'slate' is a translucent-black square-edged skin for detached panels.
@@ -269,15 +306,41 @@ const numOr = (k: string, d: number) => {
 };
 const SCALE_KEY = `xicompanion.winscale.${window.location.pathname}`;
 const OPA_KEY = `xicompanion.winopacity.${window.location.pathname}`;
-export const winScale = signal(clampf(numOr(SCALE_KEY, 1), 0.6, 1.6));
+export const winScale = signal(clampf(numOr(SCALE_KEY, 1), 0.5, 4));
 export const winOpacity = signal(clampf(numOr(OPA_KEY, 1), 0.3, 1));
+// sub-100% emulation pushed by the shell's game-follow zoom — the
+// effective body zoom is shellEmu × the window's own scale pick, so the
+// two features multiply instead of fighting over style.zoom
+let shellEmu = 1;
 const applyViewPrefs = () => {
-  document.body.style.zoom = String(winScale.value);
-  document.body.style.opacity = String(winOpacity.value);
+  const eff = shellEmu * winScale.value;
+  const b = document.body;
+  const root = document.getElementById('app');
+  const inner = root?.firstElementChild as HTMLElement | null;
+  b.style.opacity = String(winOpacity.value);
+  if (eff >= 1) {
+    b.style.zoom = String(eff);
+    b.style.width = b.style.height = '';
+    if (root) root.style.width = root.style.height = '';
+    if (inner) inner.style.width = inner.style.height = '';
+    return;
+  }
+  // sub-100%: expand the root to 1/eff of the viewport, zoom it back
+  b.style.zoom = String(eff);
+  b.style.width = `${100 / eff}vw`;
+  b.style.height = `${100 / eff}vh`;
+  if (root) {
+    root.style.width = '100%';
+    root.style.height = '100%';
+  }
+  if (inner) {
+    inner.style.width = '100%';
+    inner.style.height = '100%';
+  }
 };
 export function setWinView(v: { scale?: number; opacity?: number }) {
   if (v.scale !== undefined) {
-    winScale.value = clampf(v.scale, 0.6, 1.6);
+    winScale.value = clampf(v.scale, 0.5, 4);
     localStorage.setItem(SCALE_KEY, String(winScale.value));
   }
   if (v.opacity !== undefined) {
@@ -402,6 +465,14 @@ export const host = {
   /** true when running inside a native WebView2 shell */
   inShell: inWebView,
 
+  /** page→overlay.log debug line over the Wails raw-message channel —
+   *  Go logs every raw message already, so no Go-side case needed.
+   *  Off-shell it's console-only (workers use xlog's fetch instead). */
+  debugLog(msg: string) {
+    if (inWebView()) tell(`xicompanion:log:${msg.slice(0, 500)}`);
+    else console.debug('[xport]', msg);
+  },
+
   /** report that this window's app page finished booting — the shell
    *  retries the initial SetURL until it hears this, since a failed
    *  navigation fires NavigationCompleted just like a good one */
@@ -439,6 +510,36 @@ export const host = {
   /** hide the shared fab menu window (item click, bar drag, retarget) */
   fabMenuHide() {
     tell('xicompanion:fabmenu-hide');
+  },
+
+  /** open a spec dropdown in the shared menu window — items render as
+   *  data in its own window (no clipping), the pick relays back here.
+   *  x/y are CLIENT px (viewport coords of this window — the shell adds
+   *  the window's screen position). Any interaction with another
+   *  window closes it. */
+  pickMenu(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    items: MenuItem[] | Record<string, unknown>,
+    onPick: (id: string) => void,
+    up = false,
+  ) {
+    menuPickCb = onPick;
+    // ints only — the shell's coord parser rejects decimals
+    tell(
+      `xicompanion:fabmenu-show:j:${encodeURIComponent(
+        JSON.stringify(items),
+      )}:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(
+        h,
+      )},${up ? 1 : 0}`,
+    );
+  },
+
+  /** spec-menu window posts the clicked item id back through the shell */
+  menuPick(id: string) {
+    tell(`xicompanion:menu-pick:${id}`);
   },
 
   /** close this window (a spawned tab). On the main window Esc/× use
@@ -515,6 +616,18 @@ export const host = {
   setGeom(key: string, r: { x: number; y: number; w?: number; h?: number }) {
     const wh = r.w != null && r.h != null ? `,${r.w},${r.h}` : '';
     tell(`xicompanion:geom-set:${key}:${r.x},${r.y}${wh}`);
+  },
+
+  /** game-follow scaling toggle — persisted in the shell's window.json;
+   *  turning it off also resets every window's zoom to 100% */
+  setScaleFollow(on: boolean) {
+    tell(`xicompanion:scale-follow:${on ? 1 : 0}`);
+  },
+
+  /** this window's scale pick — the shell resizes the window's bounds
+   *  by the scale delta; content zoom is applied page-side by setWinView */
+  winScaleBounds(f: number) {
+    tell(`xicompanion:winscale:${f}`);
   },
 };
 

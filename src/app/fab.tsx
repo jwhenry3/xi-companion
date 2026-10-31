@@ -172,11 +172,30 @@ const menuGroup = signal(
 const menuUp = signal(
     new URLSearchParams(location.search).get('up') !== '0',
 );
+// where inside the (fullscreen) menu window the card draws — the shell
+// spans the menu window over the virtual screen and passes the content
+// rect in its coords so backdrop clicks can dismiss
+const menuRect = signal({
+    x: Number(new URLSearchParams(location.search).get('x') ?? 0),
+    y: Number(new URLSearchParams(location.search).get('y') ?? 0),
+    w: Number(new URLSearchParams(location.search).get('w') ?? 200),
+    h: Number(new URLSearchParams(location.search).get('h') ?? 100),
+});
 // set up the shell's hooks once per window context — the menu window
 // gets __xicMenu retargets, the bar window gets __xicMenuClosed nudges
-(window as any).__xicMenu = (g: string, up?: boolean) => {
+(window as any).__xicMenu = (
+    g: string,
+    up?: boolean,
+    x?: number,
+    y?: number,
+    w?: number,
+    h?: number,
+) => {
     menuGroup.value = g;
     if (up !== undefined) menuUp.value = up;
+    if (x !== undefined && y !== undefined) {
+        menuRect.value = { x, y, w: w ?? menuRect.value.w, h: h ?? menuRect.value.h };
+    }
 };
 (window as any).__xicMenuClosed = () => {
     fabMenuOpen.value = false;
@@ -297,13 +316,24 @@ export function FabMenu() {
         (menuGroup.value === PANELS_GROUP.key ? PANELS_GROUP : GROUPS[0]);
     const open = openWindows.value;
     return (
+        // fullscreen transparent backdrop — a click off-card dismisses;
+        // the card draws at the rect the requester asked for
         <div
-            class={cn(
-                'flex h-screen w-screen flex-col overflow-hidden bg-transparent',
-                menuUp.value ? 'justify-end' : 'justify-start',
-            )}
+            class="fixed inset-0 overflow-hidden bg-transparent"
+            onMouseDown={() => host.fabMenuHide()}
         >
-            <div class="w-full rounded border border-slate-600 bg-popover/95 py-1 shadow-lg">
+            <div
+                class="absolute rounded border border-slate-600 bg-popover/95 py-1 shadow-lg"
+                style={{
+                    left: `${menuRect.value.x}px`,
+                    // up menus anchor by the box bottom so the card's
+                    // real height can't offset it from the bar
+                    top: `${menuUp.value ? menuRect.value.y + menuRect.value.h : menuRect.value.y}px`,
+                    width: `${menuRect.value.w}px`,
+                    transform: menuUp.value ? 'translateY(-100%)' : undefined,
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+            >
                 <p class="px-2 pb-0.5 pt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400/70">
                     {g.label}
                 </p>

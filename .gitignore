@@ -17,3 +17,9 @@ nul
 icon_dump/
 # packet/debug dumps
 cast-poll.jsonl
+
+# vendored Ultralight SDK (downloaded, ~110MB)
+vendor/
+
+# ffi shim toolchain (local experiment, rebuildable — never shipped)
+overlay/ffishim/
