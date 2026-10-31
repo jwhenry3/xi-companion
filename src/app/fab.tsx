@@ -252,12 +252,15 @@ export function Fab({ player }: { player?: string | null }) {
         >
             {player && (
                 // the character name, wordmarked like the app logo —
-                // sits on the drag surface (not a button)
-                <span class="font-logo shrink-0 select-none translate-y-px pl-1 text-sm leading-none tracking-wide">
-                    {player}
-                </span>
+                // sits on the drag surface (not a button); its divider
+                // hides with it so the bar never leads with a bare sep
+                <>
+                    <span class="font-logo shrink-0 select-none translate-y-px pl-1 text-sm leading-none tracking-wide">
+                        {player}
+                    </span>
+                    <Sep />
+                </>
             )}
-            <Sep />
             {GROUPS.map((g) => (
                 <button
                     ref={(el) => {
