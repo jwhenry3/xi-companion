@@ -146,8 +146,9 @@ export class AppShell extends View {
  }
 
 
- // the shell is in fab mode — just the floating button
- if (fabMode.value) return <Fab />;
+ // the shell is in fab mode — just the floating button, with the
+ // character name wordmarked left of the first divider
+ if (fabMode.value) return <Fab player={this.api.state.value?.player?.name} />;
 
  const url = this.router.url.value;
 

@@ -234,7 +234,7 @@ function toggleMenu(g: FabGroup) {
     host.fabMenuShow(g.key, x, y, MENU_W, h, up);
 }
 
-export function Fab() {
+export function Fab({ player }: { player?: string | null }) {
     // drag from the gaps between buttons too — the container doubles as a
     // handle so there's no dead space in the bar
     const gap = pressDrag(() => { });
@@ -250,6 +250,13 @@ export function Fab() {
             class="flex h-14 w-full items-center justify-center gap-1"
             onMouseDown={gap.onMouseDown}
         >
+            {player && (
+                // the character name, wordmarked like the app logo —
+                // sits on the drag surface (not a button)
+                <span class="font-logo shrink-0 select-none translate-y-px pl-1 text-sm leading-none tracking-wide">
+                    {player}
+                </span>
+            )}
             <Sep />
             {GROUPS.map((g) => (
                 <button
