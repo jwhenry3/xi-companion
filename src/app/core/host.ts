@@ -537,7 +537,12 @@ export const host = {
     onPick: (id: string) => void,
     up = false,
   ) {
-    menuPickCb = onPick;
+    // any leaf pick closes the menu before the action runs — the
+    // shell only relays; nothing else hides it on pick
+    menuPickCb = (id) => {
+      tell('xicompanion:fabmenu-hide');
+      onPick(id);
+    };
     // ints only — the shell's coord parser rejects decimals
     tell(
       `xicompanion:fabmenu-show:j:${encodeURIComponent(

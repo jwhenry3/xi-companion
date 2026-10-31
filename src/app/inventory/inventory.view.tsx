@@ -190,6 +190,19 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  this.bags.value.reduce((n, b) => n + (b.count ?? b.items.length), 0),
  );
 
+ // subjob grants traits at the subjob's own level — NIN/DNC both learn
+ // Dual Wield at 10/20 respectively
+ private dualWield = computed(() => {
+ const p = this.api.state.value?.player;
+ if (!p) return false;
+ return (
+ (p.main_job === 'NIN' && p.main_job_level >= 10) ||
+ (p.sub_job === 'NIN' && p.sub_job_level >= 10) ||
+ (p.main_job === 'DNC' && p.main_job_level >= 20) ||
+ (p.sub_job === 'DNC' && p.sub_job_level >= 20)
+ );
+ });
+
  private visibleBags = computed(() => {
  const bf = this.bagFilter.value;
  const single = bf === 'all' ? undefined : this.bags.value.find((b) => b.key === bf);
@@ -315,11 +328,20 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  const name = meta?.name ?? `item ${item.id}`;
  // every action always lists — unavailable ones stay but disabled
  const opts = equipSlots(meta?.slots);
- const items: MenuItem[] = opts.map((s) => ({
- id: `equip:${equipCmdSlot(s)}`,
- label: opts.length > 1 ? `equip ${equipCmdSlot(s)}` : 'equip',
- disabled: !!item.equipped,
- }));
+ const dw = this.dualWield.value;
+ const items: MenuItem[] = opts.map((s) => {
+ const cs = equipCmdSlot(s);
+ // a weapon in sub needs dual wield — shields/offhand don't
+ const dwBlock = cs === 'sub' && meta?.category === 'Weapon' && !dw;
+ return {
+ id: `equip:${cs}`,
+ label: opts.length > 1 ? `equip ${cs}` : 'equip',
+ // equipped multi-slot items (earrings, rings, 1h weapons with
+ // DW) can swap sides — single-slot equips while worn are a
+ // no-op, so leave them off
+ disabled: (!!item.equipped && opts.length < 2) || dwBlock,
+ };
+ });
  if (!opts.length) items.push({ id: 'equip', label: 'equip', disabled: true });
  items.push({
  id: 'unequip',
