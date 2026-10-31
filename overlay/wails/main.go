@@ -78,6 +78,7 @@ var (
 	pGetCursorPos        = user32.NewProc("GetCursorPos")
 	pWindowFromPoint     = user32.NewProc("WindowFromPoint")
 	pGetAncestor         = user32.NewProc("GetAncestor")
+
 	pSetCursor           = user32.NewProc("SetCursor")
 	pLoadImage           = user32.NewProc("LoadImageW")
 	pGetWindowRect       = user32.NewProc("GetWindowRect")
@@ -1926,6 +1927,11 @@ func tooltipShow(caller application.Window, raw string) {
 		return
 	}
 	tooltipPinned.Store(m.Pinned)
+	tipShownAt = time.Now()
+	if m.Pinned {
+		tipWatchGen.Add(1)
+		go tipClickWatch(tipWatchGen.Load())
+	}
 	tooltipMu.Lock()
 	w := tooltipWin
 	tooltipMu.Unlock()
@@ -1947,19 +1953,44 @@ func tooltipShow(caller application.Window, raw string) {
 	payload, _ := json.Marshal(m)
 	w.ExecJS(fmt.Sprintf(
 		"window.__xicTooltip&&window.__xicTooltip(%s)", payload))
-	w.SetPosition(m.X, m.Y)
+	// snap the OS window to card dims every show — Wails SetSize can
+	// miss hidden-created windows, the raw call can't
+	var r wRect
+	pGetWindowRect.Call(tooltipHwnd.Load(), uintptr(unsafe.Pointer(&r)))
+	ws, wh := w.Size()
+	log.Printf("tooltip: hwnd=%x wails-size=%dx%d os-rect=%d,%d %dx%d want=%dx%d",
+		tooltipHwnd.Load(), ws, wh, r.left, r.top,
+		int(r.right-r.left), int(r.bottom-r.top), tipW, tipH)
+	if int(r.right-r.left) != tipW || int(r.bottom-r.top) != tipH {
+		pSetWindowPos.Call(tooltipHwnd.Load(), 0, 0, 0,
+			uintptr(tipW), uintptr(tipH), swpNoMove|swpNoActivate)
+	}
+	// retargeting while visible must leave the card where the user
+	// put it — only a fresh show re-anchors to the clicked element
+	if r, _, _ := pIsWindowVisible.Call(tooltipHwnd.Load()); r == 0 {
+		w.SetPosition(m.X, m.Y)
+	}
 	pShowWindow.Call(tooltipHwnd.Load(), swShowNA)
 }
 
+const (
+	tipW = 320
+	tipH = 440
+)
+
 func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 	opts := application.WebviewWindowOptions{
+		// fresh identity — whatever cached the old window's fullscreen
+		// bounds keys off the name/title, so this build can't restore it
+		Name:             "xic-itemtip",
 		Title:            windowTitle + " · item",
 		Frameless:        true,
 		Hidden:           true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
-		Width:            320,
-		Height:           440,
+		Width:            tipW,
+		Height:           tipH,
+		MaxWidth:         tipW,
 		Zoom:             curScale(),
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
@@ -2001,6 +2032,9 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 		}
 		setTooltipOwner(ownerHwnd)
 		setClickable(tooltipHwnd.Load(), m.Pinned)
+		// hidden-created windows can come up at the screen rect — the
+		// controller is awake here so bounds actually apply
+		w.SetSize(tipW, tipH)
 		w.SetPosition(m.X, m.Y)
 		// first reveal must be w.Show() — wakes the WebView2 controller
 		// Hidden-created windows start without; NOACTIVATE (set by
@@ -2023,6 +2057,7 @@ func tooltipCreate(m tooltipMsg, ownerHwnd uintptr) {
 
 func tooltipHide() {
 	tooltipPinned.Store(false)
+	tipWatchGen.Add(1)
 	tooltipMu.Lock()
 	w := tooltipWin
 	tooltipMu.Unlock()
@@ -2060,6 +2095,10 @@ var (
 	menuKind      string
 	menuRequester application.Window // spec-menu owner — picks relay here
 	menuWatchGen  atomic.Int32       // click-watcher generation (per show)
+	// stamp of the last tooltip show — a dismiss racing a fresh
+	// show (click → raise → tooltip: on the same window) must lose
+	tipShownAt  time.Time
+	tipWatchGen atomic.Int32 // click-watcher generation (per show)
 	// a show deferred until the new page reports loaded — kills the
 	// stale-content flash when a retarget reloads the menu window
 	menuPendingShow bool
@@ -2067,6 +2106,10 @@ var (
 	// clicks, interaction messages) can't close a menu younger than
 	// this, which guarantees a hide can never outrun its show
 	menuShownAt time.Time
+	// the requested screen rect — the page reports its real card size
+	// (menu-size) and the window snaps to it; up menus bottom-anchor
+	menuScrX, menuScrY, menuScrH int
+	menuUp                     bool
 )
 
 // virtualScreen is the union of all monitors — the shared menu window
@@ -2079,6 +2122,7 @@ func virtualScreen() (x, y, w, h int) {
 	h1, _, _ := pGetSystemMetrics.Call(79) // SM_CYVIRTUALSCREEN
 	return int(int32(x1)), int(int32(y1)), int(w1), int(h1)
 }
+
 
 // interaction on ANY other window dismisses the shared menu — every
 // overlay window is WS_EX_NOACTIVATE so clicks never move OS focus;
@@ -2140,9 +2184,11 @@ func fabMenuShow(arg string, req application.Window) {
 			y += wy
 		}
 	}
-	// the menu window spans the virtual screen — the content rect it was
-	// asked for becomes page coords (origin at the virtual screen corner)
-	vx, vy, vw, vh := virtualScreen()
+	// the menu window hugs the requested rect — the page reports its
+	// real card size via menu-size and we snap to it (no backdrop:
+	// clicks land on the game/our windows and dismiss through their
+	// own signals)
+	menuScrX, menuScrY, menuScrH, menuUp = x, y, h, up
 	// arm the outside-click watcher — clicks on the game (or any other
 	// app) never reach the message channel, so the only way to catch
 	// them is polling the button + WindowFromPoint while the menu's up
@@ -2173,8 +2219,8 @@ func fabMenuShow(arg string, req application.Window) {
 		// handler the other kind doesn't define)
 		menuKind = kind
 		if addonTarget != "" {
-			mp := fmt.Sprintf("fabmenu?window=1&g=%s&x=%d&y=%d&w=%d&h=%d",
-				url.QueryEscape(group), x-vx, y-vy, w, h)
+			mp := fmt.Sprintf("fabmenu?window=1&g=%s&w=%d&h=%d",
+				url.QueryEscape(group), w, h)
 			if !up {
 				mp += "&up=0"
 			}
@@ -2192,10 +2238,10 @@ func fabMenuShow(arg string, req application.Window) {
 	} else {
 		mw.ExecJS(fmt.Sprintf(
 			"window.__xicMenu&&window.__xicMenu(%s,%v,%d,%d,%d,%d)",
-			strconv.Quote(group), up, x-vx, y-vy, w, h))
+			strconv.Quote(group), up, 0, 0, w, h))
 	}
-	mw.SetPosition(vx, vy)
-	mw.SetSize(vw, vh)
+	mw.SetPosition(x, y)
+	mw.SetSize(w, h)
 	fabMenuMu.Lock()
 	pending := menuPendingShow
 	fabMenuMu.Unlock()
@@ -2216,9 +2262,8 @@ func fabMenuShow(arg string, req application.Window) {
 }
 
 func fabMenuCreate(group string, x, y, w, h int, up bool) {
-	// fullscreen transparent host — the window spans the virtual screen;
-	// x/y/w/h become URL params telling the page where to draw the card
-	vx, vy, vw, vh := virtualScreen()
+	// transparent host at the requested rect — the page measures its
+	// card and menu-size snaps the window to it
 	opts := application.WebviewWindowOptions{
 		Title:            windowTitle + " · menu",
 		Frameless:        true,
@@ -2226,13 +2271,13 @@ func fabMenuCreate(group string, x, y, w, h int, up bool) {
 		DisableResize:    true,
 		BackgroundType:   application.BackgroundTypeTranslucent,
 		BackgroundColour: application.NewRGB(2, 6, 23),
-		Width:            vw,
-		Height:           vh,
+		Width:            w,
+		Height:           h,
 		MinWidth:         100,
 		MinHeight:        40,
 		Zoom:             curScale(),
-		X:                vx,
-		Y:                vy,
+		X:                x,
+		Y:                y,
 		InitialPosition:  application.WindowXY,
 		Windows: application.WindowsWindow{
 			HiddenOnTaskbar:                   true,
@@ -2241,10 +2286,9 @@ func fabMenuCreate(group string, x, y, w, h int, up bool) {
 			NonClientRegionSupport:            true,
 		},
 	}
-	// x/y/w/h tell the page where inside the fullscreen window to draw
-	// the menu card (virtual-screen-relative coords)
-	menuPath := fmt.Sprintf("fabmenu?window=1&g=%s&x=%d&y=%d&w=%d&h=%d",
-		url.QueryEscape(group), x-vx, y-vy, w, h)
+	// the card fills the window — no anchor params needed
+	menuPath := fmt.Sprintf("fabmenu?window=1&g=%s&w=%d&h=%d",
+		url.QueryEscape(group), w, h)
 	if !up {
 		menuPath += "&up=0"
 	}
@@ -2337,17 +2381,64 @@ func menuClickWatch(gen int32) {
 		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 != 0 {
 			var pt wPoint
 			pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-			// POINT packs by value into one arg on x64 (x low, y high)
-			h, _, _ := pWindowFromPoint.Call(
-				uintptr(uint64(uint32(pt.y))<<32 | uint64(uint32(pt.x))))
-			// WindowFromPoint returns the deepest child — the webview's
-			// own hwnd isn't the top-level menu window, so compare ROOT
-			// windows or clicks inside the menu read as "outside". The
-			// age guard keeps the opener's own held/late press from
-			// counting as a dismiss click
-			root, _, _ := pGetAncestor.Call(h, 2 /*GA_ROOT*/)
-			if root != mh && time.Since(menuShownAt) > 300*time.Millisecond {
+			// clicks inside the card's rect keep it — compare against
+			// the real OS rect, not hwnd identity (invisible frame
+			// overhang would otherwise swallow the dismiss)
+			var tr wRect
+			pGetWindowRect.Call(mh, uintptr(unsafe.Pointer(&tr)))
+			if pt.x >= tr.left && pt.x < tr.right &&
+				pt.y >= tr.top && pt.y < tr.bottom {
+				time.Sleep(40 * time.Millisecond)
+				continue
+			}
+			if time.Since(menuShownAt) > 300*time.Millisecond {
 				fabMenuHide()
+			}
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+}
+
+// tipClickWatch dismisses a pinned tooltip when a click lands outside
+// it — identical poll to the menu watcher: our windows are all
+// NOACTIVATE so clicks on the game or other apps produce no focus
+// event; button + WindowFromPoint is the only outside signal
+func tipClickWatch(gen int32) {
+	// let the click that opened the tip release before arming
+	for i := 0; i < 60; i++ {
+		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 == 0 {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	for tipWatchGen.Load() == gen {
+		th := tooltipHwnd.Load()
+		if th == 0 {
+			time.Sleep(200 * time.Millisecond)
+			if tooltipHwnd.Load() == 0 {
+				return
+			}
+			continue
+		}
+		if r, _, _ := pIsWindowVisible.Call(th); r == 0 {
+			return // hidden — done
+		}
+		if v, _, _ := pGetAsyncKeyState.Call(vkLButton); v&0x8000 != 0 {
+			var pt wPoint
+			pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+			// click inside the card's rect — keep watching (WindowFromPoint
+			// can't be trusted: the frame's invisible overhang would
+			// report our own hwnd for clicks beside the card)
+			var tr wRect
+			pGetWindowRect.Call(th, uintptr(unsafe.Pointer(&tr)))
+			if pt.x >= tr.left && pt.x < tr.right &&
+				pt.y >= tr.top && pt.y < tr.bottom {
+				time.Sleep(40 * time.Millisecond)
+				continue
+			}
+			if time.Since(tipShownAt) > 300*time.Millisecond {
+				tooltipHide()
 			}
 			return
 		}
@@ -2567,6 +2658,17 @@ func main() {
 					}
 				}()
 			}
+			// clicking any other overlay window dismisses the item
+			// tooltip — same debounce+age guard as the menu so a
+			// raise that precedes a fresh tooltip can't close it
+			if tooltipWin != nil && w != tooltipWin && menuDismissable(message) {
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					if time.Since(tipShownAt) > 300*time.Millisecond {
+						tooltipHide()
+					}
+				}()
+			}
 			log.Printf("page message: %q", message)
 			switch {
 			case message == "xicompanion:expand":
@@ -2662,6 +2764,30 @@ func main() {
 							strconv.Quote(strings.TrimPrefix(message, "xicompanion:menu-pick:"))))
 					}
 				}()
+			case strings.HasPrefix(message, "xicompanion:menu-size:"):
+				f := strings.Split(strings.TrimPrefix(message, "xicompanion:menu-size:"), ",")
+				if len(f) == 2 {
+					if mw, err1 := strconv.Atoi(f[0]); err1 == nil {
+						if mh2, err2 := strconv.Atoi(f[1]); err2 == nil {
+							mh3 := fabMenuHwnd.Load()
+							if mh3 != 0 && mw > 0 && mh2 > 0 {
+								// fit content, but never past the box
+								// the requester gave us — the columns
+								// scroll inside the window beyond it
+								if mh2 > menuScrH {
+									mh2 = menuScrH
+								}
+								py := menuScrY
+								if menuUp {
+									py = menuScrY + menuScrH - mh2
+								}
+								pSetWindowPos.Call(mh3, 0,
+									uintptr(int32(menuScrX)), uintptr(int32(py)),
+									uintptr(mw), uintptr(mh2), swpNoActivate)
+							}
+						}
+					}
+				}
 			case message == "xicompanion:fabmenu-hide":
 				go fabMenuHide()
 			case strings.HasPrefix(message, "xicompanion:main:"):

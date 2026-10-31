@@ -142,6 +142,7 @@ export class SpecMenu extends View {
   private rect = signal(readRect());
 
   onInit() {
+    window.addEventListener('xic-gameclick', this.gameClick);
     // same-kind retargets swap content over ExecJS — only spec
     // payloads belong to this component (group menus are FabMenu's)
     (window as any).__xicMenu = (
@@ -170,51 +171,86 @@ export class SpecMenu extends View {
 
   onDestroy() {
     delete (window as any).__xicMenu;
+    this.ro?.disconnect();
+    window.removeEventListener('xic-gameclick', this.gameClick);
+  }
+
+  // watches the card itself — body resizes only on height, so a
+  // widening submenu column never reported without this
+  private ro = new ResizeObserver(() => {
+    const el = document.getElementById('menucard');
+    if (el) host.menuSize(el.offsetWidth, el.offsetHeight);
+  });
+  private gameClick = () => host.fabMenuHide();
+  // expanded parent id — its children render in a second column;
+  // the card widens and the menu-size snap grows the window to fit
+  private hoverId = signal<string | null>(null);
+
+  private row(it: MenuItem, sub = false) {
+    const kids = !it.disabled && (it.children?.length ?? 0) > 0;
+    const dis = !!it.disabled;
+    return (
+      <button
+        key={it.id}
+        disabled={dis}
+        class={`flex w-full items-center gap-2 px-3 py-1 text-left ${
+          dis
+            ? 'cursor-default text-slate-600'
+            : 'hover:bg-indigo-500/30 hover:text-white'
+        }`}
+        // submenu rows must not collapse their own parent — only the
+        // main column steers hoverId
+        onMouseEnter={() => {
+          if (!sub) this.hoverId.value = kids ? it.id : null;
+        }}
+        onClick={() =>
+          kids ? (this.hoverId.value = it.id) : host.menuPick(it.id)
+        }
+      >
+        <span class="w-3 text-indigo-300">{it.checked ? '●' : ''}</span>
+        <span class="min-w-0 flex-1 truncate">{it.label}</span>
+        {kids ? (
+          <span class="text-slate-500">›</span>
+        ) : (
+          it.hint && (
+            <span class="shrink-0 text-[9px] text-slate-500">{it.hint}</span>
+          )
+        )}
+      </button>
+    );
   }
 
   render() {
-    const r = this.rect.value;
     const s = this.spec.value;
+    const sub = Array.isArray(s)
+      ? s.find(
+          (it) => it.id === this.hoverId.value && it.children?.length,
+        )
+      : undefined;
     return (
-      // fullscreen transparent backdrop — clicks off-card dismiss
+      // w-max so the card (and window) can grow to fit a submenu
+      // column; outside clicks dismiss via xic-gameclick / interaction
       <div
-        class="fixed inset-0 overflow-hidden bg-transparent"
-        onMouseDown={() => host.fabMenuHide()}
+        id="menucard"
+        ref={(el) => {
+          if (el) this.ro.observe(el);
+        }}
+        class="flex w-max flex-row rounded border border-slate-600 bg-slate-900/95 text-[11px] text-slate-200"
       >
-        <div
-          class="absolute flex flex-col overflow-y-auto rounded border border-slate-600 bg-slate-900/95 py-1 text-[11px] text-slate-200"
-          style={{
-            left: `${r.x}px`,
-            // up menus anchor by the BOTTOM of the requested box — the
-            // card's real height doesn't matter, so a tall estimate
-            // can't push it away from the anchor
-            top: `${r.up ? r.y + r.h : r.y}px`,
-            width: `${r.w}px`,
-            maxHeight: `${r.h}px`,
-            transform: r.up ? 'translateY(-100%)' : undefined,
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
+        <div class="flex min-w-28 flex-col overflow-y-auto py-1">
           {s == null || (Array.isArray(s) && s.length === 0) ? (
-          <p class="px-3 py-1 text-[10px] text-slate-500">empty</p>
-        ) : !Array.isArray(s) ? (
-          <PrefsPanel spec={s} />
-        ) : (
-          s.map((it) => (
-            <button
-              key={it.id}
-              class="flex items-center gap-2 px-3 py-1 text-left hover:bg-indigo-500/30 hover:text-white"
-              onClick={() => host.menuPick(it.id)}
-            >
-              <span class="w-3 text-indigo-300">{it.checked ? '●' : ''}</span>
-              <span class="min-w-0 flex-1 truncate">{it.label}</span>
-              {it.hint && (
-                <span class="shrink-0 text-[9px] text-slate-500">{it.hint}</span>
-              )}
-            </button>
-          ))
-        )}
+            <p class="px-3 py-1 text-[10px] text-slate-500">empty</p>
+          ) : !Array.isArray(s) ? (
+            <PrefsPanel spec={s} />
+          ) : (
+            s.map((it) => this.row(it))
+          )}
         </div>
+        {sub?.children && (
+          <div class="flex min-w-28 flex-col overflow-y-auto border-l border-slate-700 py-1">
+            {sub.children.map((it) => this.row(it, true))}
+          </div>
+        )}
       </div>
     );
   }

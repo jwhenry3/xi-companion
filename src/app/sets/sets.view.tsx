@@ -206,34 +206,54 @@ export class SetsView extends View implements OnInit {
  ...tipAnchorOutside(el),
  });
  return (
+ // same tile grid as the inventory — sky ring when this slot's
+ // assignment already matches, aug dot for augmented items
  <button
  key={`${bag.key}:${item.slot}`}
  onClick={(e) => {
  this.assign(item, bag);
  this.tipClick(e, tip);
  }}
- class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-slate-300 hover:bg-slate-800"
+ title={`${meta?.name ?? `item ${item.id}`}${meta?.level != null ? ` · lv${meta.level}` : ''}${meta?.ilvl != null ? ` · i${meta.ilvl}` : ''}${usedSlot ? ` · in set: ${usedSlot}` : ''} · slot ${item.slot}`}
+ class={`relative h-11 w-11 shrink-0 rounded border transition-colors ${
+ usedSlot
+ ? 'border-sky-500 bg-sky-950/40'
+ : 'border-slate-800 hover:border-slate-600 hover:bg-slate-800/60'
+ }`}
  >
- {this.icon(item.id, 'h-7 w-7 shrink-0')}
+ {this.icon(item.id, 'h-full w-full rounded object-contain')}
+ {meta?.level != null && (
  <span
- class={`min-w-0 flex-1 leading-tight ${itemNameClass(meta)}`}
+ class="absolute left-0.5 top-0.5 text-[9px] font-bold tabular-nums leading-none text-slate-200"
+ style={{ textShadow: '0 0 1px #000, 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000' }}
  >
- {item.equipped && <span class="mr-1 text-amber-400">*</span>}
- {meta?.name ?? `item ${item.id}`}
- {flagDots(meta) && <span class="ml-1">{flagDots(meta)}</span>}
+ Lv{meta.level}
+ {meta.ilvl != null ? `/${meta.ilvl}` : ''}
  </span>
- {usedSlot && (
- <span class="rounded bg-sky-950 px-1 py-0.5 text-[9px] text-sky-300">{usedSlot}</span>
  )}
- {meta?.ilvl != null && (
- <span class="rounded bg-indigo-900 px-1 py-0.5 text-[9px] text-indigo-200">
- i{meta.ilvl}
+ {item.equipped && (
+ <span class="absolute right-0.5 top-0.5 text-[9px] font-bold leading-none text-amber-400">
+ *
  </span>
  )}
  {item.augments && (
- <span class="rounded bg-fuchsia-950 px-1 py-0.5 text-[9px] text-fuchsia-300">aug</span>
+ <span class="absolute right-0.5 top-2.5 text-[8px] font-bold leading-none text-fuchsia-300">
+ a
+ </span>
  )}
- <span class="text-[11px] text-slate-600">[{item.slot}]</span>
+ {flagDots(meta) && (
+ <span
+ class="absolute bottom-0 left-0.5 leading-none"
+ style={{ textShadow: '0 0 1px #000, 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000' }}
+ >
+ {flagDots(meta)}
+ </span>
+ )}
+ {item.count > 1 && (
+ <span class="absolute bottom-0 right-0.5 text-[11px] font-bold tabular-nums leading-tight text-slate-200">
+ {item.count}
+ </span>
+ )}
  </button>
  );
  }
@@ -379,7 +399,7 @@ export class SetsView extends View implements OnInit {
  <h3 class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
  {bag.name} ({items.length})
  </h3>
- <div class="rounded border border-slate-800 bg-slate-900 p-1">
+ <div class="flex flex-wrap content-start gap-1 p-1">
  {items.map((it) => this.pickerItem(bag, it))}
  </div>
  </section>

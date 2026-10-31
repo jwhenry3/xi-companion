@@ -226,6 +226,11 @@ export interface MenuItem {
   label: string;
   hint?: string;
   checked?: boolean;
+  /** nested items — hover/click expands a second column in the card;
+   *  parents never relay a pick, only their leaves do */
+  children?: MenuItem[];
+  /** greyed, non-pickable — list it anyway instead of hiding it */
+  disabled?: boolean;
 }
 // spec-menu pick callback — the shell relays menu-pick ids back to the
 // requesting window via __xicMenuPick. It STAYS armed across picks so
@@ -510,6 +515,12 @@ export const host = {
   /** hide the shared fab menu window (item click, bar drag, retarget) */
   fabMenuHide() {
     tell('xicompanion:fabmenu-hide');
+  },
+
+  /** the shared menu window hugs its card — the page reports the card's
+   *  measured size and the shell snaps the window to it */
+  menuSize(w: number, h: number) {
+    tell(`xicompanion:menu-size:${Math.ceil(w)},${Math.ceil(h)}`);
   },
 
   /** open a spec dropdown in the shared menu window — items render as

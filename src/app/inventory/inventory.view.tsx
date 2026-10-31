@@ -3,6 +3,7 @@ import type { OnInit, OnDestroy } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
 import { TabBar, Tab } from '../core/tabs';
 import {
  host,
@@ -13,8 +14,17 @@ import {
 } from '../core/host';
 import type { Bag, BagItem, ItemMeta } from '../core/types';
 import { itemNameClass, flagDots } from '../core/item-flags';
+import { MenuItem } from '../core/host';
+import { cmdStr, equipCmdSlot, equipSlots } from '../core/item-utils';
 
 const EQUIP_CATEGORIES = new Set(['Weapon', 'Armor']);
+// stacked/tab order for the collapsed categories — the three everyday
+// buckets lead, rarer categories sort after them, unknowns last
+const GROUP_ORDER: Record<string, number> = {
+  Equipment: 0,
+  Usable: 1,
+  General: 2,
+};
 
 interface SelectedItem {
  bag: string;
@@ -163,22 +173,6 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  }
  }
 
- private sortHeader(key: 'name' | 'level' | 'ilvl' | 'category' | 'subtype', label: string, cls = '') {
- const active = this.sortKey.value === key;
- return (
- <th
- class={` select-none px-2 py-1 hover:text-slate-300 ${cls}`}
- onClick={() => this.sortBy(key)}
- title="sort"
- >
- {label}
- {active && (
- <span class="ml-1 text-sky-400">{this.sortDir.value === 1 ? '▲' : '▼'}</span>
- )}
- </th>
- );
- }
-
  // storage picker: every bag the client reports, with counts. Unavailable
  // ones (locked wardrobes, Storage outside a mog house...) stay listed but
  // can't be picked — disabled, not hidden.
@@ -228,17 +222,25 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  const cat = this.catalog.value;
  const map = new Map<string, BagItem[]>();
  for (const it of items) {
- const c = cat[it.id]?.category ?? '';
+ const c0 = cat[it.id]?.category ?? '';
+ // same collapse as the Type filter — Weapon+Armor tab together
+ const c = EQUIP_CATEGORIES.has(c0) ? 'Equipment' : c0;
  const g = map.get(c);
  if (g) g.push(it);
  else map.set(c, [it]);
  }
  return [...map.entries()].sort(
- ([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)),
+ ([a], [b]) =>
+   a === ''
+     ? 1
+     : b === ''
+       ? -1
+       : (GROUP_ORDER[a] ?? 100) - (GROUP_ORDER[b] ?? 100) ||
+         a.localeCompare(b),
  );
  }
 
- private itemRow(bag: Bag, item: BagItem) {
+ private itemCell(bag: Bag, item: BagItem) {
  const meta = this.catalog.value[item.id];
  const name = meta?.name ?? `item ${item.id}`;
  const isSel =
@@ -250,7 +252,7 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  ...tipAnchorOutside(el),
  });
  return (
- <tr
+ <button
  key={`${bag.key}:${item.slot}`}
  onClick={(e) => {
  this.selected.value = { bag: bag.key, slot: item.slot };
@@ -258,49 +260,143 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  if (tooltipPinned.value) host.setTooltip(tip(el));
  else host.pinTooltip(tip(el));
  }}
- class={` border-t border-slate-800 transition-colors ${
- isSel ? 'bg-sky-950/40' : 'hover:bg-slate-800/60'
+ onContextMenu={(e) => this.itemMenu(e, bag, item)}
+ title={`${name}${meta?.level != null ? ` · lv${meta.level}` : ''}${meta?.ilvl != null ? ` · i${meta.ilvl}` : ''}`}
+ class={`relative h-11 w-11 shrink-0 rounded border transition-colors ${
+ isSel
+ ? 'border-sky-500 bg-sky-950/40'
+ : 'border-slate-800 hover:border-slate-600 hover:bg-slate-800/60'
  }`}
  >
- <td class="w-14 whitespace-nowrap px-2 py-1 text-[11px] tabular-nums text-slate-400">
- {meta?.level ?? ''}
- {/* ilvl sorts from its own number — the column header sorts
- by level */}
- {meta?.ilvl != null && (
- <span
- class=" text-indigo-300 hover:text-indigo-200"
- title="sort by item level"
- onClick={(e) => {
- e.stopPropagation();
- this.sortBy('ilvl');
- }}
- >
- /{meta.ilvl}
- </span>
- )}
- </td>
- <td class="min-w-0 px-2 py-1">
- <span class="flex items-center gap-2">
  <img
  src={this.api.iconUrl(item.id)}
- class="h-6 w-6 shrink-0 rounded object-contain"
+ class="h-full w-full rounded object-contain"
  // spawned WebView2 windows can start hidden/occluded —
  // lazy images never get their load scheduled there
  loading={detachedMode ? 'eager' : 'lazy'}
  alt=""
  />
- <span class={`truncate font-medium ${itemNameClass(meta) || 'text-slate-200'}`}>
- {item.equipped && <span class="mr-1 text-amber-400">*</span>}
- {name}
- {item.count > 1 && (
- <span class="ml-1 text-slate-500">×{item.count}</span>
+ {meta?.level != null && (
+ <span
+ class="absolute left-0.5 top-0.5 text-[9px] font-bold tabular-nums leading-none text-slate-200"
+ style={{ textShadow: '0 0 1px #000, 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000' }}
+ >
+ Lv{meta.level}
+ {meta.ilvl != null ? `/${meta.ilvl}` : ''}
+ </span>
  )}
- {flagDots(meta) && <span class="ml-1">{flagDots(meta)}</span>}
+ {item.equipped && (
+ <span class="absolute right-0.5 top-0.5 text-[9px] font-bold leading-none text-amber-400">
+ *
  </span>
+ )}
+ {flagDots(meta) && (
+ <span
+ class="absolute bottom-0 left-0.5 leading-none"
+ style={{ textShadow: '0 0 1px #000, 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000' }}
+ >
+ {flagDots(meta)}
  </span>
- </td>
- </tr>
+ )}
+ {item.count > 1 && (
+ <span class="absolute bottom-0 right-0.5 text-[11px] font-bold tabular-nums leading-tight text-slate-200">
+ {item.count}
+ </span>
+ )}
+ </button>
  );
+ }
+
+ // right-click context menu — same actions the tooltip buttons had,
+ // through the shared spec-menu window (move targets nest inline)
+ private itemMenu(e: MouseEvent, bag: Bag, item: BagItem) {
+ e.preventDefault();
+ const meta = this.catalog.value[item.id];
+ const name = meta?.name ?? `item ${item.id}`;
+ // every action always lists — unavailable ones stay but disabled
+ const opts = equipSlots(meta?.slots);
+ const items: MenuItem[] = opts.map((s) => ({
+ id: `equip:${equipCmdSlot(s)}`,
+ label: opts.length > 1 ? `equip ${equipCmdSlot(s)}` : 'equip',
+ disabled: !!item.equipped,
+ }));
+ if (!opts.length) items.push({ id: 'equip', label: 'equip', disabled: true });
+ items.push({
+ id: 'unequip',
+ label: 'unequip',
+ disabled: !item.equipped || !item.equip_slot,
+ });
+ items.push({
+ id: 'use',
+ label: 'use',
+ // /item only uses from the inventory bag
+ disabled: meta?.category !== 'Usable' || bag.id !== 0,
+ children: [
+ { id: 'use:me', label: 'on me' },
+ { id: 'use:t', label: 'on target' },
+ ],
+ });
+ items.push({
+ id: 'trade',
+ label: 'trade to target',
+ disabled: bag.id !== 0 || !!item.equipped,
+ });
+ items.push({
+ id: 'move',
+ label: 'move to…',
+ disabled: !!item.equipped,
+ children: (this.api.state.value?.bags ?? [])
+ .filter((b) => b.id !== bag.id && b.enabled !== false)
+ .map((b) => ({ id: `move:${b.id}`, label: b.name })),
+ });
+ items.push({
+ id: 'drop',
+ label: 'drop',
+ disabled: bag.id !== 0 || !!item.equipped || !!meta?.ex,
+ });
+ host.pickMenu(
+ e.clientX,
+ e.clientY,
+ 180,
+ items.length * 26 + 8,
+ items,
+ (id) => void this.itemMenuAction(id, bag, item, name),
+ );
+ }
+
+ private async itemMenuAction(
+ id: string,
+ bag: Bag,
+ item: BagItem,
+ name: string,
+ ) {
+ if (id.startsWith('equip:'))
+ return void this.api.sendCommand(
+ `input /equip ${id.slice(6)} ${cmdStr(name)}`,
+ );
+ if (id.startsWith('move:'))
+ return void this.api.itemAction({
+ action: 'move',
+ bag: bag.id,
+ index: item.slot,
+ count: item.count,
+ target: Number(id.slice(5)),
+ });
+ if (id === 'unequip' && item.equip_slot)
+ return void this.api.itemAction({ action: 'unequip', slot: item.equip_slot });
+ if (id.startsWith('use:'))
+ return void this.api.sendCommand(
+ `input /item ${cmdStr(name)} <${id.slice(4)}>`,
+ );
+ if (id === 'trade')
+ return void this.api.sendCommand(`input /item ${cmdStr(name)} <t>`);
+ if (id === 'drop')
+ return void this.api.itemAction({
+ action: 'drop',
+ bag: bag.id,
+ index: item.slot,
+ count: item.count,
+ });
  }
 
 
@@ -424,7 +520,8 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  sel === '' ? groups : groups.filter(([c]) => c === sel);
  return (
  <>
- <TabBar class="mb-3">
+ <div class="mb-3 flex items-end gap-2">
+ <TabBar>
  <Tab active={sel === ''} onClick={() => setTab('')}>
  all
  </Tab>
@@ -438,8 +535,23 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  </Tab>
  ))}
  </TabBar>
+ <Select
+ className="ml-auto w-28"
+ value={this.sortKey.value}
+ options={(['name', 'level', 'ilvl', 'category', 'subtype'] as const).map(
+ (k) => ({ value: k, label: `sort: ${k}` }),
+ )}
+ onChange={(v) => {
+ this.sortKey.value = v as typeof this.sortKey.value;
+ this.sortDir.value = 1;
+ }}
+ />
+ </div>
+ {/* groups grid up as width allows — auto-fit collapses empty tracks,
+   so a single selected tab still spans the full row */}
+ <div class="grid grid-cols-[repeat(auto-fit,minmax(340px,1fr))] gap-4">
  {shown.map(([cat, group]) => (
- <div key={cat || '__other'} class="mb-4 last:mb-0">
+ <div key={cat || '__other'}>
  {/* the active tab already names the type — only
  label groups in the stacked 'all' view */}
  {sel === '' && (
@@ -448,22 +560,12 @@ export class InventoryView extends View implements OnInit, OnDestroy {
  <span class="font-normal">({group.length})</span>
  </h3>
  )}
- {/* min-w keeps the fixed columns legible —
- narrow windows scroll sideways instead of
- crushing the name column */}
- <table class="w-full table-fixed text-left text-xs">
- <thead>
- <tr class="text-[10px] font-semibold uppercase tracking-wider text-slate-600">
- {this.sortHeader('level', 'Lv/iLv', 'w-14')}
- {this.sortHeader('name', 'Item')}
- </tr>
- </thead>
- <tbody>
- {group.map((it) => this.itemRow(bag, it))}
- </tbody>
- </table>
+ <div class="flex flex-wrap content-start gap-1">
+ {group.map((it) => this.itemCell(bag, it))}
+ </div>
  </div>
  ))}
+ </div>
  </>
  );
  })()}

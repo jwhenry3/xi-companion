@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-window WebSocket overlay transport** — the SharedWorker is
+  gone (its fetches couldn't reach the `wails.localhost` assetserver
+  anyway); every WebView2 window probes `GET /api/xport/info` and opens
+  its own `ws://127.0.0.1:<port>/events` to the Go backend, which
+  multiplexes connections, dedupes in-flight GETs, replays the event
+  snapshot on `sub`, and proxies `/api/*` requests over the `xport.lua`
+  file mailbox. Diagnostics: page/worker lines post to
+  `POST /api/xport/log` (plus a global error/unhandled-rejection
+  reporter), and the Go side logs the full `ws:`/`mailbox:`/`page:`
+  lifecycle with `[pid]` prefixes in
+  `%LOCALAPPDATA%/xicompanion/overlay.log`.
+- **Multibox instance isolation** — the addon mailbox keys per game
+  instance (`inst_key()` = pid), and an instance-scoped named mutex
+  (`xportClaim`) stops Wails' transient second-instance processes from
+  draining the surviving process's `out/` replies.
+- **Game-follow window scaling** — overlay windows resize (bounds
+  only; positions stay put) and zoom content to match when the game
+  window's height changes. Sub-100% shrink-fits fall back to a CSS
+  zoom emulation since runtime `PutZoomFactor` floors at 1.0. Settings
+  toggle, off by default; `/settings` is exempt.
+- **Player name on the fab** — the fab cluster can show the character
+  name (settings toggle) so multiboxed clients are distinguishable.
+- **Persistent NM learning** — `//xicompanion nm <name>` marks a
+  shared-name mob as an NM for the current zone; zone-scoped entries
+  persist to `data/nm_shared.lua` and merge with the shipped
+  `nm_shared.lua` seed, so markings survive reloads.
+- **Journal status tabs** — `accepted`/`available`/`completed`
+  segmented tabs replace the "show all" checkbox (default accepted);
+  RoE subcategories start collapsed; the requisite count (`×N`)
+  shows on objective rows and beside the detail-pane title.
+- **Spec-menu window** — dropdown-style menus (view-prefs cog, etc.)
+  render as data-driven items in a shared overlay window and relay the
+  pick back to the requesting page — no clipping inside tiny panels.
+
+### Changed
+
+- **Lua HTTP server is lazy** — `:17890` only binds on
+  `//xicompanion open`/`start`/`port`; overlay traffic rides the
+  mailbox, so poll-driven data (map, party, entities, journal,
+  recasts) and the heartbeat no longer gate on the socket server.
+- **Combat meter** — activity segmentation: a >15s quiet gap resets
+  the tally, and the /s rate is computed over combat-active seconds;
+  trust rows use role-appropriate item icons; `/check` retries follow
+  the live target.
+- **Window dragging** — the live drag rect snaps to an 8px grid while
+  the cursor roams (same rounding the drop-snap applies).
+- **Chat channel gating** — private-server extras (`linkshell3` and
+  the `!`-channels) hide in the composer, sidebar, and filter-channel
+  editor until their channel sees traffic; on retail they never
+  appear. Chat modals now follow the theme (were hardcoded black).
+- **Map image loading** — decode/fetch retry behavior hardened.
+
+### Fixed
+
+- **Spell cooldown units** — `get_spell_recasts()` returns 60ths of a
+  second; a 5s Cure recast displayed as minutes. Values now convert
+  at the source, which also fixes the observed-max bar fill.
+- **RoE availability gating** — the whole subcategory was treated as
+  one sequential chain, so only 1 objective showed; now only
+  same-name series (`… I`/`II`/`III`) chain.
+- **Second-instance mailbox drain** — relaunched overlay processes
+  ran the mailbox backend before Wails' single-instance check killed
+  them, consuming/deleting replies meant for the survivor (fixed by
+  `xportClaim`).
+
 ### Removed
 
 - **Electron dev overlay** — `overlay/launch.mjs`/`main.cjs`, the `overlay`

@@ -77,7 +77,18 @@ local function serialize(v, out)
         out[#out + 1] = string.format('%q', v)
     elseif t == 'table' then
         out[#out + 1] = '{'
+        -- sparse maps (roe.done = {[id]=true}) can still have a nonzero
+        -- length prefix — serializing 1..#v would silently drop the
+        -- remaining keys. Only take the array path for a true sequence.
         local arr = #v > 0
+        if arr then
+            for k in pairs(v) do
+                if type(k) ~= 'number' or k ~= math.floor(k) or k < 1 or k > #v then
+                    arr = false
+                    break
+                end
+            end
+        end
         if arr then
             for i = 1, #v do
                 if i > 1 then out[#out + 1] = ',' end

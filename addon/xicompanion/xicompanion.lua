@@ -3128,6 +3128,14 @@ end
 plat.on('prerender', pump)
 plat.on('time change', pump)
 plat.on('incoming chunk', pump)
+-- mouse fires only for clicks inside the ffxi window — the overlay's
+-- click-off signal (its NOACTIVATE windows see no game input); type
+-- 1/4/7 are lmb/rmb/mmb down
+plat.on('mouse', function(t)
+    if t == 1 or t == 4 or t == 7 then
+        if xport then pcall(xport.push_event, 'click', '{}') end
+    end
+end)
 
 -- opt-in hotkey → chat focus: when chat_space_focus is set and a chat
 -- window is open, eat the configured combo before the client sees it

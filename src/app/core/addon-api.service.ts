@@ -204,6 +204,10 @@ export class AddonApi {
         case 'chatfocus':
           this.chatFocus.value = this.chatFocus.value + 1;
           break;
+        case 'click':
+          // ffxi-window click — pages that float (tooltip) dismiss
+          window.dispatchEvent(new Event('xic-gameclick'));
+          break;
         // 'ping' — just the lastEventAt bump handled by the caller
       }
     } catch {

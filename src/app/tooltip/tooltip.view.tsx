@@ -2,8 +2,6 @@ import { Component, View, inject, signal, computed } from '@preact-mvc/core';
 import { AddonApi } from '../core/addon-api.service';
 import { bindQuery } from '../core/query';
 import { host, TooltipRef } from '../core/host';
-import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
 import { augmentText, cmdStr, equipCmdSlot, equipSlots } from '../core/item-utils';
 import type { BagItem, ItemMeta } from '../core/types';
 import { itemNameClass, flagDots } from '../core/item-flags';
@@ -31,13 +29,19 @@ export class TooltipView extends View {
     if (p) this.payload.value = p;
     // subsequent updates land via the shell's ExecJS — no reload flicker
     window.__xicTooltip = (p) => (this.payload.value = p);
+    // a click inside the game window is our click-off — the OS-level
+    // watcher can't see it reliably (NOACTIVATE + frame overhang)
+    window.addEventListener('xic-gameclick', this.gameClick);
   }
 
   onDestroy() {
     document.body.classList.remove('tooltip-mode');
     delete window.__xicTooltip;
+    window.removeEventListener('xic-gameclick', this.gameClick);
     this.descQ.dispose();
   }
+
+  private gameClick = () => host.closeTooltip();
 
   private fromQuery(q: URLSearchParams): TooltipRef | null {
     const id = Number(q.get('id'));
@@ -93,86 +97,11 @@ export class TooltipView extends View {
     };
   });
 
-  // ---- actions (pinned only — the window is click-through while peeking)
-
-  private async run(cmd: string, echo?: string) {
-    try {
-      await this.api.sendCommand(cmd);
-      this.note(echo ?? cmd);
-    } catch (e) {
-      this.note(`failed: ${e}`);
-    }
-  }
-
   private note(msg: string) {
     this.flash.value = msg;
     setTimeout(() => {
       if (this.flash.value === msg) this.flash.value = null;
     }, 3000);
-  }
-
-  private equip(resName: string) {
-    const it = this.item.value;
-    const name = this.meta.value?.name ?? `item ${it?.id}`;
-    if (!it) return;
-    const slot = equipCmdSlot(resName);
-    void this.run(`input /equip ${slot} ${cmdStr(name)}`, `/equip ${slot} ${name}`);
-  }
-
-  private async unequip() {
-    const it = this.item.value;
-    if (!it?.equip_slot) return;
-    try {
-      // no /unequip client command — the addon injects a 0x050 equip
-      // packet with inv_slot 0
-      await this.api.itemAction({ action: 'unequip', slot: it.equip_slot });
-      this.note(`unequipped ${it.equip_slot}`);
-    } catch (e) {
-      this.note(`unequip failed: ${e}`);
-    }
-  }
-
-  private use() {
-    const it = this.item.value;
-    const name = this.meta.value?.name ?? `item ${it?.id}`;
-    if (!it) return;
-    void this.run(`input /item ${cmdStr(name)} <me>`, `/item ${name} <me>`);
-  }
-
-  private async move(target: number) {
-    const cur = this.resolved.value;
-    const it = cur?.item;
-    if (!cur || !it) return;
-    try {
-      await this.api.itemAction({
-        action: 'move',
-        bag: cur.bag.id,
-        index: it.slot,
-        count: it.count,
-        target,
-      });
-      this.note(`moved ${this.meta.value?.name ?? 'item'}`);
-    } catch (e) {
-      this.note(`move failed: ${e}`);
-    }
-  }
-
-  private async drop() {
-    const cur = this.resolved.value;
-    const it = cur?.item;
-    if (!cur || !it) return;
-    try {
-      await this.api.itemAction({
-        action: 'drop',
-        bag: cur.bag.id,
-        index: it.slot,
-        count: it.count,
-      });
-      this.note(`dropped ${this.meta.value?.name ?? 'item'}`);
-      host.closeTooltip();
-    } catch (e) {
-      this.note(`drop failed: ${e}`);
-    }
   }
 
   private copy(cmd: string) {
@@ -220,16 +149,8 @@ export class TooltipView extends View {
     const name = it ? (meta?.name ?? `item ${it.id}`) : (p.name ?? `item ${p.id}`);
     const pinned = !!p.pinned;
     const bag = cur?.bag ?? this.api.state.value?.bags.find((b) => b.id === p.bag);
-    const moveTargets =
-      this.api.state.value?.bags.filter(
-        (b) => b.enabled !== false && b.id !== cur?.bag.id,
-      ) ?? [];
-
     const equipOpts = equipSlots(meta?.slots);
-    const canEquip = !!it && !it.equipped && equipOpts.length > 0;
-    const canUnequip = !!it?.equipped && !!it?.equip_slot;
     const canUse = meta?.category === 'Usable';
-    const canDrop = it != null && cur?.bag.id === 0 && !it.equipped && !meta?.ex;
     // macro-ready lines — the same strings the equip/use buttons fire,
     // one per valid slot so multi-slot items (ear/ring/main+sub) each
     // get their own line; click copies (pinned windows only — peek is
@@ -373,51 +294,8 @@ export class TooltipView extends View {
             </ul>
           )}
 
-          {pinned && it && (
-            <div class="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-800 pt-2">
-              {canEquip &&
-                // multi-slot items (weapons: main/sub, rings: left/right…)
-                // need the explicit slot — the unordered slots[] can't
-                // be trusted to pick the right hand
-                equipOpts.map((s) => (
-                  <Button
-                    key={s}
-                    size="xs"
-                    variant="secondary"
-                    onClick={() => this.equip(s)}
-                  >
-                    {equipOpts.length > 1 ? `equip ${equipCmdSlot(s)}` : 'equip'}
-                  </Button>
-                ))}
-              {canUnequip && (
-                <Button size="xs" variant="secondary" onClick={() => this.unequip()}>
-                  unequip
-                </Button>
-              )}
-              {canUse && (
-                <Button size="xs" variant="secondary" onClick={() => this.use()}>
-                  use
-                </Button>
-              )}
-              {moveTargets.length > 0 && !it.equipped && (
-                <Select
-                  className="w-28"
-                  value=""
-                  placeholder="move to…"
-                  options={moveTargets.map((b) => ({
-                    value: String(b.id),
-                    label: b.name,
-                  }))}
-                  onChange={(v) => void this.move(Number(v))}
-                />
-              )}
-              {canDrop && (
-                <Button size="xs" variant="destructive" onClick={() => void this.drop()}>
-                  drop
-                </Button>
-              )}
-            </div>
-          )}
+          {/* actions moved to the item's context menu (right-click) —
+              the tooltip is display-only */}
           {macroCmds.length > 0 && (
             <div class="mt-2 space-y-0.5 border-t border-slate-800 pt-1.5">
               {macroCmds.map((cmd) => (

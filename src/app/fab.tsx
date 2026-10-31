@@ -202,6 +202,19 @@ const menuRect = signal({
     menuKey.value = null;
 };
 
+// in the menu window the card fills it — report real dims so the
+// shell snaps the window to the card (no backdrop), and a click on
+// the game window dismisses. The observer must watch the CARD —
+// body only resizes on height, so a widening submenu never reports
+let menuRO: ResizeObserver | undefined;
+if (new URLSearchParams(location.search).get('window') === '1') {
+    menuRO = new ResizeObserver(() => {
+        const el = document.getElementById('menucard');
+        if (el) host.menuSize(el.offsetWidth, el.offsetHeight);
+    });
+    window.addEventListener('xic-gameclick', () => host.fabMenuHide());
+}
+
 function closeMenu() {
     if (!fabMenuOpen.value) return;
     fabMenuOpen.value = false;
@@ -326,24 +339,16 @@ export function FabMenu() {
         (menuGroup.value === PANELS_GROUP.key ? PANELS_GROUP : GROUPS[0]);
     const open = openWindows.value;
     return (
-        // fullscreen transparent backdrop — a click off-card dismisses;
-        // the card draws at the rect the requester asked for
+        // the window hugs the card — the observer reports real dims
+        // and the shell snaps the window to them; outside clicks
+        // dismiss via xic-gameclick / interaction messages
         <div
-            class="fixed inset-0 overflow-hidden bg-transparent"
-            onMouseDown={() => host.fabMenuHide()}
+            id="menucard"
+            ref={(el) => {
+                if (el) menuRO?.observe(el);
+            }}
+            class="w-full rounded border border-slate-600 bg-popover/95 py-1 shadow-lg"
         >
-            <div
-                class="absolute rounded border border-slate-600 bg-popover/95 py-1 shadow-lg"
-                style={{
-                    left: `${menuRect.value.x}px`,
-                    // up menus anchor by the box bottom so the card's
-                    // real height can't offset it from the bar
-                    top: `${menuUp.value ? menuRect.value.y + menuRect.value.h : menuRect.value.y}px`,
-                    width: `${menuRect.value.w}px`,
-                    transform: menuUp.value ? 'translateY(-100%)' : undefined,
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-            >
                 <p class="px-2 pb-0.5 pt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400/70">
                     {g.label}
                 </p>
@@ -363,7 +368,6 @@ export function FabMenu() {
                         )}
                     </button>
                 ))}
-            </div>
         </div>
     );
 }
