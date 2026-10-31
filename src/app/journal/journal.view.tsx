@@ -78,7 +78,9 @@ export class JournalView extends View implements OnInit, OnDestroy {
   private names = signal<JournalNames | null>(null);
   private sel = signal<Section>({ kind: 'mission', key: 'sandoria' });
   private query = signal('');
-  private showAll = signal(false);
+  private tab = signal<'accepted' | 'available' | 'completed'>(
+    'accepted',
+  );
   private openId = signal<number | null>(null);
   private roeError = signal<string | null>(null);
   private disposeDeepLink?: () => void;
@@ -264,27 +266,31 @@ export class JournalView extends View implements OnInit, OnDestroy {
     return out;
   });
 
-  /** RoE availability: within a subcategory the objectives form a
-   *  chain ordered by log id — each unlocks only when the previous one
-   *  completes (that's how the native menu gates them), and the first
-   *  in a chain is always selectable. Available = first, predecessor
-   *  done, or already active/done. Uncategorized ids get a chain of
-   *  their own so nothing we can't classify is hidden. */
+  /** RoE availability: chains are same-name series inside a
+   *  subcategory ("Vanquish Multiple Enemies I/II/III") — step n+1
+   *  unlocks when step n is done. Unrelated objectives in the same
+   *  subcategory don't gate each other; the native menu offers them
+   *  all at once. Available = chain head, predecessor done, or
+   *  already active/done. */
   private roeAvailable = computed<Set<number>>(() => {
     const names = this.names.value;
     const j = this.api.journal.value;
     const done = new Set(j?.roe?.done ?? []);
     const active = new Set((j?.roe?.active ?? []).map((a) => a.id));
-    const bySub = new Map<number, number[]>();
+    const byChain = new Map<string, number[]>();
     for (const idStr of Object.keys(names?.roe ?? {})) {
       const id = Number(idStr);
-      const c = names!.roe[idStr].c ?? id; // uncat → own chain → always avail
-      (bySub.get(c) ?? bySub.set(c, []).get(c)!).push(id);
+      const meta = names!.roe[idStr];
+      // chain key = subcategory + base name with a trailing roman
+      // numeral stripped; a lone "I" and its "II/III" share the base
+      const base = (meta.n ?? '').replace(/\s+[IVX]+$/, '');
+      const key = `${meta.c ?? 0}:${base}`;
+      (byChain.get(key) ?? byChain.set(key, []).get(key)!).push(id);
     }
     const out = new Set<number>();
-    for (const ids of bySub.values()) {
+    for (const ids of byChain.values()) {
       ids.sort((a, b) => a - b);
-      let nextOk = true; // first in the chain is always offered
+      let nextOk = true; // chain head is always offered
       for (const id of ids) {
         if (nextOk || done.has(id) || active.has(id)) out.add(id);
         nextOk = done.has(id);
@@ -302,10 +308,11 @@ export class JournalView extends View implements OnInit, OnDestroy {
           e.name.toLowerCase().includes(q) ||
           e.entry?.d?.toLowerCase().includes(q),
       );
-    } else if (!this.showAll.value) {
-      // default view is in-progress only — "show all" (or a search)
-      // reveals untouched and completed entries
-      list = list.filter((e) => e.status === 'current');
+    } else {
+      // tab filter: accepted = in-progress, available = untouched
+      // (RoE still chain-gated below), completed = done
+      const want = { accepted: 'current', available: 'open', completed: 'done' } as const;
+      list = list.filter((e) => e.status === want[this.tab.value]);
     }
     // RoE: never show objectives the game wouldn't offer — entries
     // behind unearned chain links are noise, not "all"
@@ -324,11 +331,14 @@ export class JournalView extends View implements OnInit, OnDestroy {
   // in-progress objectives can't realistically start hidden anyway).
 
   private collapsed = signal<Set<string>>(new Set());
+  // subcategories start collapsed — expanded only by click
+  private expandedSubs = signal<Set<string>>(new Set());
   private toggleGroup = (key: string) => {
-    const next = new Set(this.collapsed.value);
+    const set = key.startsWith('s') ? this.expandedSubs : this.collapsed;
+    const next = new Set(set.value);
     if (next.has(key)) next.delete(key);
     else next.add(key);
-    this.collapsed.value = next;
+    set.value = next;
   };
 
   private roeGroups = computed<RoeCat[]>(() => {
@@ -513,6 +523,11 @@ export class JournalView extends View implements OnInit, OnDestroy {
             </span>
           </span>
         )}
+        {e.progress == null && e.target != null && (
+          <span class="w-14 shrink-0 text-right text-[11px] tabular-nums text-slate-500">
+            ×{e.target}
+          </span>
+        )}
         <span class="w-8 shrink-0 text-right text-[11px] text-slate-600">
           {e.id}
         </span>
@@ -565,7 +580,14 @@ export class JournalView extends View implements OnInit, OnDestroy {
       void this.api.setTracked(kind, key, undefined, tracked).catch(trackErr);
     return (
       <DetailPane class="w-96">
-        <h3 class="text-sm font-semibold text-slate-100">{e.name}</h3>
+        <div class="flex items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-slate-100">{e.name}</h3>
+          {e.target != null && (
+            <span class="shrink-0 text-xs tabular-nums text-slate-400">
+              ×{e.target}
+            </span>
+          )}
+        </div>
         <p class="pb-2 text-[10px] uppercase tracking-wider text-slate-500">
           {e.status === 'done'
             ? 'completed'
@@ -718,7 +740,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
         {this.groupHeader(`c${cat.id}`, cat.name, all, 0)}
         {!collapsed &&
           cat.subs.map((s) => {
-            const subCollapsed = this.collapsed.value.has(`s${s.id}`);
+            const subCollapsed = !this.expandedSubs.value.has(`s${s.id}`);
             return (
               <div key={s.id}>
                 {this.groupHeader(`s${s.id}`, s.name, s.entries, 1)}
@@ -857,16 +879,22 @@ export class JournalView extends View implements OnInit, OnDestroy {
               value={this.query.value}
               onInput={(e) => (this.query.value = e.currentTarget.value)}
             />
-            <label class="flex items-center gap-1 text-[11px] text-slate-400">
-              <input
-                type="checkbox"
-                checked={this.showAll.value}
-                onChange={(e) =>
-                  (this.showAll.value = e.currentTarget.checked)
-                }
-              />
-              show all
-            </label>
+            <div class="flex overflow-hidden rounded border border-slate-700">
+              {(['accepted', 'available', 'completed'] as const).map((t) => (
+                <button
+                  key={t}
+                  class={cn(
+                    'px-2 py-0.5 text-[11px]',
+                    this.tab.value === t
+                      ? 'bg-slate-700 text-slate-100'
+                      : 'text-slate-500 hover:text-slate-300',
+                  )}
+                  onClick={() => (this.tab.value = t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             {host.inShell() && (
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-200"
@@ -888,7 +916,7 @@ export class JournalView extends View implements OnInit, OnDestroy {
                 {j?.char
                   ? this.query.value
                     ? 'no matches'
-                    : 'nothing logged yet — zone to refresh the journal'
+                    : `nothing ${this.tab.value} — zone to refresh the journal`
                   : 'no journal data — log in and zone'}
               </p>
             )}
