@@ -303,7 +303,7 @@ export class SettingsView extends View implements OnInit, OnDestroy {
                   <label class="flex items-center gap-2 py-1 text-sm text-slate-300">
                     <input
                       type="checkbox"
-                      checked={shellGeom.value?.scaleFollow !== false}
+                      checked={shellGeom.value?.scaleFollow === true}
                       onChange={(e) => {
                         const on = e.currentTarget.checked;
                         // optimistic — the shell echoes its state back

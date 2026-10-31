@@ -410,12 +410,12 @@ func curScale() float64 {
 	return uiScale
 }
 
-// scaleFollowOn reports the settings toggle — on unless explicitly off.
+// scaleFollowOn reports the settings toggle — off unless explicitly on.
 // The /settings window itself never scales (bounds or zoom) so the
 // control always stays readable.
 func scaleFollowOn() bool {
 	g := geomSnapshot()
-	return g.ScaleFollow == nil || *g.ScaleFollow
+	return g.ScaleFollow != nil && *g.ScaleFollow
 }
 
 // routes exempt from game-follow scaling — the settings window holds the

@@ -160,7 +160,7 @@ export interface WinRect {
 export interface ShellGeom {
   fab?: WinRect;
   windows?: Record<string, WinRect>;
-  /** game-follow scaling toggle — undefined means on (default) */
+  /** game-follow scaling toggle — undefined means off (default) */
   scaleFollow?: boolean;
 }
 export const shellGeom = signal<ShellGeom | null>(null);
