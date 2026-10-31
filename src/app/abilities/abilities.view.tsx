@@ -12,8 +12,9 @@
 // spell 's<id>').
 import { Component, View, inject, signal, computed, effect } from '@preact-mvc/core';
 import type { OnInit, OnDestroy } from '@preact-mvc/core';
-import { Copy, Play, Check, UserMinus } from 'lucide-preact';
+import { Copy, Play, Check, UserMinus, LayoutGrid, List, Pin } from 'lucide-preact';
 import { AddonApi } from '../core/addon-api.service';
+import { detachedMode } from '../core/host';
 import { Dropdown } from '../core/dropdown';
 import type {
  AbilitiesPayload,
@@ -47,6 +48,19 @@ const loadTarget = () =>
 // learned-only is the default view — obtainable entries are opt-in
 const loadLearned = () =>
  localStorage.getItem(LEARNED_KEY) !== '0';
+// pins — 'pfx|name' keys so the same name under different prefixes
+// can't collide; shared by the grid and list views
+const PIN_KEY = 'xicompanion.abilities.pins';
+const pinKey = (e: Row) => `${e.pfx}|${e.n}`;
+const loadPins = () => {
+ try {
+ return new Set<string>(
+ JSON.parse(localStorage.getItem(PIN_KEY) ?? '[]'),
+ );
+ } catch {
+ return new Set<string>();
+ }
+};
 
 // short aliases for the derived command line — the wiki cmd field is
 // preferred when present (it carries the semantically right target)
@@ -109,7 +123,7 @@ function fmtSecs(secs?: number): string {
  return rm ? `${h}h${rm}m` : `${h}h`;
 }
 
-function iconUrl(api: AddonApi, e: Row): string | null {
+export function iconUrl(api: AddonApi, e: Row): string | null {
  const sp = e as SpellEntry;
  if (sp.iic != null) return api.iconUrl(sp.iic);
  if (e.mic != null)
@@ -159,6 +173,11 @@ function meta(e: Row): string {
  return parts.join(' · ');
 }
 
+// view mode — 'grid' is the quick-execute layout (2 columns, click =
+// cast), 'detail' is the list + info pane. Shared with the detached
+// window header's mode toggle (app.shell renders it for /abilities)
+export const abilitiesMode = signal<'grid' | 'detail'>('grid');
+
 @Component()
 export class AbilitiesView extends View implements OnInit, OnDestroy {
  private api = inject(AddonApi);
@@ -166,6 +185,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  private cat = signal('all');
  private query = signal('');
  private learnedOnly = signal(loadLearned());
+ private pins = signal<Set<string>>(loadPins());
  private target = signal(loadTarget());
  private info = signal<string | null>(null);
  private copied = signal<string | null>(null);
@@ -343,6 +363,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  private row(e: Row) {
  const key = `${e.k}${e.id}`;
  const learned = !!e.l;
+ const pinned = this.pins.value.has(pinKey(e));
  const rc = recastKey(e);
  const left = rc ? (this.recastLeft.value.get(rc) ?? 0) : 0;
  const open = this.info.value === key;
@@ -351,7 +372,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  key={key}
  data-entry-open={open ? '' : undefined}
  class={cn(
- 'flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm',
+ 'group flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm',
  open
  ? 'bg-slate-800 text-slate-100'
  : 'text-slate-300 hover:bg-slate-800/50',
@@ -445,6 +466,21 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  <Play size={13} />
  </button>
  )}
+ {/* pin sits last so the play button keeps a stable spot — it's
+ hover-revealed like the grid tile's corner pin, always visible
+ once pinned */}
+ <button
+ class={cn(
+ 'shrink-0 rounded p-0.5 hover:bg-slate-700/60',
+ pinned
+ ? 'text-amber-300'
+ : 'text-slate-500 opacity-0 group-hover:opacity-100',
+ )}
+ title={pinned ? 'unpin' : 'pin to top'}
+ onClick={(ev) => this.togglePin(e, ev)}
+ >
+ <Pin size={12} />
+ </button>
  </div>
  );
  }
@@ -541,7 +577,204 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  );
  }
 
+ private togglePin(e: Row, ev: Event) {
+ ev.stopPropagation();
+ const s = new Set(this.pins.value);
+ const k = pinKey(e);
+ if (s.has(k)) s.delete(k);
+ else s.add(k);
+ this.pins.value = s;
+ localStorage.setItem(PIN_KEY, JSON.stringify([...s]));
+ }
+
+ // shared mode toggle — rendered inside the view (grid + detail) so
+ // it works in the nav tab where there's no detached title bar
+ private modeToggle() {
+ // icon shows the mode a click switches TO — hidden in detached
+ // windows where the title bar already has the toggle
+ if (detachedMode) return null;
+ const grid = abilitiesMode.value === 'grid';
+ const Icon = grid ? List : LayoutGrid;
+ return (
+ <button
+ class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-300/80 hover:bg-white/10 hover:text-white"
+ title={grid ? 'switch to list view' : 'switch to grid view'}
+ onClick={() => (abilitiesMode.value = grid ? 'detail' : 'grid')}
+ >
+ <Icon size={12} />
+ </button>
+ );
+ }
+
+ // quick-execute grid — two columns (spells | abilities); each tile
+ // casts on click instead of opening the detail pane. Honors the
+ // learned-only + search filters and live recast dimming.
+ private gridView() {
+ const d = this.data.value;
+ const q = this.query.value.trim().toLowerCase();
+ const learned = this.learnedOnly.value;
+ const filt = (list: Row[]) =>
+ (list ?? []).filter(
+ (e) => (!learned || e.l) && (!q || e.n.toLowerCase().includes(q)),
+ );
+ const tile = (e: Row) => {
+ const rc = recastKey(e);
+ const left = rc ? (this.recastLeft.value.get(rc) ?? 0) : 0;
+ const u = iconUrl(this.api, e);
+ const sp = e as SpellEntry;
+ const ab = e as AbilityEntry;
+ const cost =
+ (sp.mp ?? 0) > 0
+ ? `${sp.mp} MP`
+ : (ab.mp ?? 0) > 0
+ ? `${ab.mp} MP`
+ : (ab.tp ?? 0) > 0
+ ? `${ab.tp} TP`
+ : null;
+ const pinned = this.pins.value.has(pinKey(e));
+ return (
+ <button
+ key={pinKey(e)}
+ class={cn(
+ 'group relative flex items-center gap-1.5 rounded border border-slate-700/60 bg-slate-800/50 px-1 py-1 text-left',
+ e.l
+ ? 'hover:bg-indigo-500/20 active:bg-indigo-500/40'
+ : 'opacity-40',
+ left > 0 && 'opacity-50',
+ )}
+ title={e.n}
+ disabled={!e.l}
+ onClick={() => this.trigger(e)}
+ >
+ <span
+ class={cn(
+ 'absolute right-0.5 top-0.5 rounded p-0.5 hover:bg-white/10',
+ pinned
+ ? 'text-amber-300'
+ : 'text-slate-500/60 opacity-0 group-hover:opacity-100',
+ )}
+ title={pinned ? 'unpin' : 'pin to top'}
+ onClick={(ev) => this.togglePin(e, ev)}
+ >
+ <Pin size={9} />
+ </span>
+ {u != null && (
+ <img
+ src={u}
+ class="h-8 w-8 shrink-0 rounded-[3px]"
+ style={{ background: elBg(e) }}
+ alt=""
+ loading="lazy"
+ />
+ )}
+ <span class="min-w-0 flex-1">
+ <span class="block truncate text-xs leading-tight text-slate-100">
+ {e.n}
+ </span>
+ <span class="block truncate text-[10px] leading-tight text-slate-400">
+ {e.lvl != null && e.ty !== 'Trust' && (
+ <>
+ lv{e.lvl}
+ {e.j === 'S' ? ' SJ' : ''}
+ {cost && ' · '}
+ </>
+ )}
+ {cost}
+ {left > 0 && (
+ <span class="text-amber-300">
+ {(e.lvl != null || cost) && ' · '}
+ {left}s
+ </span>
+ )}
+ </span>
+ </span>
+ </button>
+ );
+ };
+ const col = (label: string, list: Row[]) => {
+ // grid shows castables only — unlearned stays dimmed in the list
+ const rows = filt(list).filter((e) => e.l);
+ const pinned = rows.filter((e) => this.pins.value.has(pinKey(e)));
+ const rest = rows.filter((e) => !this.pins.value.has(pinKey(e)));
+ return (
+ <div class="flex min-h-0 flex-1 flex-col">
+ <p class="px-1 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400/70">
+ {label}
+ </p>
+ {pinned.length > 0 && (
+ <>
+ <p class="px-1 pb-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-300/70">
+ pinned
+ </p>
+ <div class="grid shrink-0 auto-rows-min grid-cols-2 content-start gap-1">
+ {pinned.map(tile)}
+ </div>
+ <div class="mx-1 my-1 border-t border-slate-700/50" />
+ </>
+ )}
+ <div class="grid flex-1 auto-rows-min grid-cols-2 content-start gap-1 overflow-y-auto">
+ {/* 'all' rows are already category-rank sorted — emit a
+ type header on each transition; a picked category is
+ single-type, so no headers needed */}
+ {(() => {
+ if (this.cat.value !== 'all') return rest.map(tile);
+ // bucket by category — row order isn't reliable enough to
+ // rely on transitions (dup headers when cats interleave)
+ const groups = new Map<string, Row[]>();
+ for (const e of rest) {
+ const c = catFor(e);
+ const g = groups.get(c);
+ if (g) g.push(e);
+ else groups.set(c, [e]);
+ }
+ const out: any[] = [];
+ const order = [...groups.keys()].sort(
+ (a, b) =>
+ (CAT_ORDER.indexOf(a) === -1 ? 99 : CAT_ORDER.indexOf(a)) -
+ (CAT_ORDER.indexOf(b) === -1 ? 99 : CAT_ORDER.indexOf(b)),
+ );
+ for (const c of order) {
+ out.push(
+ <p
+ key={'h:' + c}
+ class="col-span-2 mt-1 px-1 text-[9px] font-bold uppercase tracking-widest text-slate-400/70 first:mt-0"
+ >
+ {c.toLowerCase()}
+ </p>,
+ );
+ for (const e of groups.get(c)!) out.push(tile(e));
+ }
+ return out;
+ })()}
+ </div>
+ </div>
+ );
+ };
+ return (
+ <div class="flex h-full flex-col gap-1 overflow-hidden p-1">
+ <div class="flex shrink-0 items-center gap-1 px-0.5">
+ <Input
+ class="h-6 flex-1 text-xs"
+ placeholder="search…"
+ value={this.query.value}
+ onInput={(e) =>
+ (this.query.value = (
+ e.currentTarget as HTMLInputElement
+ ).value)
+ }
+ />
+ {this.modeToggle()}
+ </div>
+ <div class="flex min-h-0 flex-1 gap-2">
+ {col('spells', d?.spells ?? [])}
+ {col('abilities', d?.abilities ?? [])}
+ </div>
+ </div>
+ );
+ }
+
  render() {
+ if (abilitiesMode.value === 'grid') return this.gridView();
  const d = this.data.value;
  const openRow =
  this.list.value.find((e) => `${e.k}${e.id}` === this.info.value) ??
@@ -584,6 +817,7 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  <span class="min-w-0 flex-1 truncate text-xs font-semibold text-slate-300">
  {groupLabel}
  </span>
+ {this.modeToggle()}
  <Input
  class="w-48"
  placeholder="search…"
@@ -629,29 +863,52 @@ export class AbilitiesView extends View implements OnInit, OnDestroy {
  </PanelHeader>
  <div class="min-h-0 flex-1 overflow-y-auto p-2">
  {(() => {
- // 'all' shows group headers as categories change (sorted
- // group-then-alpha); single-cat lists stay flat
- if (this.cat.value !== 'all') {
- return this.rows.value.map((e) => this.row(e));
- }
- let last = '';
- return this.rows.value.flatMap((e) => {
- const c = catFor(e);
- const parts = [];
- if (c !== last) {
- last = c;
- parts.push(
+ // pinned rows lead the list under their own header (mirroring
+ // the grid's pinned section); the rest keep the flat or
+ // category-grouped layout
+ const pinned: Row[] = [];
+ const rest: Row[] = [];
+ for (const e of this.rows.value)
+ (this.pins.value.has(pinKey(e)) ? pinned : rest).push(e);
+ const head = (key: string, label: string, amber = false) => (
  <p
- key={`h:${c}`}
- class="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+ key={key}
+ class={cn(
+ 'px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider',
+ amber ? 'text-amber-300/70' : 'text-slate-500',
+ )}
  >
- {c}
- </p>,
+ {label}
+ </p>
+ );
+ const out: any[] = [];
+ if (pinned.length) {
+ out.push(head('h:pinned', 'pinned', true));
+ for (const e of pinned) out.push(this.row(e));
+ if (rest.length)
+ out.push(
+ <div
+ key="d:pinned"
+ class="mx-2 my-1 border-t border-slate-700/50"
+ />,
  );
  }
- parts.push(this.row(e));
- return parts;
- });
+ // 'all' shows group headers as categories change (sorted
+ // group-then-alpha); single-cat lists stay flat
+ if (this.cat.value === 'all') {
+ let last = '';
+ for (const e of rest) {
+ const c = catFor(e);
+ if (c !== last) {
+ last = c;
+ out.push(head(`h:${c}`, c));
+ }
+ out.push(this.row(e));
+ }
+ } else {
+ for (const e of rest) out.push(this.row(e));
+ }
+ return out;
  })()}
  {d && this.rows.value.length === 0 && (
  <p class="py-8 text-center text-xs text-slate-500">

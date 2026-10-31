@@ -75,12 +75,25 @@ local MENU_GROUP = {
     Trust = 'faith', Ninjutsu = 'ninja', BardSong = 'song',
     BlueMagic = 'misc', Geomancy = 'misc',
 }
+-- family-shared menu icons: the client uses one icon per spell family
+-- stored under a single example name, so prefixes that can't normalize
+-- to the namesake need an alias (every Bar-* spell → white/barstonr,
+-- every En-* spell → white/enrthund)
+local SPELL_ICON_ALIAS = {
+    bar = 'white/barstonr',
+    en = 'white/enrthund',
+}
 local function menu_icon_for(en, grp)
     if not menu_icon_idx then return nil end
     local norm = en:lower():gsub('[^a-z0-9]', ''):sub(1, 8)
     local base = norm:gsub('[ivx0-9]+$', '')
     for _, cand in ipairs({ grp and (grp .. '/' .. norm), grp and (grp .. '/' .. base), norm, base }) do
         if cand and menu_icon_idx[cand] then return menu_icon_idx[cand] end
+    end
+    for pfx, icon in pairs(SPELL_ICON_ALIAS) do
+        if norm:sub(1, #pfx) == pfx then
+            return menu_icon_idx[icon]
+        end
     end
 end
 
@@ -176,7 +189,10 @@ function M.read()
                         or (a.icon_id and a.icon_id > 360
                             and menu_icon_idx and menu_icon_idx[
                                 'jobabi/jobab_' .. tostring(a.icon_id - 360)]),
-                    l = learned_ja[id] and 1 or nil, k = 'ja',
+                    -- learned only counts when this loadout can use it —
+                    -- get_abilities is the char's full bitfield, so a JA
+                    -- learned on another job mustn't flag usable here
+                    l = learned_ja[id] and jsrc and 1 or nil, k = 'ja',
                 }
             end
         end
@@ -200,9 +216,13 @@ function M.read()
         if type(s) == 'table' and s.en then
             local lv = s.levels or {}
             local lvl, jsrc
-            if mj and lv[mj] then
+            if mj and lv[mj]
+                and lv[mj] <= (p.main_job_level or 0) then
                 lvl, jsrc = lv[mj], 'M'
-            elseif sj and lv[sj] then
+            elseif sj and lv[sj]
+                and lv[sj] <= (p.sub_job_level or 0) then
+                -- subjob spell: needs the effective sub-job level —
+                -- nil-guard so a missing level can't error the loop
                 lvl, jsrc = lv[sj] * 2, 'S'
             end
             if learned_sp[id] or jsrc then
@@ -223,7 +243,9 @@ function M.read()
                     ct = s.cast_time, rc = s.recast, rg = s.range or 0,
                     lvl = lvl, j = jsrc, ic = ic, iic = iic, mic = mic,
                     pn = s.type == 'Trust' and s.party_name or nil,
-                    l = learned_sp[id] and 1 or nil, k = 'sp',
+                    -- same for spells — get_spells is the whole char's
+                    -- learned bitfield; gate usable on lv[mj]/lv[sj]
+                    l = learned_sp[id] and jsrc and 1 or nil, k = 'sp',
                 }
             end
         end

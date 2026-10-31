@@ -109,7 +109,7 @@ export class MacroBarView extends View implements OnInit, OnDestroy {
                       ? 'border-emerald-500 bg-emerald-500/20 text-emerald-100'
                       : empty
                         ? 'border-slate-800 text-slate-600'
-                        : 'border-slate-700 bg-slate-800/80 text-slate-200 hover:border-sky-500 hover:bg-sky-500/10',
+                        : 'border-slate-500 bg-slate-950/90 text-slate-100 hover:border-sky-400 hover:bg-sky-500/10',
                   )}
                   disabled={empty}
                   title={tip}

@@ -3197,7 +3197,7 @@ plat.on('addon command', function(cmd, ...)
     local args = { ... }
 
     if cmd == '' or cmd == 'help' then
-        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | minimap | party | target | skillchain | meter | entities | check | start | stop | status | port <n> | refresh | swap | equip <set> | memscan [idx]')
+        log('commands: open | overlay | fab | tracker | macrobar | cooldowns | actionbar | minimap | party | target | skillchain | meter | entities | check | start | stop | status | port <n> | refresh | swap | equip <set> | memscan [idx]')
     elseif cmd == 'open' then
         if server or start_server() then
             plat.open_url('http://127.0.0.1:' .. bound_port .. '/')
@@ -3240,6 +3240,12 @@ plat.on('addon command', function(cmd, ...)
             end
         elseif launch_overlay(true, '--spawn /macrobar') then
             log('macro bar launched')
+        else
+            log_err('no overlay found (build with npm run build:overlay)')
+        end
+    elseif cmd == 'actionbar' then
+        if launch_overlay(true, '--spawn /actionbar') then
+            log('action bar launched')
         else
             log_err('no overlay found (build with npm run build:overlay)')
         end

@@ -1,5 +1,5 @@
 import { Component, View, inject, signal, RouterOutlet, Link, Router } from '@preact-mvc/core';
-import { ExternalLink, Cog, X } from 'lucide-preact';
+import { ExternalLink, Cog, X, LayoutGrid, List } from 'lucide-preact';
 import { APP_TITLE } from './core/tokens';
 import { AddonApi } from './core/addon-api.service';
 import { host, fabMode, detachedMode, menuMode, tooltipMode, trackerMode, cooldownsMode, macrobarMode, minimapMode, partyMode, targetMode, skillchainMode, entitiesMode, theme, setTheme, THEMES, type Theme, winOpacity, winScale, setWinView, showPlayerName } from './core/host';
@@ -7,6 +7,7 @@ import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { cn } from '@/lib/utils';
 import { Fab, FabMenu } from './fab';
 import { SpecMenu } from './menu.view';
+import { abilitiesMode } from './abilities/abilities.view';
 
 import { TooltipView } from './tooltip/tooltip.view';
 import { MacroBarChrome } from './macrobar/macrobar.chrome';
@@ -90,6 +91,22 @@ function ViewPrefs() {
  );
 }
 
+// /abilities header control — flips between the quick-execute grid and
+// the list+detail layout. The icon shows the current mode.
+function AbilitiesModeToggle() {
+ const grid = abilitiesMode.value === 'grid';
+ const Icon = grid ? List : LayoutGrid;
+ return (
+ <button
+ class="no-drag flex h-5 w-5 items-center justify-center rounded bg-transparent text-slate-300/80 hover:bg-white/10 hover:text-white"
+ title={grid ? 'switch to list view' : 'switch to grid view'}
+ onClick={() => (abilitiesMode.value = grid ? 'detail' : 'grid')}
+ >
+ <Icon size={12} />
+ </button>
+ );
+}
+
 // /tracker refresh, inline in the detached title bar with the prefs cog
 @Component()
 class HeaderRefresh extends View {
@@ -170,7 +187,8 @@ export class AppShell extends View {
  const panelMode =
  trackerMode || cooldownsMode || macrobarMode || minimapMode ||
  partyMode || targetMode || skillchainMode || entitiesMode ||
- window.location.pathname === '/meter';
+ window.location.pathname === '/meter' ||
+ window.location.pathname === '/actionbar';
  if (detachedMode) {
  // router.url carries the ?window=1 query — compare the bare path
  const path = url.split('?')[0];
@@ -186,6 +204,7 @@ export class AppShell extends View {
  '/skillchain': 'Skillchains',
  '/meter': 'Combat Meter',
  '/entities': 'Nearby',
+ '/actionbar': 'Action Bar',
  } as Record<string, string>
  )[path] ??
  NAV.find(
@@ -213,6 +232,7 @@ export class AppShell extends View {
  </span>
  )}
  {path === '/tracker' && <HeaderRefresh />}
+ {path === '/abilities' && <AbilitiesModeToggle />}
  <ViewPrefs />
  <button
  class="flex h-5 w-5 items-center justify-center rounded text-xs leading-none text-indigo-200/70 hover:bg-indigo-300/20 hover:text-white"

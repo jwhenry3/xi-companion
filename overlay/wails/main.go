@@ -1206,7 +1206,8 @@ func fabLayerSpawned(key string) bool {
 	key = strings.SplitN(key, "?", 2)[0]
 	return key == "/tracker" || key == "/macrobar" || key == "/cooldowns" ||
 		key == "/minimap" || key == "/party" || key == "/target" ||
-		key == "/skillchain" || key == "/meter" || key == "/entities"
+		key == "/skillchain" || key == "/meter" || key == "/entities" ||
+		key == "/actionbar"
 }
 
 // spawnArg extracts `--spawn <route>` / `--spawn=<route>` from a command
@@ -1364,6 +1365,7 @@ func spawnWindow(route string) {
 		"/skillchain": "Skillchains",
 		"/meter":      "Meter",
 		"/entities":   "Nearby",
+		"/actionbar":  "Action Bar",
 	}
 	title, ok := spawnTitles[key]
 	if !ok {

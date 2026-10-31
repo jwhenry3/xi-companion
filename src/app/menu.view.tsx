@@ -241,7 +241,10 @@ export class SpecMenu extends View {
           {s == null || (Array.isArray(s) && s.length === 0) ? (
             <p class="px-3 py-1 text-[10px] text-slate-500">empty</p>
           ) : !Array.isArray(s) ? (
-            <PrefsPanel spec={s} />
+            // key on the spec — the shared menu window persists across
+            // requesters, and a mounted panel would otherwise keep the
+            // previous window's staged theme/scale/alpha
+            <PrefsPanel key={JSON.stringify(s)} spec={s} />
           ) : (
             s.map((it) => this.row(it))
           )}

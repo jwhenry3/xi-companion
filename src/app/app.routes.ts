@@ -74,6 +74,12 @@ export const routes: Route[] = [
     ),
   },
   {
+    path: '/actionbar',
+    component: lazy(() =>
+      import('./actionbar/actionbar.view').then((m) => m.ActionBarView),
+    ),
+  },
+  {
     path: '/minimap',
     component: lazy(() =>
       import('./map/minimap.view').then((m) => m.MinimapView),

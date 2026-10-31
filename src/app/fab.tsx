@@ -95,6 +95,7 @@ const GROUPS: FabGroup[] = [
             { path: '/skillchain', label: 'skillchains', Icon: Link2 },
             { path: '/meter', label: 'meter', Icon: Timer },
             { path: '/abilities', label: 'spell book', Icon: Sparkles },
+            { path: '/actionbar', label: 'action bar', Icon: LayoutGrid },
         ],
     },
     {
@@ -254,8 +255,9 @@ export function Fab({ player }: { player?: string | null }) {
     const open = openWindows.value;
 
     const onContextMenu = (e: MouseEvent) => {
+        // suppress the default context menu — no action on right-click
+        // (quit lives on //xicompanion commands now)
         e.preventDefault();
-        host.quit();
     };
 
     const bar = (
@@ -322,7 +324,7 @@ export function Fab({ player }: { player?: string | null }) {
     return (
         <div
             class="flex h-screen w-screen flex-col justify-center overflow-hidden bg-transparent"
-            title="XI Companion — click toggles a window · drag to move · right-click to quit"
+            title="XI Companion — click toggles a window · drag to move"
             onContextMenu={onContextMenu}
         >
             {bar}
